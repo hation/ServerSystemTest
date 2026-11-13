@@ -16,6 +16,9 @@ offline-stress-pkg/
 ├── README.md                      本说明文档
 ├── install.sh                     安装脚本（含 root 检查、SHA256 校验、已装同版本检测）
 ├── verify.sh                      验证脚本（检查安装版本 + 10 秒冒烟压测）
+├── stress-test.sh                 压测主控脚本（CPU/内存/硬盘压测：start/status/stop/review）
+├── disk-mount.sh                  挂载辅助脚本（list/mount/umount，硬盘压测前挂载测试盘）
+├── 压测实操手册.md                     压测操作手册（三类机型 CPU/内存/硬盘实操）
 └── rpms/
     └── stress-1.0.4-24.el8.x86_64.rpm   stress RPM 安装包
 ```
@@ -71,6 +74,8 @@ VERIFY_SKIP_SMOKE=1 bash verify.sh
 ```
 
 此时检查 C 输出 `SKIP`，A、B 通过即为 `PASS`。
+
+压测实操见同目录 压测实操手册.md
 
 ## 6. NOKEY 签名警告说明
 

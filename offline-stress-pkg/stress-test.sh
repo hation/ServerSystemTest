@@ -132,6 +132,21 @@ cmd_start() {
     # 前置校验：stress 已安装
     command -v stress >/dev/null 2>&1 || { echo "未找到 stress，请先运行 bash install.sh 安装"; exit 1; }
 
+    # hdd 前置校验：先全量收集并校验压测盘目录，任一无效即整体退出（不启动任何 stress、不建结果目录，防孤儿进程）
+    local dirs=() d
+    if [ "$type" = "hdd" ]; then
+        if [ -n "$dirs_opt" ]; then
+            dirs=($dirs_opt)
+        else
+            dirs=(/mnt/HDD*)
+            [ -e "${dirs[0]}" ] || { echo "未发现 /mnt/HDD* 挂载点，请先运行 bash disk-mount.sh mount 或使用 --dirs 指定"; exit 1; }
+        fi
+        [ "${#dirs[@]}" -gt 0 ] || { echo "未指定任何压测盘目录（--dirs 为空）"; exit 1; }
+        for d in "${dirs[@]}"; do
+            [ -d "$d" ] || { echo "挂载点不存在：$d（请先挂载或检查 --dirs）"; exit 1; }
+        done
+    fi
+
     # 建结果目录（时间戳，防覆盖；同秒冲突时顺延）
     mkdir -p "$STRESS_TEST_ROOT" || { echo "无法创建结果根目录：$STRESS_TEST_ROOT"; exit 1; }
     local ts dir
@@ -183,19 +198,11 @@ cmd_start() {
         stress --version 2>&1
     } > "$dir/info-before.txt"
 
-    # 后台启动 stress（nohup；hdd 每盘一条，各自日志与退出码）
+    # 后台启动 stress（nohup；hdd 每盘一条，各自日志与退出码；目录已在上方全量校验，这里只负责启动）
     : > "$dir/stress.pids"
     if [ "$type" = "hdd" ]; then
-        local dirs=() i=1 d num
-        if [ -n "$dirs_opt" ]; then
-            dirs=($dirs_opt)
-        else
-            dirs=(/mnt/HDD*)
-            [ -e "${dirs[0]}" ] || { echo "未发现 /mnt/HDD* 挂载点，请先运行 bash disk-mount.sh mount 或使用 --dirs 指定"; exit 1; }
-        fi
-        [ "${#dirs[@]}" -gt 0 ] || { echo "未指定任何压测盘目录（--dirs 为空）"; exit 1; }
+        local i=1 num
         for d in "${dirs[@]}"; do
-            [ -d "$d" ] || { echo "挂载点不存在：$d（请先挂载或检查 --dirs）"; exit 1; }
             num=$(printf "%02d" "$i")
             nohup sh -c 'cd "$1" && stress --hdd 1 --hdd-bytes "$2" --timeout "$3" > "$4/stress-HDD$5.log" 2>&1; echo $? > "$4/stress-HDD$5.exitcode"' _ "$d" "$hdd_bytes_opt" "$timeout" "$dir" "$num" >/dev/null 2>&1 &
             echo "$!" >> "$dir/stress.pids"

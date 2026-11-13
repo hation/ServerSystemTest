@@ -9,6 +9,7 @@
 #   SKIP_ROOT_CHECK=1  跳过 root 检查（仅本地测试用）
 #   MOUNT_LOG          挂载日志路径（默认 /root/stress-test/mount.log）
 #   LSBLK_BIN          块设备查询命令（默认 lsblk，测试可用伪造输出）
+#   BLKID_BIN          文件系统探测命令（默认 blkid，测试可用伪造输出）
 # 退出码：0=正常（含取消/无盘可挂）；1=用法错误/前置不满足/选择含系统盘或无效盘
 # 说明：全程不 set -e；系统盘（df / 所在盘）任何分支硬跳过；每步操作写 mount.log。
 
@@ -16,6 +17,7 @@ DRY_RUN="${DRY_RUN:-0}"
 SKIP_ROOT_CHECK="${SKIP_ROOT_CHECK:-0}"
 MOUNT_LOG="${MOUNT_LOG:-/root/stress-test/mount.log}"
 LSBLK_BIN="${LSBLK_BIN:-lsblk}"
+BLKID_BIN="${BLKID_BIN:-blkid}"
 
 now() { date '+%Y-%m-%d %H:%M:%S'; }
 
@@ -29,8 +31,8 @@ usage() {
 说明:
   list    列出全部块设备，标出系统盘（永不测试）、分区状态与挂载点
   mount   收集非系统盘 → 交互选择或 --disks（all=全部）→ 打印完整执行计划
-           → 单个 y 确认后执行：无分区空盘 mkfs.ext4 -m 0 后挂载到 /mnt/HDDxx，
-             已有分区直接挂载分区；已挂载的盘跳过
+           → 单个 y 确认后执行：无分区且无文件系统的空盘 mkfs.ext4 -m 0 后挂载到 /mnt/HDDxx，
+             已有分区直接挂载分区，整盘已有文件系统的直接挂载（不重新格式化）；已挂载的盘跳过
   umount  列出已挂载测试盘（/mnt/HDD*）并确认后逐个卸载（--all 跳过确认）
 
 测试接缝（本地测试用）:
@@ -146,12 +148,20 @@ disk_fpart() {
     done
 }
 
+# 整盘是否已有文件系统（blkid 探测）。上一轮已格式化过的盘无分区但带 ext4，
+# 直接挂载即可；只有真正无文件系统的空盘才需要 mkfs（避免 mkfs 二次格式化提示/挂起）。
+disk_has_fs() {
+    local dev="$1"
+    [ -n "$($BLKID_BIN -s TYPE -o value "$dev" 2>/dev/null)" ]
+}
+
 disk_status() {
     local i
     for i in "${!DISK_NAMES[@]}"; do
         [ "${DISK_NAMES[$i]}" = "$1" ] || continue
         if [ "${DISK_MOUNTED[$i]}" = "1" ]; then echo "已挂载（跳过）"
         elif [ "${DISK_NPARTS[$i]}" -gt 0 ]; then echo "有分区 ${DISK_FPARTS[$i]}（将直接挂载）"
+        elif disk_has_fs "/dev/${DISK_NAMES[$i]}"; then echo "未分区但已有文件系统（将直接挂载，不重新格式化）"
         else echo "未分区空盘（将 mkfs.ext4 -m 0）"; fi
         return 0
     done
@@ -168,12 +178,12 @@ trim() {
 
 # ---------- 公共：执行并写 mount.log ----------
 
-# 执行一条命令，输出实时可见，并追加 "[时间] cmd: ... 结果:$?" 到 MOUNT_LOG
+# 执行一条命令，输出经 tee 实时同时打到控制台与 MOUNT_LOG（长命令可见进度、交互提示可见），
+# 末尾追加 "[时间] cmd: ... 结果:$?" 到 MOUNT_LOG；退出码取命令自身（PIPESTATUS[0]，非 tee 的）
 run_log() {
-    local rc out
-    out=$("$@" 2>&1)
-    rc=$?
-    [ -n "$out" ] && echo "$out"
+    local rc
+    "$@" 2>&1 | tee -a "$MOUNT_LOG"
+    rc=${PIPESTATUS[0]}
     echo "[$(now)] cmd: $* 结果:$rc" >> "$MOUNT_LOG"
     return "$rc"
 }
@@ -287,6 +297,8 @@ cmd_mount() {
         fpart=$(disk_fpart "$c")
         if [ -n "$fpart" ]; then
             act="有分区：直接挂载 /dev/$fpart → $mntp"
+        elif disk_has_fs "$dev"; then
+            act="已有文件系统：直接挂载 $dev → $mntp（不重新格式化）"
         else
             act="无分区空盘：mkfs.ext4 -m 0 $dev 后挂载 → $mntp"
         fi
@@ -325,6 +337,13 @@ cmd_mount() {
         if [ -n "$fpart" ]; then
             if run_log mount "/dev/$fpart" "$mntp"; then
                 echo "已挂载 $c → $mntp"
+            else
+                echo "挂载失败：$c → $mntp（结果非 0，见 mount.log）"
+            fi
+        elif disk_has_fs "/dev/$c"; then
+            # 上一轮已格式化过的盘：已有文件系统，直接挂载，避免 mkfs 二次格式化提示/挂起
+            if run_log mount "/dev/$c" "$mntp"; then
+                echo "已挂载 $c → $mntp（已有文件系统，直接挂载）"
             else
                 echo "挂载失败：$c → $mntp（结果非 0，见 mount.log）"
             fi

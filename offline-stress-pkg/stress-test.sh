@@ -145,6 +145,20 @@ cmd_start() {
         for d in "${dirs[@]}"; do
             [ -d "$d" ] || { echo "挂载点不存在：$d（请先挂载或检查 --dirs）"; exit 1; }
         done
+        # 默认 /mnt/HDD* 分支：目录存在≠已挂载（umount 不删目录），多轮流程第二轮会误把压测文件写到系统根文件系统。
+        # 额外校验每个目录确实已挂载、且底层设备不是根设备（--dirs 显式指定的目录不要求，用户自己负责）。
+        if [ -z "$dirs_opt" ]; then
+            local root_dev dev
+            root_dev=$(df -P / 2>/dev/null | awk 'NR==2{print $1}')
+            for d in "${dirs[@]}"; do
+                dev=$(findmnt -n -o SOURCE "$d" 2>/dev/null || df -P "$d" 2>/dev/null | awk 'NR==2{print $1}')
+                if [ -z "$dev" ] || { [ -n "$root_dev" ] && [ "$dev" = "$root_dev" ]; }; then
+                    echo "目录 $d 不是已挂载的独立文件系统（设备=${dev:-未挂载}，系统盘=${root_dev:-未知}），不能作为压测盘"
+                    echo "请先运行 bash disk-mount.sh mount 挂载测试盘，或用 --dirs 显式指定压测目录"
+                    exit 1
+                fi
+            done
+        fi
     fi
 
     # 建结果目录（时间戳，防覆盖；同秒冲突时顺延）

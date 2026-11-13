@@ -124,6 +124,8 @@ nohup stress --cpu 64 --vm 16 --vm-bytes 8G --timeout 3600 > stress.log 2>&1 &
 
 ## 9. 故障回退（依赖缺失时）
 
+以下命令需 root 权限执行。
+
 若 `rpm -Uvh` 因依赖缺失失败（如缺 `libc` 相关依赖版本不符），可将 **Kylin V10 SP3 系统 ISO** 挂载为本地 yum 源后重试：
 
 ```bash

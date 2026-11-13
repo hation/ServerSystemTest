@@ -64,11 +64,11 @@ offline-stress-pkg/
 
 ```
 /root/stress-test/
+├── mount.log            # 挂载/卸载全步骤日志（disk-mount.sh 写入，跨测试共享）
 ├── <YYYYmmdd-HHMMSS>-<cpu|mem|hdd>/     # 每次测试一个目录
 │   ├── run-config.txt     # 机型、参数、开始时间、命令原文
 │   ├── stress.log         # stress 原始输出（hdd 模式为 stress-HDDxx.log 每盘一份）
 │   ├── monitor.csv        # 30 秒一条系统状态（原始数据，可 Excel 打开）
-│   ├── mount.log          # 仅 hdd：分区/格式化/挂载全步骤日志
 │   ├── info-before.txt    # 测试前快照：lscpu / free -h / df -h / lsblk / stress --version
 │   └── summary.txt        # 自动生成的复盘总结（见下）
 └── operations.log         # 主控脚本操作记录（start/stop 历史，防误操作复盘）

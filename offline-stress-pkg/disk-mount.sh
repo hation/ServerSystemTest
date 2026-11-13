@@ -8,12 +8,14 @@
 #   DRY_RUN=1          只打印执行计划，不执行任何写操作（含不写 mount.log）
 #   SKIP_ROOT_CHECK=1  跳过 root 检查（仅本地测试用）
 #   MOUNT_LOG          挂载日志路径（默认 /root/stress-test/mount.log）
+#   LSBLK_BIN          块设备查询命令（默认 lsblk，测试可用伪造输出）
 # 退出码：0=正常（含取消/无盘可挂）；1=用法错误/前置不满足/选择含系统盘或无效盘
 # 说明：全程不 set -e；系统盘（df / 所在盘）任何分支硬跳过；每步操作写 mount.log。
 
 DRY_RUN="${DRY_RUN:-0}"
 SKIP_ROOT_CHECK="${SKIP_ROOT_CHECK:-0}"
 MOUNT_LOG="${MOUNT_LOG:-/root/stress-test/mount.log}"
+LSBLK_BIN="${LSBLK_BIN:-lsblk}"
 
 now() { date '+%Y-%m-%d %H:%M:%S'; }
 
@@ -47,11 +49,25 @@ root_check() {
 # ---------- 系统盘识别（df / 的底层设备，任何分支硬跳过） ----------
 
 sys_disk_base() {
-    local dev base
+    # 沿 lsblk 树向上解析：从 df / 的底层设备出发，逐层取父设备（pkname），
+    # 直到解析到 TYPE=disk 的整盘为止。覆盖 LVM/mapper 布局：
+    #   /dev/mapper/vg00-lv_root（lvm）→ PV 分区 sda2（part）→ 整盘 sda（disk）
+    local dev tgt type i
     dev=$(df / 2>/dev/null | awk 'NR==2{print $1}')
     [ -n "$dev" ] || return 0
-    base=$(lsblk -no pkname "$dev" 2>/dev/null | head -1)
-    if [ -n "$base" ]; then echo "$base"; return 0; fi
+    tgt="$dev"
+    i=0
+    while [ "$i" -lt 20 ]; do
+        type=$($LSBLK_BIN -no TYPE "$tgt" 2>/dev/null | head -1)
+        if [ "$type" = "disk" ]; then
+            echo "${tgt#/dev/}"
+            return 0
+        fi
+        tgt=$($LSBLK_BIN -no pkname "$tgt" 2>/dev/null | head -1)
+        [ -n "$tgt" ] || break
+        i=$((i + 1))
+    done
+    # 兜底：正则去分区号（sd*/nvme* 等直连盘；LVM 等无法还原时保持原样）
     echo "$dev" | sed -E 's#^/dev/(sd[a-z]+)[0-9]*$#\1#; s#^/dev/(nvme[0-9]+n[0-9]+)p[0-9]+$#\1#; s#^/dev/(vd[a-z]+)[0-9]*$#\1#; s#^/dev/(mmcblk[0-9]+)p[0-9]+$#\1#; s#^/dev/##'
 }
 
@@ -72,7 +88,7 @@ is_sys_disk_or_part() {
 
 # 读取块设备（TYPE=disk 的 sd*/nvme*），输出行：盘符 容量 分区数 已挂载 首分区
 disk_lines() {
-    lsblk -o NAME,SIZE,TYPE,MOUNTPOINT -l 2>/dev/null | awk '
+    $LSBLK_BIN -o NAME,SIZE,TYPE,MOUNTPOINT -l 2>/dev/null | awk '
         $3=="disk" && ($1 ~ /^sd[a-z]+$/ || $1 ~ /^nvme[0-9]+n[0-9]+$/) {
             if (d!="") print d, sz, np, mnt, fp
             d=$1; sz=$2; np=0; mnt=($4!="" ? 1 : 0); fp=""; next
@@ -167,7 +183,7 @@ run_log() {
 cmd_list() {
     collect_non_sys_disks
     echo "==== 块设备一览（lsblk） ===="
-    lsblk -o NAME,SIZE,TYPE,MOUNTPOINT 2>/dev/null | awk -v sys="$SYS_BASE" '
+    $LSBLK_BIN -o NAME,SIZE,TYPE,MOUNTPOINT 2>/dev/null | awk -v sys="$SYS_BASE" '
         NR==1 { print; next }
         {
             mark=""

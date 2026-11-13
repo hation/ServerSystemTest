@@ -1,8 +1,8 @@
 #!/bin/bash
 # stress-test.sh —— 压测主控脚本（Kylin V10 SP3，三类机型 CPU/内存/硬盘压测）
 # 用法：
-#   bash stress-test.sh start <cpu|mem|hdd> [--model 5380|7380|7360|auto] [--timeout 12h] \
-#       [--cpu N] [--vm N] [--vm-bytes X] [--hdd-bytes X] [--dirs "d1 d2"]
+#   bash stress-test.sh start <cpu|mem|hdd|combo> [--model 5380|7380|7360|auto] [--timeout 12h] \
+#       [--cpu N] [--vm N] [--vm-bytes X] [--hdd-bytes X] [--dirs "d1 d2"] [--sysdisk]
 #   bash stress-test.sh status
 #   bash stress-test.sh stop
 #   bash stress-test.sh review [--dir <结果目录>]
@@ -14,6 +14,7 @@
 
 STRESS_TEST_ROOT="${STRESS_TEST_ROOT:-/root/stress-test}"
 MONITOR_INTERVAL="${MONITOR_INTERVAL:-30}"
+DF_BIN="${DF_BIN:-df}"
 SCRIPT="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 
 # ---------- 公共工具 ----------
@@ -21,8 +22,8 @@ SCRIPT="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 usage() {
     cat <<'EOF'
 用法:
-  bash stress-test.sh start <cpu|mem|hdd> [--model 5380|7380|7360|auto] [--timeout 12h] \
-      [--cpu N] [--vm N] [--vm-bytes X] [--hdd-bytes X] [--dirs "d1 d2"]
+  bash stress-test.sh start <cpu|mem|hdd|combo> [--model 5380|7380|7360|auto] [--timeout 12h] \
+      [--cpu N] [--vm N] [--vm-bytes X] [--hdd-bytes X] [--dirs "d1 d2"] [--sysdisk]
   bash stress-test.sh status
   bash stress-test.sh stop
   bash stress-test.sh review [--dir <结果目录>]
@@ -31,6 +32,7 @@ usage() {
   bash stress-test.sh start cpu                # 按自动检测机型预设跑 CPU 压测（默认 12h）
   bash stress-test.sh start mem --model 7380   # 按 7380 预设跑内存压测
   bash stress-test.sh start hdd --dirs "/mnt/HDD01 /mnt/HDD02"
+  bash stress-test.sh start combo --dirs "/mnt/HDD01 /mnt/HDD02" --sysdisk  # CPU+内存+每盘 hdd+系统盘
   bash stress-test.sh review --dir /root/stress-test/20261113-143000-cpu
 EOF
 }
@@ -84,12 +86,12 @@ cmd_start() {
     shift || true
     [ -n "$type" ] || { usage; exit 1; }
     case "$type" in
-        cpu|mem|hdd) ;;
-        *) echo "未知压测类型：$type（应为 cpu|mem|hdd）"; usage; exit 1 ;;
+        cpu|mem|hdd|combo) ;;
+        *) echo "未知压测类型：$type（应为 cpu|mem|hdd|combo）"; usage; exit 1 ;;
     esac
 
-    # 参数解析：--model / --timeout / --cpu / --vm / --vm-bytes / --hdd-bytes / --dirs
-    local model="auto" timeout="12h" cpu_opt="" vm_opt="" vm_bytes_opt="" hdd_bytes_opt="" dirs_opt=""
+    # 参数解析：--model / --timeout / --cpu / --vm / --vm-bytes / --hdd-bytes / --dirs / --sysdisk
+    local model="auto" timeout="12h" cpu_opt="" vm_opt="" vm_bytes_opt="" hdd_bytes_opt="" dirs_opt="" sysdisk=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --model|--timeout|--cpu|--vm|--vm-bytes|--hdd-bytes|--dirs)
@@ -104,9 +106,15 @@ cmd_start() {
             --vm-bytes)  vm_bytes_opt="$2"; shift 2 ;;
             --hdd-bytes) hdd_bytes_opt="$2"; shift 2 ;;
             --dirs)      dirs_opt="$2";     shift 2 ;;
+            --sysdisk)   sysdisk=1;         shift 1 ;;
             *) echo "未知参数：$1"; usage; exit 1 ;;
         esac
     done
+
+    # cpu/mem 模式下 --sysdisk 无效，仅提示（hdd/combo 才生效）
+    if [ "$sysdisk" -eq 1 ] && { [ "$type" = "cpu" ] || [ "$type" = "mem" ]; }; then
+        echo "提示：--sysdisk 仅对 hdd/combo 模式生效，cpu/mem 模式忽略该选项"
+    fi
 
     # 机型解析（缺省 auto）：mem>=800G→7380；nproc>=120→5380；否则 7360
     if [ "$model" = "auto" ]; then
@@ -132,32 +140,58 @@ cmd_start() {
     # 前置校验：stress 已安装
     command -v stress >/dev/null 2>&1 || { echo "未找到 stress，请先运行 bash install.sh 安装"; exit 1; }
 
-    # hdd 前置校验：先全量收集并校验压测盘目录，任一无效即整体退出（不启动任何 stress、不建结果目录，防孤儿进程）
+    # hdd/combo 前置校验：先全量收集并校验压测盘目录，存在且任一无效即整体退出（不启动任何 stress、不建结果目录，防孤儿进程）
+    # combo 模式目录集合可为空（无数据盘降级为仅 CPU/内存，或配合 --sysdisk 仅压系统盘）；hdd 模式仍要求非空
     local dirs=() d
-    if [ "$type" = "hdd" ]; then
+    if [ "$type" = "hdd" ] || [ "$type" = "combo" ]; then
         if [ -n "$dirs_opt" ]; then
             dirs=($dirs_opt)
         else
             dirs=(/mnt/HDD*)
-            [ -e "${dirs[0]}" ] || { echo "未发现 /mnt/HDD* 挂载点，请先运行 bash disk-mount.sh mount 或使用 --dirs 指定"; exit 1; }
-        fi
-        [ "${#dirs[@]}" -gt 0 ] || { echo "未指定任何压测盘目录（--dirs 为空）"; exit 1; }
-        for d in "${dirs[@]}"; do
-            [ -d "$d" ] || { echo "挂载点不存在：$d（请先挂载或检查 --dirs）"; exit 1; }
-        done
-        # 默认 /mnt/HDD* 分支：目录存在≠已挂载（umount 不删目录），多轮流程第二轮会误把压测文件写到系统根文件系统。
-        # 额外校验每个目录确实已挂载、且底层设备不是根设备（--dirs 显式指定的目录不要求，用户自己负责）。
-        if [ -z "$dirs_opt" ]; then
-            local root_dev dev
-            root_dev=$(df -P / 2>/dev/null | awk 'NR==2{print $1}')
-            for d in "${dirs[@]}"; do
-                dev=$(findmnt -n -o SOURCE "$d" 2>/dev/null || df -P "$d" 2>/dev/null | awk 'NR==2{print $1}')
-                if [ -z "$dev" ] || { [ -n "$root_dev" ] && [ "$dev" = "$root_dev" ]; }; then
-                    echo "目录 $d 不是已挂载的独立文件系统（设备=${dev:-未挂载}，系统盘=${root_dev:-未知}），不能作为压测盘"
-                    echo "请先运行 bash disk-mount.sh mount 挂载测试盘，或用 --dirs 显式指定压测目录"
-                    exit 1
+            [ -e "${dirs[0]}" ] || {
+                if [ "$type" = "hdd" ]; then
+                    echo "未发现 /mnt/HDD* 挂载点，请先运行 bash disk-mount.sh mount 或使用 --dirs 指定"; exit 1
                 fi
+                dirs=()
+                echo "警告：未发现 /mnt/HDD* 挂载点，combo 模式无数据盘（仅 CPU/内存，或配合 --sysdisk 压系统盘）"
+            }
+        fi
+        if [ "${#dirs[@]}" -gt 0 ]; then
+            for d in "${dirs[@]}"; do
+                [ -d "$d" ] || { echo "挂载点不存在：$d（请先挂载或检查 --dirs）"; exit 1; }
             done
+            # 默认 /mnt/HDD* 分支：目录存在≠已挂载（umount 不删目录），多轮流程第二轮会误把压测文件写到系统根文件系统。
+            # 额外校验每个目录确实已挂载、且底层设备不是根设备（--dirs 显式指定的目录不要求，用户自己负责）。
+            if [ -z "$dirs_opt" ]; then
+                local root_dev dev
+                root_dev=$(df -P / 2>/dev/null | awk 'NR==2{print $1}')
+                for d in "${dirs[@]}"; do
+                    dev=$(findmnt -n -o SOURCE "$d" 2>/dev/null || df -P "$d" 2>/dev/null | awk 'NR==2{print $1}')
+                    if [ -z "$dev" ] || { [ -n "$root_dev" ] && [ "$dev" = "$root_dev" ]; }; then
+                        echo "目录 $d 不是已挂载的独立文件系统（设备=${dev:-未挂载}，系统盘=${root_dev:-未知}），不能作为压测盘"
+                        echo "请先运行 bash disk-mount.sh mount 挂载测试盘，或用 --dirs 显式指定压测目录"
+                        exit 1
+                    fi
+                done
+            fi
+        elif [ "$type" = "hdd" ]; then
+            echo "未指定任何压测盘目录（--dirs 为空）"; exit 1
+        fi
+    fi
+
+    # --sysdisk 前置校验：建系统盘压测目录并预检 / 可用空间（hdd-bytes 按 G 换算 ×1.2），不足整体退出（不启动任何进程、不建结果目录）
+    if [ "$sysdisk" -eq 1 ] && { [ "$type" = "hdd" ] || [ "$type" = "combo" ]; }; then
+        mkdir -p /stresstest-hdd 2>/dev/null || { echo "无法创建系统盘压测目录 /stresstest-hdd（可能需要 root 权限）"; exit 1; }
+        local gb need_kb avail_kb
+        gb="${hdd_bytes_opt%[Gg]}"
+        case "$gb" in
+            ''|*[!0-9]*) echo "--sysdisk 空间预检要求 hdd-bytes 以 G 为单位（当前：$hdd_bytes_opt）"; exit 1 ;;
+        esac
+        need_kb=$(( gb * 12 * 1048576 / 10 ))
+        avail_kb=$("$DF_BIN" -P / 2>/dev/null | awk 'NR==2{print $4}')
+        if [ -z "$avail_kb" ] || [ "$avail_kb" -lt "$need_kb" ]; then
+            echo "系统盘 / 可用空间不足：需要 ≥ ${need_kb} kB（${hdd_bytes_opt}×1.2），当前可用 ${avail_kb:-未知} kB"
+            exit 1
         fi
     fi
 
@@ -178,6 +212,7 @@ cmd_start() {
         cpu) stress_args="--cpu $cpu_opt --timeout $timeout" ;;
         mem) stress_args="--vm $vm_opt --vm-bytes $vm_bytes_opt --timeout $timeout" ;;
         hdd) stress_args="--hdd 1 --hdd-bytes $hdd_bytes_opt --timeout $timeout" ;;
+        combo) stress_args="--cpu $cpu_opt --vm $vm_opt --vm-bytes $vm_bytes_opt --timeout $timeout" ;;
     esac
     timeout_sec=$(parse_timeout_sec "$timeout")
     start_time=$(now)
@@ -195,6 +230,7 @@ cmd_start() {
             cpu) echo "CPU worker 数: $cpu_opt" ;;
             mem) echo "VM worker 数: $vm_opt"; echo "VM 字节: $vm_bytes_opt" ;;
             hdd) echo "HDD 字节: $hdd_bytes_opt" ;;
+            combo) echo "CPU worker 数: $cpu_opt"; echo "VM worker 数: $vm_opt"; echo "VM 字节: $vm_bytes_opt"; echo "HDD 字节: $hdd_bytes_opt" ;;
         esac
         echo "命令: stress $stress_args"
     } > "$dir/run-config.txt"
@@ -212,9 +248,14 @@ cmd_start() {
         stress --version 2>&1
     } > "$dir/info-before.txt"
 
-    # 后台启动 stress（nohup；hdd 每盘一条，各自日志与退出码；目录已在上方全量校验，这里只负责启动）
+    # 后台启动 stress（nohup；combo 先起 CPU/内存组合进程，再每盘一条 hdd，--sysdisk 再补系统盘；
+    # 目录已在上方全量校验，这里只负责启动）
     : > "$dir/stress.pids"
-    if [ "$type" = "hdd" ]; then
+    if [ "$type" = "combo" ] || [ "$type" = "hdd" ]; then
+        if [ "$type" = "combo" ]; then
+            nohup sh -c 'stress $1 > "$2/stress.log" 2>&1; echo $? > "$2/stress.exitcode"' _ "$stress_args" "$dir" >/dev/null 2>&1 &
+            echo "$!" >> "$dir/stress.pids"
+        fi
         local i=1 num
         for d in "${dirs[@]}"; do
             num=$(printf "%02d" "$i")
@@ -222,6 +263,10 @@ cmd_start() {
             echo "$!" >> "$dir/stress.pids"
             i=$((i + 1))
         done
+        if [ "$sysdisk" -eq 1 ]; then
+            nohup sh -c 'cd "$1" && stress --hdd 1 --hdd-bytes "$2" --timeout "$3" > "$4/stress-SYSDISK.log" 2>&1; echo $? > "$4/stress-SYSDISK.exitcode"' _ "/stresstest-hdd" "$hdd_bytes_opt" "$timeout" "$dir" >/dev/null 2>&1 &
+            echo "$!" >> "$dir/stress.pids"
+        fi
     else
         nohup sh -c 'stress $1 > "$2/stress.log" 2>&1; echo $? > "$2/stress.exitcode"' _ "$stress_args" "$dir" >/dev/null 2>&1 &
         echo "$!" >> "$dir/stress.pids"
@@ -242,7 +287,7 @@ cmd_start() {
 
 cmd_status() {
     local running=0 d
-    for d in "$STRESS_TEST_ROOT"/*-cpu "$STRESS_TEST_ROOT"/*-mem "$STRESS_TEST_ROOT"/*-hdd; do
+    for d in "$STRESS_TEST_ROOT"/*-cpu "$STRESS_TEST_ROOT"/*-mem "$STRESS_TEST_ROOT"/*-hdd "$STRESS_TEST_ROOT"/*-combo; do
         [ -d "$d" ] || continue
         [ -f "$d/stress.pids" ] || continue
         if [ "$(alive_pids "$d/stress.pids")" -gt 0 ]; then
@@ -288,7 +333,7 @@ print_status_dir() {
 
 cmd_stop() {
     local found=0 d
-    for d in "$STRESS_TEST_ROOT"/*-cpu "$STRESS_TEST_ROOT"/*-mem "$STRESS_TEST_ROOT"/*-hdd; do
+    for d in "$STRESS_TEST_ROOT"/*-cpu "$STRESS_TEST_ROOT"/*-mem "$STRESS_TEST_ROOT"/*-hdd "$STRESS_TEST_ROOT"/*-combo; do
         [ -d "$d" ] || continue
         [ -f "$d/stress.pids" ] || continue
         local alive mpid mon_alive=0
@@ -348,8 +393,8 @@ cmd_review() {
         esac
     done
     if [ -z "$dir" ]; then
-        dir=$(ls -1d "$STRESS_TEST_ROOT"/*-cpu "$STRESS_TEST_ROOT"/*-mem "$STRESS_TEST_ROOT"/*-hdd 2>/dev/null | sort | tail -1)
-        [ -n "$dir" ] || { echo "未找到任何压测结果目录（$STRESS_TEST_ROOT 下无 <时间戳>-<cpu|mem|hdd> 目录）"; exit 1; }
+        dir=$(ls -1d "$STRESS_TEST_ROOT"/*-cpu "$STRESS_TEST_ROOT"/*-mem "$STRESS_TEST_ROOT"/*-hdd "$STRESS_TEST_ROOT"/*-combo 2>/dev/null | sort | tail -1)
+        [ -n "$dir" ] || { echo "未找到任何压测结果目录（$STRESS_TEST_ROOT 下无 <时间戳>-<cpu|mem|hdd|combo> 目录）"; exit 1; }
         echo "使用最新结果目录：$dir"
     fi
     [ -d "$dir" ] || { echo "结果目录不存在：$dir"; exit 1; }
@@ -390,7 +435,7 @@ cmd_review() {
         echo "开始时间: $start_time"
         echo "计划超时: $plan_timeout"
         echo "预计结束时间: ${end_est:-未知}（按监控覆盖时长估算）"
-        echo "监控数据行数: $rows"
+        echo "监控采样行数: $rows"
         echo "监控覆盖时长: ${duration} 秒（间隔 ${interval} 秒）"
         echo "CPU 使用率: 均值 ${cpu_mean}%，峰值 ${cpu_max}%"
         echo "内存峰值 (mem_used): ${mem_max} kB"

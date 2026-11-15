@@ -1,0 +1,33 @@
+yum install -y stress (下载stress工具）
+stress --cpu (线程） --vm （内存条根数） --vm-bytes (压测单根内存条的容量 例如：单根32G 压测 26G左右数值） --timeout （压测时间 h)
+
+以CPU：2颗海光5380，主频 2.5GHz、物理核数16C;
+内存：384GB，12根32GB内存
+举例：
+5380 CPU 32核心64线程  双C的线程数是128线程
+stress --cpu 110 --vm 12 --vm-bytes 26G --timeout 24h
+
+
+硬盘压力测试命令：
+Lsblk
+Mkdir  -p /mnt/HDD{01..12}
+mkfs.ext4 -m 0 /dev/sdb1   （对每一块盘进行分区，根据lsblk所查看的硬盘进行做分区系统盘 不用做）
+Mount /dev/sdb1  /mnt/HDD01
+......................
+Mount  /dev/sdm1 /mnt/HDD12(根据实际盘符进行挂载）
+Cd /mnt/HDD01
+Stress --hdd 1 --hdd-bytes 10G --timeout 24h
+....................
+Cd /mnt/HDD12
+Stress --hdd 1 --hdd-bytes 10G --timeout 24h
+
+当前系统盘  直接在根目录下面stress --hdd 1  --hdd-bytes 10G --timeout24h  跑这条命令就可以
+
+lscpu   这个命令可以查看到CPU的核心和线程数量
+
+这个后面  --timeout 这个参数  也可以跟秒数   秒数 直接输入多少秒就可以 例如：60秒 --timeout 60   即可
+
+7380  CPU 单C 32核心64线程
+7360  CPU 单C 24核心48线程
+7360这个配置线程压测到 80左右就可以了
+

@@ -1,0 +1,77 @@
+所有命令：
+cd ~/offline-stress-pkg
+sudo bash install.sh
+bash verify.sh
+bash disk-mount.sh list
+bash disk-mount.sh mount
+bash stress-test.sh start hdd --dirs "/mnt/HDD01"
+bash stress-test.sh start hdd --sysdisk-only
+bash stress-test.sh start cpu
+bash stress-test.sh start mem
+
+
+教程：
+1. 控制面板-电源管理-闲时关闭显示器-从不
+2. 从U盘复制：offline-stress-pkg.tar.gz到/root下，解压
+3. 推出U盘
+4. 开始执行命令：
+a. 开启终端，进入工具文件夹：cd ~/offline-stress-pkg
+b. 校验环境以及工具是否正常安装：
+sudo bash install.sh
+bash verify.sh
+c. 挂载硬盘
+bash disk-mount.sh list   #这里能看到我们有几块硬盘
+bash disk-mount.sh mount #这里开始挂载硬盘，需要把硬盘挂载以后才能测试
+输入：all
+输入：y
+
+d：准备测试项：
+每个测试项需要单独开一个终端窗口，每个窗口都要进入工具文件夹后再操作：cd ~/offline-stress-pkg
+bash stress-test.sh start hdd --dirs "/mnt/HDD01"      #前面查出来挂了几块硬盘，就要重复命令到几
+bash stress-test.sh start hdd --dirs "/mnt/HDD02"
+bash stress-test.sh start hdd --sysdisk-only     #测系统盘
+bash stress-test.sh start cpu     #测CPU
+bash stress-test.sh start mem  #测内存
+
+比如我们有4块存储盘+1块系统盘，那命令为：
+bash stress-test.sh start hdd --dirs "/mnt/HDD01"      #前面查出来挂了几块硬盘，就要重复命令到几
+bash stress-test.sh start hdd --dirs "/mnt/HDD02"
+bash stress-test.sh start hdd --dirs "/mnt/HDD03"
+bash stress-test.sh start hdd --dirs "/mnt/HDD04"
+bash stress-test.sh start hdd --sysdisk-only
+
+e：压测任务已完全启动；
+
+
+
+
+
+命令解析：
+
+```bash
+mkdir -p ~/offline-stress-pkg
+cp -r /mnt/usb/offline-stress-pkg/* ~/offline-stress-pkg/
+cd ~/offline-stress-pkg
+```
+cd ~/offline-stress-pkg
+sudo bash install.sh
+
+bash verify.sh
+
+bash disk-mount.sh list
+
+bash disk-mount.sh mount
+
+bash stress-test.sh start hdd
+
+bash stress-test.sh start hdd --dirs "/mnt/HDD01"  # 测数据盘
+
+bash stress-test.sh start hdd --sysdisk-only # 仅压系统盘（无论是否有数据盘）
+
+
+# CPU 压测
+bash stress-test.sh start cpu
+
+# 内存压测
+bash stress-test.sh start mem
+

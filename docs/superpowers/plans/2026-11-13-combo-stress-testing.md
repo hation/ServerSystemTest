@@ -12,8 +12,8 @@
 
 ## Global Constraints
 
-- 修改对象仅限：`offline-stress-pkg/stress-test.sh`（Task 1）、`offline-stress-pkg/压测实操手册.md`（Task 2）、`offline-stress-pkg.zip`（Task 3 重打）。**install.sh / verify.sh / disk-mount.sh / README.md / RPM 一律不动**
-- 机型预设逐字复用：5380→cpu 110/vm 12/26G；7380→cpu 110/vm 16/54G；7360→cpu 80/vm 16/26G；hdd 每盘 `--hdd 1 --hdd-bytes 10G`；timeout 默认 `12h`
+- 修改对象仅限：`offline-stress-pkg/stress-test.sh`（Task 1）、`offline-stress-pkg/operation-manual.md`（Task 2）、`offline-stress-pkg.zip`（Task 3 重打）。**install.sh / verify.sh / disk-mount.sh / README.md / RPM 一律不动**
+- 机型预设逐字复用：5380→cpu 54/vm 12/26G；7380→cpu 110/vm 16/54G；7360→cpu 80/vm 16/26G；hdd 每盘 `--hdd 1 --hdd-bytes 10G`；timeout 默认 `10h`
 - combo 结果目录：`$STRESS_TEST_ROOT/<YYYYmmdd-HHMMSS>-combo/`，产物：run-config.txt / info-before.txt / stress.log+stress.exitcode（CPU/内存进程）/ stress-HDDxx.log+.exitcode（每盘）/ stress-SYSDISK.log+.exitcode（--sysdisk 时）/ monitor.csv / summary.txt；根级 operations.log
 - `--sysdisk`：hdd 与 combo 模式可用（cpu/mem 忽略并提示）；默认关闭；`mkdir -p /stresstest-hdd` 后 cd 运行；前置 `df -P /` 可用空间 ≥ `--hdd-bytes × 1.2` 不足整体退出
 - 无数据盘时 `combo --sysdisk` 允许（hdd 目录集合为空仅跑 CPU/内存+系统盘）；combo 无 hdd 盘且无 --sysdisk 时警告后仅跑 CPU/内存
@@ -103,15 +103,15 @@ git commit -m "feat(offline-stress): stress-test.sh 新增 combo 组合模式与
 
 - 原因：需同时压 CPU/内存/硬盘并支持系统盘压测
 - 改动：start combo 双轨（CPU/内存一进程+每盘 hdd 一进程）、--sysdisk 系统盘 hdd、空间预检
-- 影响：WSL stub 全链路+回归通过；真实组合 12h 留服务器侧验收"
+- 影响：WSL stub 全链路+回归通过；真实组合 10h 留服务器侧验收"
 ```
 
 ---
 
-### Task 2: 压测实操手册.md 增加组合与系统盘两节
+### Task 2: operation-manual.md 增加组合与系统盘两节
 
 **Files:**
-- Modify: `offline-stress-pkg/压测实操手册.md`
+- Modify: `offline-stress-pkg/operation-manual.md`
 
 **Interfaces:**
 - Consumes: Task 1 的 combo/--sysdisk 实际用法
@@ -120,7 +120,7 @@ git commit -m "feat(offline-stress): stress-test.sh 新增 combo 组合模式与
 - [ ] **Step 1: 手册新增两节**
 
 在既有章节后新增：
-1. **组合测试**：`bash stress-test.sh start combo`（默认 12h，按机型预设）；结果目录说明（stress.log + stress-HDDxx.log + monitor.csv + summary.txt）；查看日志方法（status / tail -f monitor.csv / 各日志文件）；复盘（review）
+1. **组合测试**：`bash stress-test.sh start combo`（默认 10h，按机型预设）；结果目录说明（stress.log + stress-HDDxx.log + monitor.csv + summary.txt）；查看日志方法（status / tail -f monitor.csv / 各日志文件）；复盘（review）
 2. **系统盘测试（--sysdisk）**：说明默认关闭、显式开启；运行位置 /stresstest-hdd 与清理提示；空间预检行为；`--dirs` 勿与系统盘重复的提示；服务器侧 60s 冒烟建议
 3. 在快速上手/参数表格等处同步补充 combo 与 --sysdisk 一行
 - 全部命令与 Task 1 实际 CLI 逐字一致
@@ -132,7 +132,7 @@ git commit -m "feat(offline-stress): stress-test.sh 新增 combo 组合模式与
 - [ ] **Step 3: Commit**
 
 ```bash
-git add offline-stress-pkg/压测实操手册.md
+git add offline-stress-pkg/operation-manual.md
 git commit -m "docs(offline-stress): 手册新增组合测试与系统盘测试两节"
 ```
 
@@ -151,7 +151,7 @@ git commit -m "docs(offline-stress): 手册新增组合测试与系统盘测试�
 - [ ] **Step 1: 既有文件零改动校验**
 
 Run: `git diff --stat HEAD -- offline-stress-pkg/install.sh offline-stress-pkg/verify.sh offline-stress-pkg/disk-mount.sh offline-stress-pkg/README.md offline-stress-pkg/rpms/`
-Expected: 空（本计划只动 stress-test.sh、压测实操手册.md、zip）
+Expected: 空（本计划只动 stress-test.sh、operation-manual.md、zip）
 
 - [ ] **Step 2: 语法与 LF 复检（WSL）**
 

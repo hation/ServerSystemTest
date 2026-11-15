@@ -1,0 +1,28 @@
+服务器一：
+
+H3C UniServer R4930 G5
+CPU：2颗海光5380，主频 2.5GHz、物理核数16C;
+内存：384GB，12根32GB内存
+硬盘：2块480GB SATA SSD硬盘，12块8TB SATA HDD硬盘，2块1.92TB NVMe SSD硬盘
+Raid卡：LSI 9500-8i 12G SAS HBA卡
+网卡：2端口25Gb以太网卡(Mellanox CX4-LX)，2个25G SFP28光模块(850nm,100m,SR,MM,LC);
+电源：冗余电源，2个800W电源模块 ;
+
+服务器二：
+H3C UniServer R4930 G5
+CPU：2颗海光7380，主频 2.2GHz、物理核数32C;
+内存：1024GB，16根64GB内存
+硬盘：1块480GB SATA SSD硬盘，2块3.84TB NVMe SSD硬盘
+Raid卡：LSI 9500-8i 12G SAS HBA卡
+网卡：2端口25Gb以太网卡(Mellanox CX4-LX)，2个25G SFP28光模块
+电源：冗余电源，2个800W电源模块 ;
+
+
+服务器三：
+H3C UniServer R4930 G5
+CPU：2颗海光7360，主频 2.2GHz、物理核数24C;
+内存：512GB，16根32GB内存
+硬盘：1块480GB SATA SSD硬盘，2块3.84TB NVMe SSD硬盘
+Raid卡：LSI 9500-8i 12G SAS HBA卡
+网卡：2端口25Gb以太网卡(Mellanox CX4-LX);2个25G SFP28光模块(850nm,100m,SR,MM,LC);
+电源：冗余电源，2个800W电源模块 ;

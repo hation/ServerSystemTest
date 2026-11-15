@@ -2,7 +2,7 @@
 # disk-mount.sh —— 挂载辅助脚本（Kylin V10 SP3，硬盘压测前挂载测试盘）
 # 用法：
 #   bash disk-mount.sh list                     # 列出块设备，标出系统盘与分区/挂载状态
-#   bash disk-mount.sh mount [--disks sdb,sdc]  # 逐盘选择→计划确认→mkfs/挂载到 /mnt/HDDxx
+#   bash disk-mount.sh mount [--disks sdb,sdc] [--yes]  # 逐盘选择→计划确认→mkfs/挂载到 /mnt/HDDxx（--yes 跳过 y 确认）
 #   bash disk-mount.sh umount [--all]           # 卸载全部已挂载测试盘（--all 跳过确认）
 # 环境变量（测试接缝）：
 #   DRY_RUN=1          只打印执行计划，不执行任何写操作（含不写 mount.log）
@@ -25,7 +25,7 @@ usage() {
     cat <<'EOF'
 用法:
   bash disk-mount.sh list
-  bash disk-mount.sh mount [--disks sdb,sdc]
+  bash disk-mount.sh mount [--disks sdb,sdc] [--yes]
   bash disk-mount.sh umount [--all]
 
 说明:
@@ -33,6 +33,7 @@ usage() {
   mount   收集非系统盘 → 交互选择或 --disks（all=全部）→ 打印完整执行计划
            → 单个 y 确认后执行：无分区且无文件系统的空盘 mkfs.ext4 -m 0 后挂载到 /mnt/HDDxx，
              已有分区直接挂载分区，整盘已有文件系统的直接挂载（不重新格式化）；已挂载的盘跳过
+           --yes 跳过 y 确认，供 oneclick.sh 调用（仍须指定 --disks，系统盘校验不变）
   umount  列出已挂载测试盘（/mnt/HDD*）并确认后逐个卸载（--all 跳过确认）
 
 测试接缝（本地测试用）:
@@ -222,10 +223,11 @@ cmd_list() {
 # ---------- mount ----------
 
 cmd_mount() {
-    local disks_opt=""
+    local disks_opt="" assume_yes=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --disks) if [ $# -lt 2 ]; then echo "--disks 缺少参数"; usage; exit 1; fi; disks_opt="$2"; shift 2 ;;
+            --yes) assume_yes=1; shift ;;
             *) echo "未知参数：$1"; usage; exit 1 ;;
         esac
     done
@@ -313,14 +315,16 @@ cmd_mount() {
         exit 0
     fi
 
-    # ---------- 单个 y 确认 ----------
-    local ans=""
-    printf "请确认执行以上计划（y/N）："
-    IFS= read -r ans || true
-    case "$ans" in
-        y|Y) ;;
-        *) echo "已取消，未执行任何操作"; exit 0 ;;
-    esac
+    # ---------- 单个 y 确认（--yes 时跳过） ----------
+    if [ "$DRY_RUN" != "1" ] && [ "$assume_yes" -ne 1 ]; then
+        local ans=""
+        printf "请确认执行以上计划（y/N）："
+        IFS= read -r ans || true
+        case "$ans" in
+            y|Y) ;;
+            *) echo "已取消，未执行任何操作"; exit 0 ;;
+        esac
+    fi
 
     # ---------- 执行 ----------
     mkdir -p "$(dirname "$MOUNT_LOG")" || { echo "无法创建日志目录：$(dirname "$MOUNT_LOG")"; exit 1; }

@@ -6,7 +6,7 @@
 
 ## 目标（Goals）
 
-- 新增 `stress-test.sh start combo` 子命令：一次启动三类负载，互不干扰并行运行，默认 12h
+- 新增 `stress-test.sh start combo` 子命令：一次启动三类负载，互不干扰并行运行，默认 10h
 - 双轨设计：CPU+内存合并一个 stress 进程；**每个已挂载测试盘各一个 `--hdd` 进程**（全盘覆盖，符合用户逐盘方法论）
 - **支持系统盘压力测试**：`--sysdisk` 显式开启时，在系统盘根文件系统上并行一个 `--hdd` 进程（默认关闭，需显式开启）
 - 结果统一落盘到一个 `<时间戳>-combo/` 目录：CPU/内存 stress 日志 + 每盘 hdd 日志 + 系统盘 hdd 日志 + 一份全局 30s 监控 CSV + 综合 summary
@@ -22,8 +22,8 @@
 
 ## 约束（Constraints）
 
-- 复用既有机制：结果目录命名 `<ts>-combo/`、`run-config.txt`、`info-before.txt`、`monitor.csv`（同字段）、`stress.pids`、`monitor.pid`、根级 `operations.log`、`--timeout` 默认 `12h`、`STRESS_TEST_ROOT`/`MONITOR_INTERVAL` 测试接缝
-- 三机型预设与单测一致（逐字）：5380→cpu 110/vm 12/26G；7380→cpu 110/vm 16/54G；7360→cpu 80/vm 16/26G；hdd 每盘 `--hdd 1 --hdd-bytes 10G`
+- 复用既有机制：结果目录命名 `<ts>-combo/`、`run-config.txt`、`info-before.txt`、`monitor.csv`（同字段）、`stress.pids`、`monitor.pid`、根级 `operations.log`、`--timeout` 默认 `10h`、`STRESS_TEST_ROOT`/`MONITOR_INTERVAL` 测试接缝
+- 三机型预设与单测一致（逐字）：5380→cpu 54/vm 12/26G；7380→cpu 110/vm 16/54G；7360→cpu 80/vm 16/26G；hdd 每盘 `--hdd 1 --hdd-bytes 10G`
 - hdd 盘来源：已挂载测试盘（默认 `/mnt/HDD*`，复用挂载点校验；`--dirs` 显式指定放行，支持根目录）
 - **系统盘压测为显式开启**（`--sysdisk`）：默认不压系统盘；`disk-mount.sh` 的"系统盘永不挂载"保证不变（压测与挂载是两层，互不干扰）
 - 全部脚本 LF（`.gitattributes` 已生效）、无 `set -e`、中文输出
@@ -62,7 +62,7 @@
 
 ### 文档与打包
 
-- `压测实操手册.md`：新增"组合测试"一节（命令、日志查看方法、复盘说明），其余不动
+- `operation-manual.md`：新增"组合测试"一节（命令、日志查看方法、复盘说明），其余不动
 - `README.md`：不动（结构已列 stress-test.sh）
 - zip 重打（7 条目 + 手册更新版）
 
@@ -75,7 +75,7 @@
   4. 回归：cpu/mem/hdd 单测 stub 冒烟仍通过（现有行为不破坏）
   5. combo 前置校验：默认路径存在未挂载目录 → 整体退出不启动（复用既有两阶段语义）
   6. 日志可见性：测试中 `status` 与 `tail monitor.csv` 输出正常
-- 服务器侧（用户执行）：`--timeout 60s` combo 全链路 → 正式 12h
+- 服务器侧（用户执行）：`--timeout 60s` combo 全链路 → 正式 10h
 
 ## 设计决策记录（我的决定，可推翻）
 

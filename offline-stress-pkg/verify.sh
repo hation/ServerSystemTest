@@ -41,7 +41,15 @@ else
     ALL_PASS=0
 fi
 
-# 5. 汇总：全部 PASS → 输出 PASS 退出 0；任一 FAIL → 输出 FAIL 退出 1
+# 5. 检查 D：dmidecode 可用性（用于自动探测内存条根数；缺失只告警，不判 FAIL）
+#    EDAC（/sys/devices/system/edac/mc）是内核接口而非软件包，不在此校验。
+if command -v dmidecode >/dev/null 2>&1; then
+    echo "PASS 检查D：dmidecode 可用（$(dmidecode -V 2>/dev/null || echo 版本未知)）"
+else
+    echo "WARN 检查D：未找到 dmidecode，start mem/combo 将回退 EDAC，仍不可用时会给出手动 --vm 的建议命令"
+fi
+
+# 6. 汇总：全部 PASS → 输出 PASS 退出 0；任一 FAIL → 输出 FAIL 退出 1
 if [ "$ALL_PASS" -eq 1 ]; then
     echo "PASS"
     exit 0

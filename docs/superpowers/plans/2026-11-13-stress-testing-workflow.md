@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在现有 `offline-stress-pkg` 离线包中新增压测实操体系：主控脚本 `stress-test.sh`、挂载辅助 `disk-mount.sh`、实操文档 `压测实操手册.md`，支持三类机型（5380/7380/7360）的 CPU/内存/硬盘压测——测试中实时可见、原始数据全保存、测完可复盘，并更新 README、重打 zip。
+**Goal:** 在现有 `offline-stress-pkg` 离线包中新增压测实操体系：主控脚本 `stress-test.sh`、挂载辅助 `disk-mount.sh`、实操文档 `operation-manual.md`，支持三类机型（5380/7380/7360）的 CPU/内存/硬盘压测——测试中实时可见、原始数据全保存、测完可复盘，并更新 README、重打 zip。
 
-**Architecture:** 两个 bash 脚本 + 一份文档，并入既有离线包目录。`stress-test.sh` 内置三机型预设参数，`start cpu|mem|hdd` 后台运行 stress 并启动 30s 监控循环，数据落盘到 `/root/stress-test/<时间戳>-<类型>/`；`status/stop/review` 分别查看、终止、生成复盘总结。`disk-mount.sh` 提供 `list/mount/umount`，强制逐盘确认，空盘自动 mkfs 挂载，全程写 mount.log。全部脚本遵循 `.gitattributes`（LF），本机用 WSL + stub 做逻辑测试，真实 12h 跑服务器侧验收。
+**Architecture:** 两个 bash 脚本 + 一份文档，并入既有离线包目录。`stress-test.sh` 内置三机型预设参数，`start cpu|mem|hdd` 后台运行 stress 并启动 30s 监控循环，数据落盘到 `/root/stress-test/<时间戳>-<类型>/`；`status/stop/review` 分别查看、终止、生成复盘总结。`disk-mount.sh` 提供 `list/mount/umount`，强制逐盘确认，空盘自动 mkfs 挂载，全程写 mount.log。全部脚本遵循 `.gitattributes`（LF），本机用 WSL + stub 做逻辑测试，真实 10h 跑服务器侧验收。
 
 **Tech Stack:** bash（服务器侧）、/proc 监控（零额外依赖）、WSL stub 测试（本机）、git。
 
@@ -13,10 +13,10 @@
 ## Global Constraints
 
 - 交付目录：`C:\Users\ganxin01\Documents\trae-work\ServerSystemTest\offline-stress-pkg\`（既有 install.sh / verify.sh / rpms / README.md 必须保持字节不变，除 Task 4 对 README 的指定更新）
-- 新增文件：`stress-test.sh`、`disk-mount.sh`、`压测实操手册.md`（UTF-8 无 BOM）
+- 新增文件：`stress-test.sh`、`disk-mount.sh`、`operation-manual.md`（UTF-8 无 BOM）
 - 机型预设（设计文档定值，脚本内逐字使用）：
-  - 5380：cpu=110, vm=12, vm-bytes=26G；7380：cpu=110, vm=16, vm-bytes=54G；7360：cpu=80, vm=16, vm-bytes=26G
-  - hdd 默认：每盘 `--hdd 1 --hdd-bytes 10G`；timeout 默认 `12h`，显式参数覆盖
+  - 5380：cpu=54, vm=12, vm-bytes=26G；7380：cpu=110, vm=16, vm-bytes=54G；7360：cpu=80, vm=16, vm-bytes=26G
+  - hdd 默认：每盘 `--hdd 1 --hdd-bytes 10G`；timeout 默认 `10h`，显式参数覆盖
 - 结果根目录默认 `/root/stress-test`，环境变量 `STRESS_TEST_ROOT` 可覆盖（测试接缝）；监控间隔默认 30s，`MONITOR_INTERVAL` 可覆盖（测试接缝）
 - monitor.csv 字段（30s 一行）：`时间,load1,cpu_usage%,mem_total,mem_used,mem_avail,swap_used,disk_read_MBps,disk_write_MBps`
 - 挂载点：`/mnt/HDDxx`（xx=01..N 递增）；系统盘按 `df /` 识别，永不处理
@@ -55,7 +55,7 @@
 - [ ] **Step 1: 编写 stress-test.sh**
 
 按设计文档实现。关键契约：
-1. 参数解析（`--model` 缺省 `auto`：mem≥800G→7380；nproc≥120→5380；否则 7360；打印"检测到机型 X，使用预设参数"）；`--timeout` 缺省 `12h`；显式参数覆盖预设
+1. 参数解析（`--model` 缺省 `auto`：mem≥800G→7380；nproc≥120→7380；nproc≥90→7360；否则 5380；打印"检测到机型 X，使用预设参数"）；`--timeout` 缺省 `10h`；显式参数覆盖预设
 2. `start`：校验 `command -v stress` → 建结果目录（时间戳）→ 写 run-config.txt（机型/参数/开始时间/命令原文）与 info-before.txt（lscpu/free -h/df -h/lsblk/stress --version）→ 逐条 `nohup` 后台启动 stress（日志重定向；hdd 每盘一条，命令内 `echo $? > stress-HDDxx.exitcode`；cpu/mem 单条 `echo $? > stress.exitcode`）→ 记录 PIDs → 后台启动监控循环（每 `MONITOR_INTERVAL` 秒读 /proc 写一行 CSV；当 stress.pids 全部消失即退出）→ 打印结果目录与 `stress-test.sh status` 提示
 3. `status`：查 stress.pids 存活数 → 打印运行中任务、结果目录、`tail -5 monitor.csv`、剩余时长估算（run-config 开始时间+timeout 推算）；无任务 → "无运行中的压测" 退出 0
 4. `stop`：按 stress.pids 杀进程、杀 monitor.pid、写 operations.log
@@ -91,7 +91,7 @@ git commit -m "feat(offline-stress): 新增压测主控脚本 stress-test.sh
 
 - 原因：三类机型 CPU/内存/硬盘压测需统一入口与数据落盘
 - 改动：start/status/stop/review 子命令、三机型预设、30s /proc 监控、摘要生成
-- 影响：WSL stub 冒烟测试通过；真实 12h 留服务器侧验收"
+- 影响：WSL stub 冒烟测试通过；真实 10h 留服务器侧验收"
 ```
 
 ---
@@ -147,16 +147,16 @@ git commit -m "feat(offline-stress): 新增挂载辅助脚本 disk-mount.sh
 
 ---
 
-### Task 3: 压测实操手册.md（实操文档）
+### Task 3: operation-manual.md（实操文档）
 
 **Files:**
-- Create: `offline-stress-pkg/压测实操手册.md`
+- Create: `offline-stress-pkg/operation-manual.md`
 
 **Interfaces:**
 - Consumes: Task 1-2 脚本用法、三机型参数预设、既有 README/install.sh
 - Produces: 服务器操作人员的完整手册
 
-- [ ] **Step 1: 编写 压测实操手册.md**
+- [ ] **Step 1: 编写 operation-manual.md**
 
 内容清单（设计文档定，缺一条即不通过）：
 1. 适用环境与准备（三机型；先 `sudo bash install.sh` 装 stress、`bash verify.sh` 验证）
@@ -176,7 +176,7 @@ git commit -m "feat(offline-stress): 新增挂载辅助脚本 disk-mount.sh
 - [ ] **Step 3: Commit**
 
 ```bash
-git add offline-stress-pkg/压测实操手册.md
+git add offline-stress-pkg/operation-manual.md
 git commit -m "docs(offline-stress): 新增压测实操手册"
 ```
 
@@ -195,7 +195,7 @@ git commit -m "docs(offline-stress): 新增压测实操手册"
 
 - [ ] **Step 1: 更新 README 包结构节**
 
-在 README 的"包结构说明"部分追加三行（stress-test.sh、disk-mount.sh、压测实操手册.md），并在安装/验证说明后加一行：`压测实操见同目录 压测实操手册.md`。**除这两处外 README 其余内容一律不动。**
+在 README 的"包结构说明"部分追加三行（stress-test.sh、disk-mount.sh、operation-manual.md），并在安装/验证说明后加一行：`压测实操见同目录 operation-manual.md`。**除这两处外 README 其余内容一律不动。**
 
 - [ ] **Step 2: 既有文件字节不变校验**
 

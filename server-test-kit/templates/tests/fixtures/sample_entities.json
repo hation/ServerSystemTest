@@ -1,0 +1,23 @@
+{
+  "entities": [
+    {
+      "entity_key": "SN-AAA0001",
+      "entity_type": "disk",
+      "model": "TestModel-A",
+      "firmware": "FW1",
+      "entity_ref": "PhysicalDrive1",
+      "verdict": "PASS",
+      "data": {"seq_read_mbps": 150, "temp_c": 35}
+    },
+    {
+      "entity_key": "SN-AAA0002",
+      "entity_type": "disk",
+      "model": "TestModel-A",
+      "firmware": "FW1",
+      "entity_ref": "PhysicalDrive2",
+      "verdict": "FAIL",
+      "notes": "吞吐不达标",
+      "data": {"seq_read_mbps": 60, "temp_c": 45}
+    }
+  ]
+}

@@ -38,6 +38,10 @@ MODE=""
 TERM_KIND=""
 ABORTED=0
 LAST_TASK_CMD=""
+# 数据盘重建开关：默认 0（复用已有文件系统）；--rebuild 或菜单输入 y 才置 1
+REBUILD=0
+# 自动挂载退出码：all/hdd 记录 disk-mount.sh 的结果，非 0 表示存在跳过/失败盘，批次最终退出 1
+MOUNT_RC=0
 
 usage() {
     cat <<'EOF'
@@ -69,6 +73,7 @@ usage() {
 
 选项:
   --timeout <时长>   所有任务统一超时，默认 10h（数字 + 可选 d/h/m/s，如 10h、30m）
+  --rebuild          重新分区并格式化数据盘（会清空数据盘；仅 all/hdd 生效）
   --quiet            不在终端打印实际执行的命令（命令仍写入批次目录）
   --help             显示本帮助
 
@@ -79,6 +84,7 @@ usage() {
   标题固定为 压测-HDDxx / 压测-系统盘 / 压测-CPU / 压测-内存；
   无图形环境（SSH、无 DISPLAY）自动降级为后台并行执行，输出写入批次目录 <任务>.out。
 提示:
+  默认复用数据盘已有文件系统；仅 --rebuild（或菜单输入 y）才会重新分区并格式化数据盘。
   启动阶段任一任务失败，立即停止启动后续任务，并打印已启动任务清单与失败原因。
 EOF
 }
@@ -111,7 +117,7 @@ write_env_file() {
       echo "TIMEOUT=$TIMEOUT"; echo "STRESS_TEST_ROOT=$STRESS_TEST_ROOT";
       echo "STRESS_TEST_SH=$ST"; echo "DISK_MOUNT_SH=$DM"; echo "TERM_KIND=$TERM_KIND";
       echo "POLL_INTERVAL=$POLL_INTERVAL"; echo "READY_TIMEOUT=$READY_TIMEOUT";
-      echo "SHOW_CMD=$SHOW_CMD"; } > "$BATCH/env.txt"
+      echo "REBUILD=$REBUILD"; echo "SHOW_CMD=$SHOW_CMD"; } > "$BATCH/env.txt"
 }
 
 # ---------- 前置检查（仅运行类模式） ----------
@@ -241,6 +247,8 @@ collect_hdd_dirs() {
 
 do_mount() {
     local -a argv=(bash "$DM" mount --disks all --yes)
+    # 仅在显式请求时追加 --rebuild（默认复用已有文件系统，不清盘）
+    [ "$REBUILD" = "1" ] && argv+=(--rebuild)
     show_run "${argv[@]}"
     "${argv[@]}" 2>&1 | tee "$BATCH/mount.log"
     local rc=${PIPESTATUS[0]}
@@ -256,13 +264,14 @@ write_plan() {
         all|hdd)
             do_mount
             rc=$?
+            # 记录挂载结果：存在跳过/失败盘时批次最终退出码须为 1（FR-2）
+            MOUNT_RC="$rc"
             if [ "$rc" -ne 0 ]; then
                 if [ "$mode" = "hdd" ]; then
-                    # 只测硬盘：挂载失败即无盘可测，直接失败退出（设计 §7）
-                    echo "错误：自动挂载失败（退出码 $rc），无法执行只测硬盘；挂载日志：$BATCH/mount.log"
-                    exit 1
+                    # 只测硬盘：部分盘失败但已有挂载点则继续（设计 §7/FR-2），一个都没有才退出
+                    dirs=$(collect_hdd_dirs)
+                    [ -n "$dirs" ] || die "未发现已挂载的数据盘（/mnt/HDD*），请先运行 bash disk-mount.sh mount"
                 fi
-                # 全测豁免：挂载失败只警告，继续系统盘/CPU/内存；是否有数据盘由枚举结果决定
                 echo "警告：自动挂载返回非 0（$rc），继续按当前已挂载盘执行；挂载日志：$BATCH/mount.log"
             fi
             ;;
@@ -423,6 +432,11 @@ run_review_all() {
         echo "开始时间: $st"
         echo "结束时间: $(now)"
         echo "超时: $tt"
+        if [ "$MOUNT_RC" -ne 0 ]; then
+            echo "自动挂载: 存在跳过/失败盘（退出码 $MOUNT_RC，未挂载盘未参与压测）"
+        else
+            echo "自动挂载: 正常"
+        fi
         echo ""
         printf '%-10s %-8s %s\n' '任务' '类型' '结论'
     } >> "$BATCH/summary.txt"
@@ -529,6 +543,22 @@ cmd_review() {
 run_mode() {
     local mode="$1" stamp k=0 id type n=0 started="" review_rc=0 line f
     local -a extras=() fields=()
+    # 重建开关口径：仅 all/hdd 生效；其他模式带 --rebuild 时提示并忽略（在 write_plan 之前复位）
+    case "$mode" in
+        all|hdd)
+            if [ "$REBUILD" = "1" ]; then
+                echo "本次将重新分区并格式化数据盘（--rebuild）"
+            else
+                echo "未指定 --rebuild，本次复用已有文件系统；如需重建请加 --rebuild"
+            fi
+            ;;
+        *)
+            if [ "$REBUILD" = "1" ]; then
+                echo "提示：--rebuild 仅对 all/hdd 生效，本次忽略"
+                REBUILD=0
+            fi
+            ;;
+    esac
     precheck
     # 命令显示开关必须传给子进程，窗口/后台里的 __task 才会同样遵守 --quiet
     export ONECLICK_SHOW_CMD="$SHOW_CMD"
@@ -609,7 +639,7 @@ run_mode() {
     run_review_all
     review_rc=$?
 
-    if [ "$ABORTED" -eq 1 ] || [ "$review_rc" -ne 0 ]; then
+    if [ "$ABORTED" -eq 1 ] || [ "$review_rc" -ne 0 ] || [ "$MOUNT_RC" -ne 0 ]; then
         exit 1
     fi
     exit 0
@@ -632,6 +662,21 @@ show_menu() {
 EOF
 }
 
+# 菜单 1/2 启动前询问一次是否重建数据盘；默认 N（仅 y/Y 视为确认）
+ask_rebuild() {
+    local ans=""
+    printf '是否重新分区并格式化数据盘？(y/N)：'
+    if ! IFS= read -r ans; then
+        # 读取失败（EOF）时补换行，避免后续提示与询问挤在同一行
+        echo
+        ans=""
+    fi
+    case "$ans" in
+        y|Y) REBUILD=1 ;;
+        *) REBUILD=0 ;;
+    esac
+}
+
 menu_loop() {
     local choice
     while :; do
@@ -642,8 +687,9 @@ menu_loop() {
             exit 0
         fi
         case "$choice" in
-            1) run_mode all ;;
-            2) run_mode hdd ;;
+            # CLI 已带 --rebuild 时不再询问，直接按重建语义执行
+            1) if [ "$REBUILD" = "0" ]; then ask_rebuild; fi; run_mode all ;;
+            2) if [ "$REBUILD" = "0" ]; then ask_rebuild; fi; run_mode hdd ;;
             3) run_mode sysdisk ;;
             4) run_mode cpu ;;
             5) run_mode mem ;;
@@ -677,6 +723,10 @@ main() {
                 ;;
             --quiet)
                 SHOW_CMD=0
+                shift
+                ;;
+            --rebuild)
+                REBUILD=1
                 shift
                 ;;
             --timeout)

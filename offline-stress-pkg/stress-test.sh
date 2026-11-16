@@ -11,6 +11,8 @@
 # 环境变量（测试接缝）：
 #   STRESS_TEST_ROOT 结果根目录（默认 /root/stress-test）
 #   MONITOR_INTERVAL 监控间隔秒（默认 30）
+#   FINDMNT_BIN      挂载点设备解析命令（默认 findmnt）
+#   LSBLK_BIN        设备名解析命令（默认 lsblk，用于追加 KNAME 归因）
 #   CPU_MAX_PCT      CPU worker 推导上限（逻辑线程数的百分比，默认 86）
 #   NPROC_BIN        逻辑线程数取值命令（默认 nproc）
 #   MEM_TARGET_PCT   内存目标（MemTotal 的百分比，默认 82）
@@ -25,6 +27,12 @@ STRESS_TEST_ROOT="${STRESS_TEST_ROOT:-/root/stress-test}"
 MONITOR_INTERVAL="${MONITOR_INTERVAL:-30}"
 DF_BIN="${DF_BIN:-df}"
 DMESG_BIN="${DMESG_BIN:-dmesg}"
+FINDMNT_BIN="${FINDMNT_BIN:-findmnt}"
+LSBLK_BIN="${LSBLK_BIN:-lsblk}"
+# dmesg 内核 I/O 错误正则（大小写不敏感；口径见设计 6.3）
+DMESG_IO_RE='EXT4-fs error|EXT4-fs .*error|I/O error|Buffer I/O error|blk_update_request|critical medium error|ata[0-9.]+: .*(failed|error)|nvme[0-9]+.*(error|timeout|reset)|reset .*failed'
+# dmesg OOM 正则（沿用既有口径）
+DMESG_OOM_RE='oom|out of memory|killed process|Killed'
 MEM_MAX_PCT="${MEM_MAX_PCT:-85}"          # 内存分配上限（MemTotal 的百分比），与解读方案的 80% 达成阈值不是同一概念
 MEM_TARGET_PCT="${MEM_TARGET_PCT:-82}"    # 内存目标（MemTotal 的百分比），单 worker 按根数均分后四舍五入
 MEMINFO_FILE="${MEMINFO_FILE:-/proc/meminfo}"
@@ -255,6 +263,57 @@ fmt_remain() {
     echo "$out"
 }
 
+# ---------- 设备归因（devices.txt） ----------
+
+# 取目录对应挂载设备（findmnt SOURCE），并解析软链（by-uuid/by-id → 真实设备）；解析失败输出空串
+dev_of_path() {
+    local src real
+    src=$("$FINDMNT_BIN" -n -o SOURCE --target "$1" 2>/dev/null | head -1)
+    [ -n "$src" ] || return 0
+    real=$(readlink -f "$src" 2>/dev/null)
+    if [ -n "$real" ]; then echo "$real"; else printf '%s\n' "$src"; fi
+}
+
+# 由设备名推导整盘名：sdb1→sdb、nvme0n1p1→nvme0n1；
+# 仅 sd/vd/hd/nvme/mmcblk 前缀参与推导，dm-/md/映射名不生成伪整盘名
+whole_disk_of() {
+    local base="$1" whole
+    case "$base" in
+        sd*|vd*|hd*|nvme*|mmcblk*) ;;
+        *) echo ""; return ;;
+    esac
+    whole=$(printf '%s' "$base" | sed -E 's/p[0-9]+$//')
+    if [ "$whole" != "$base" ]; then echo "$whole"; return; fi
+    case "$base" in
+        nvme[0-9]*n[0-9]*|mmcblk[0-9]*) echo "" ;;          # 本身已是整盘名
+        *[0-9]) printf '%s' "$base" | sed -E 's/[0-9]+$//' ;;
+        *) echo "" ;;
+    esac
+}
+
+# 写设备归因文件：每行一个设备名（不含 /dev/），去重保序；
+# 除 basename 外追加 lsblk KNAME（如 LVM 的 dm-0），便于内核 dm 日志归因；
+# 解析失败则不写该类行，文件为空表示“不做设备过滤”（兼容旧目录）
+write_devices_file() {
+    local out="$1"
+    shift
+    local d src base kname name seen=""
+    : > "$out"
+    for d in "$@"; do
+        [ -n "$d" ] || continue
+        src=$(dev_of_path "$d")
+        [ -n "$src" ] || continue
+        base=$(basename "$src")
+        kname=$("$LSBLK_BIN" -no KNAME "$src" 2>/dev/null | head -1 | tr -d '[:space:]')
+        for name in "$base" "$kname" "$(whole_disk_of "$base")"; do
+            [ -n "$name" ] || continue
+            case " $seen " in *" $name "*) continue ;; esac
+            seen="$seen $name"
+            printf '%s\n' "$name" >> "$out"
+        done
+    done
+}
+
 # ---------- start ----------
 
 cmd_start() {
@@ -378,20 +437,18 @@ cmd_start() {
             for d in "${dirs[@]}"; do
                 [ -d "$d" ] || { echo "挂载点不存在：$d（请先挂载或检查 --dirs）"; exit 1; }
             done
-            # 默认 /mnt/HDD* 分支：目录存在≠已挂载（umount 不删目录），多轮流程第二轮会误把压测文件写到系统根文件系统。
-            # 额外校验每个目录确实已挂载、且底层设备不是根设备（--dirs 显式指定的目录不要求，用户自己负责）。
-            if [ -z "$dirs_opt" ]; then
-                local root_dev dev
-                root_dev=$(df -P / 2>/dev/null | awk 'NR==2{print $1}')
-                for d in "${dirs[@]}"; do
-                    dev=$(findmnt -n -o SOURCE "$d" 2>/dev/null || df -P "$d" 2>/dev/null | awk 'NR==2{print $1}')
-                    if [ -z "$dev" ] || { [ -n "$root_dev" ] && [ "$dev" = "$root_dev" ]; }; then
-                        echo "目录 $d 不是已挂载的独立文件系统（设备=${dev:-未挂载}，系统盘=${root_dev:-未知}），不能作为压测盘"
-                        echo "请先运行 bash disk-mount.sh mount 挂载测试盘，或用 --dirs 显式指定压测目录"
-                        exit 1
-                    fi
-                done
-            fi
+            # 目录存在≠已挂载（umount 不删目录），多轮流程第二轮会误把压测文件写到系统根文件系统。
+            # 默认 glob 与显式 --dirs 一视同仁：每个目录必须是已挂载的独立文件系统，且底层设备不是根设备。
+            local root_dev dev
+            root_dev=$("$DF_BIN" -P / 2>/dev/null | awk 'NR==2{print $1}')
+            for d in "${dirs[@]}"; do
+                dev=$("$FINDMNT_BIN" -n -o SOURCE --target "$d" 2>/dev/null | head -1)
+                if [ -z "$dev" ] || { [ -n "$root_dev" ] && [ "$dev" = "$root_dev" ]; }; then
+                    echo "目录 $d 不是已挂载的独立文件系统（设备=${dev:-未挂载}，系统盘=${root_dev:-未知}），不能作为压测盘"
+                    echo "请先运行 bash disk-mount.sh mount 挂载测试盘，或用 --dirs 显式指定压测目录"
+                    exit 1
+                fi
+            done
         elif [ "$type" = "hdd" ] && [ "$sysdisk" -ne 1 ]; then
             echo "未指定任何压测盘目录（--dirs 为空）"; exit 1
         elif [ "$type" = "combo" ] && [ "$dirs_given" -eq 1 ]; then
@@ -603,9 +660,22 @@ cmd_start() {
             hdd) echo "HDD 字节: $hdd_bytes_opt" ;;
             combo) echo "CPU 逻辑线程: $cpus"; echo "CPU worker 数: $cpu_opt$cpu_note"; echo "$mem_dimm_desc"; echo "$mem_per_desc"; echo "$mem_target_desc"; echo "$mem_cap_desc"; echo "VM worker 数: $vm_opt"; echo "VM 字节: $vm_bytes_opt"; echo "HDD 字节: $hdd_bytes_opt"; echo "$mem_need_desc" ;;
         esac
+        # 系统盘口径（FR-10）：仅 hdd/combo 的 --sysdisk 生效
+        if [ "$sysdisk" -eq 1 ] && { [ "$type" = "hdd" ] || [ "$type" = "combo" ]; }; then
+            echo "压测对象: 系统盘（根文件系统压测）"
+            echo "覆盖边界: 不覆盖 /boot、/boot/efi、swap、未分配空间；LVM/RAID 下写入可能跨多个物理盘"
+        fi
         echo "错误日志: error.log（stderr 实时记录）"
         echo "命令: stress $stress_args"
     } > "$dir/run-config.txt"
+
+    # 写设备归因文件（FR-6）：数据盘目录 + 系统盘（--sysdisk 时按根文件系统）的设备名，
+    # 供 monitor-loop 做 dmesg I/O 错误按盘归因；文件为空表示不过滤
+    if [ "$type" = "hdd" ] || [ "$type" = "combo" ]; then
+        local dev_sources=("${dirs[@]}")
+        [ "$sysdisk" -eq 1 ] && dev_sources+=("/")
+        write_devices_file "$dir/devices.txt" "${dev_sources[@]}"
+    fi
 
     {
         echo "==== lscpu ===="
@@ -870,10 +940,13 @@ cmd_review() {
         hole="不可判定（开始时间或末行时间无法解析）"
     fi
 
-    # 结论判定：优先读 status.txt（monitor-loop 落盘的结束状态）；旧目录无 status.txt 时沿用原判定：
-    # exitcode 文件数与 stress.pids 数一致（无缺失，缺失=进程被 KILL 未及写退出码）且全部为 0、
-    # 且 error.log 无报错（不存在/仅表头/不含"检测到"与"dmesg"）→ 正常；否则异常
-    local conclusion="正常" ec code err_lines pids_count ec_count abnormal=0 state="" reason="" is_bad=0 oom_field=""
+    # 结论判定（FR-7，严格顺序）：
+    # a) error.log 含 dmesg io: → 异常（内核 I/O 错误，盘故障优先，不被 ENOSPC 掩盖）
+    # b) ENOSPC（error.log / error-HDD*.log / error-SYSDISK.log）→ 异常（空间不足，非磁盘故障）
+    # c) error.log 命中（检测到 stress / dmesg）→ 异常（压测进程/内核报错）
+    # d) 按 status.txt：OK→正常、FAILED→异常（退出码非 0）、ABORTED→按 reason、STOPPED→已手动停止
+    # e) 无 status.txt → 沿用旧判定（exitcode 缺失/非 0/error.log 命中 → 异常，否则正常）
+    local conclusion="正常" ec code err_lines pids_count ec_count abnormal=0 state="" reason="" is_bad=0 oom_field="" err_hit=0 io_hit=0 enospc=0 un_n=0
     pids_count=$(awk 'NF{n++} END{print n+0}' "$dir/stress.pids" 2>/dev/null)
     ec_count=$(ls "$dir"/*.exitcode 2>/dev/null | wc -l)
     if [ "$pids_count" -gt "$ec_count" ]; then
@@ -885,13 +958,31 @@ cmd_review() {
             [ "$code" = "0" ] || { abnormal=1; break; }
         done
     fi
-    if [ "$abnormal" -eq 0 ] && [ -f "$dir/error.log" ] && grep -qE '检测到 stress|dmesg:' "$dir/error.log" 2>/dev/null; then
-        abnormal=1
+    if [ -f "$dir/error.log" ]; then
+        grep -qE '检测到 stress|dmesg' "$dir/error.log" 2>/dev/null && err_hit=1
+        grep -qF 'dmesg io:' "$dir/error.log" 2>/dev/null && io_hit=1
+    fi
+    [ "$abnormal" -eq 0 ] && [ "$err_hit" -eq 1 ] && abnormal=1
+    for f in "$dir/error.log" "$dir"/error-HDD*.log "$dir/error-SYSDISK.log"; do
+        [ -f "$f" ] || continue
+        if grep -q 'No space left on device' "$f" 2>/dev/null; then enospc=1; break; fi
+    done
+    if [ -f "$dir/error-unattributed.log" ]; then
+        un_n=$(awk 'NF{n++} END{print n+0}' "$dir/error-unattributed.log" 2>/dev/null)
+        [ -n "$un_n" ] || un_n=0
     fi
     if [ -f "$dir/status.txt" ]; then
         state=$(grep '^state=' "$dir/status.txt" 2>/dev/null | head -1 | cut -d'=' -f2-)
         reason=$(grep '^reason=' "$dir/status.txt" 2>/dev/null | head -1 | cut -d'=' -f2-)
         oom_field=$(grep '^oom=' "$dir/status.txt" 2>/dev/null | head -1 | cut -d'=' -f2-)
+    fi
+    if [ "$io_hit" -eq 1 ]; then
+        conclusion="异常（内核 I/O 错误，见 error.log）"
+    elif [ "$enospc" -eq 1 ]; then
+        conclusion="异常（空间不足 ENOSPC，非磁盘故障）"
+    elif [ "$err_hit" -eq 1 ]; then
+        conclusion="异常（压测进程/内核报错，见 error.log）"
+    elif [ -f "$dir/status.txt" ]; then
         case "$state" in
             OK)      conclusion="正常" ;;
             FAILED)  conclusion="异常（退出码非 0）" ;;
@@ -923,14 +1014,21 @@ cmd_review() {
                 code=$(cat "$ec" 2>/dev/null)
                 [ "$code" != "0" ] && echo "  $(basename "$ec") = ${code}"
             done
-            if [ -f "$dir/error.log" ] && grep -qE '检测到 stress|dmesg:' "$dir/error.log" 2>/dev/null; then
-                echo "  error.log 含报错记录（详见 == 错误日志 == 段）"
+            if [ "$err_hit" -eq 1 ]; then
+                echo "  error.log 命中（前 3 条）:"
+                grep -E '检测到 stress|dmesg' "$dir/error.log" 2>/dev/null | head -3 | sed 's/^/    /'
+            fi
+            if [ "$un_n" -gt 0 ]; then
+                echo "  未归因内核 I/O 错误 ${un_n} 条（error-unattributed.log，不计入本盘结论）"
             fi
         fi
         echo "生成时间: $(now)"
         echo "结果目录: $dir"
         echo "类型: $type"
         echo "机型: $model"
+        # 系统盘口径（FR-10）：run-config 中存在的覆盖边界说明原样回显
+        grep -h '^压测对象:' "$dir/run-config.txt" 2>/dev/null
+        grep -h '^覆盖边界:' "$dir/run-config.txt" 2>/dev/null
         echo "开始时间: $start_time"
         echo "计划超时: $plan_timeout"
         echo "预计结束时间: ${end_est:-未知}（按监控覆盖时长估算）"
@@ -941,6 +1039,10 @@ cmd_review() {
             echo "OOM: $([ "$oom_field" = "yes" ] && echo 是 || echo 否)"
         else
             echo "运行状态: 未记录（无 status.txt）"
+        fi
+        # 未归因内核 I/O 错误：正常结论也显式提示（未归因不改结论）
+        if [ "$is_bad" -ne 1 ] && [ "$un_n" -gt 0 ]; then
+            echo "未归因内核 I/O 错误 ${un_n} 条（error-unattributed.log，不计入本盘结论）"
         fi
         echo "采样空洞: ${hole}"
         echo "CPU 使用率: 均值 ${cpu_mean}%，峰值 ${cpu_max}%"
@@ -978,16 +1080,34 @@ cmd_review() {
 
 # 结束状态落盘（离线复盘用，免去猜 exitcode 缺失原因）：$1=state $2=reason
 write_status() {
-    local pc ecc
+    local pc ecc un_n
     pc=$(awk 'NF{n++} END{print n+0}' "$dir/stress.pids" 2>/dev/null)
     ecc=$(ls "$dir"/*.exitcode 2>/dev/null | wc -l)
+    un_n=$(awk 'NF{n++} END{print n+0}' "$dir/error-unattributed.log" 2>/dev/null)
     {
         echo "state=$1"
         echo "reason=$2"
         echo "pids=$pc exitcodes=$ecc"
         echo "oom=$([ "${oom_seen:-0}" -eq 1 ] && echo yes || echo no)"
+        echo "io=$([ "${io_seen:-0}" -eq 1 ] && echo yes || echo no)"
+        echo "unattributed=${un_n:-0}"
         echo "end_time=$(now)"
     } > "$dir/status.txt"
+}
+
+# dmesg 快照行数（空快照为 0）
+dmesg_snap_lines() {
+    if [ -z "$1" ]; then echo 0; else printf '%s\n' "$1" | wc -l; fi
+}
+
+# dmesg 快照的最大内核时间戳（行首 "[   123.456]"）；无时间戳行时输出空串
+dmesg_max_ts() {
+    printf '%s\n' "$1" | LC_ALL=C awk '
+        { if (match($0, /^\[[[:space:]]*[0-9]+(\.[0-9]+)?\]/)) {
+              t = substr($0, RSTART + 1, RLENGTH - 2); gsub(/[[:space:]]/, "", t)
+              if (t + 0 > m) m = t + 0
+              n++ } }
+        END { if (n > 0) printf "%.6f", m }'
 }
 
 cmd_monitor_loop() {
@@ -1004,14 +1124,18 @@ cmd_monitor_loop() {
     [ -n "$stat1" ] || stat1="0 0"
     [ -n "$disk1" ] || disk1="0 0"
 
-    # 巡检状态：上一轮存活数；dmesg 可用性；dmesg 行游标（只读探测，不清空 ring buffer，多批次互不抢证据）
-    local prev_alive dmesg_ok=1 oom_seen=0 dmesg_cursor=0 ec code dmesg_hits line logged=""
+    # 巡检状态：上一轮存活数；dmesg 可用性；dmesg 游标（时间戳 + 行数兜底，只读探测不清 ring buffer）
+    local prev_alive dmesg_ok=1 oom_seen=0 io_seen=0 dmesg_cursor=0 dmesg_ts="" dmesg_snap dmesg_max dmesg_total \
+          ec code dmesg_hits line dev_re="" logged=""
     prev_alive=$(alive_pids "$pids_file")
     "$DMESG_BIN" >/dev/null 2>&1 || dmesg_ok=0   # 只读探测可用性/权限；失败（非 root/无 dmesg）→ 后续整个检测跳过
     if [ "$dmesg_ok" -eq 1 ]; then
-        # 游标基线：当前 ring buffer 行数，之后只读取新增行；落盘便于排查与监控重启后对齐
-        dmesg_cursor=$("$DMESG_BIN" 2>/dev/null | wc -l)
+        # 首轮基线：行数兜底 + 当前最大时间戳；之后只处理比游标更新的行，不重复记录旧行
+        dmesg_snap=$("$DMESG_BIN" 2>/dev/null)
+        dmesg_cursor=$(dmesg_snap_lines "$dmesg_snap")
         echo "$dmesg_cursor" > "$dir/.dmesg.cursor"
+        dmesg_ts=$(dmesg_max_ts "$dmesg_snap")
+        [ -n "$dmesg_ts" ] && echo "$dmesg_ts" > "$dir/.dmesg.ts"
     fi
 
     # stop 通过 SIGTERM 置位，打断 sleep 等待后立刻落盘 STOPPED 状态
@@ -1060,17 +1184,50 @@ cmd_monitor_loop() {
         fi
         prev_alive="$alive"
 
-        # dmesg 增量 OOM 检测（只读游标，不清空 ring buffer；多批次各自维护游标，互不抢 OOM 证据）
+        # dmesg 增量检测（每轮只取一次快照）：优先时间戳游标，无法解析时间戳时退回行数游标。
+        # 逐行先判内核 I/O 错误（按 devices.txt 归因），再判 OOM（同一行只记一次）
         if [ "$dmesg_ok" -eq 1 ]; then
-            dmesg_total=$("$DMESG_BIN" 2>/dev/null | wc -l)
-            [ "$dmesg_total" -lt "$dmesg_cursor" ] && dmesg_cursor=0   # ring buffer 回绕/被外部清空 → 从头读
-            dmesg_hits=$("$DMESG_BIN" 2>/dev/null | tail -n +$((dmesg_cursor + 1)) | grep -iE 'oom|out of memory|killed process|Killed')
-            dmesg_cursor="$dmesg_total"
-            echo "$dmesg_cursor" > "$dir/.dmesg.cursor"
+            dmesg_snap=$("$DMESG_BIN" 2>/dev/null)
+            dmesg_total=$(dmesg_snap_lines "$dmesg_snap")
+            dmesg_max=$(dmesg_max_ts "$dmesg_snap")
+            if [ -n "$dmesg_max" ] && [ -n "$dmesg_ts" ]; then
+                # 时间戳回退（ring 被清空/系统重启）→ 从头处理，避免漏检
+                if awk -v a="$dmesg_max" -v b="$dmesg_ts" 'BEGIN{exit !(a+0 < b+0)}'; then dmesg_ts=0; fi
+                dmesg_hits=$(printf '%s\n' "$dmesg_snap" | LC_ALL=C awk -v c="$dmesg_ts" '
+                    { if (match($0, /^\[[[:space:]]*[0-9]+(\.[0-9]+)?\]/)) {
+                          t = substr($0, RSTART + 1, RLENGTH - 2); gsub(/[[:space:]]/, "", t)
+                          if (t + 0 > c + 0) print } }')
+                dmesg_ts="$dmesg_max"
+                echo "$dmesg_ts" > "$dir/.dmesg.ts"
+                dmesg_cursor="$dmesg_total"
+                echo "$dmesg_cursor" > "$dir/.dmesg.cursor"
+            else
+                # 无时间戳（测试假件/异常格式）：行数游标；总行数下降视为 ring 回绕 → 从头读
+                [ "$dmesg_total" -lt "$dmesg_cursor" ] && dmesg_cursor=0
+                dmesg_hits=$(printf '%s\n' "$dmesg_snap" | tail -n +$((dmesg_cursor + 1)))
+                dmesg_cursor="$dmesg_total"
+                echo "$dmesg_cursor" > "$dir/.dmesg.cursor"
+            fi
+            # 设备边界匹配正则每轮重建：devices.txt 被删除/为空即退化为不过滤（旧目录兼容）
+            dev_re=""
+            if [ -s "$dir/devices.txt" ]; then
+                dev_re=$(awk 'NF{gsub(/[^0-9A-Za-z_.-]/, "", $0); if ($0 != "") a = a (a ? "|" : "") $0} END{if (a != "") printf "(^|[^[:alnum:]])(%s)([^[:alnum:]]|$)", a}' "$dir/devices.txt")
+            fi
             while IFS= read -r line; do
                 [ -n "$line" ] || continue
-                echo "[$(now)] dmesg: $line" >> "$dir/error.log"
-                oom_seen=1
+                if printf '%s\n' "$line" | grep -qiE "$DMESG_IO_RE"; then
+                    if [ -n "$dev_re" ] && ! printf '%s\n' "$line" | grep -qiE "$dev_re"; then
+                        echo "[$(now)] dmesg io 未归因: $line" >> "$dir/error-unattributed.log"
+                    else
+                        echo "[$(now)] dmesg io: $line" >> "$dir/error.log"
+                        io_seen=1
+                    fi
+                    continue
+                fi
+                if printf '%s\n' "$line" | grep -qiE "$DMESG_OOM_RE"; then
+                    echo "[$(now)] dmesg: $line" >> "$dir/error.log"
+                    oom_seen=1
+                fi
             done <<< "$dmesg_hits"
         fi
 
@@ -1079,7 +1236,7 @@ cmd_monitor_loop() {
     done
 
     # 循环退出（进程全部消失）：exitcode 文件数少于 pids 数（进程被 KILL 未及写退出码）→ 判异常并补记；
-    # 否则所有 exitcode 为 0 且 error.log 无"检测到 stress"/"dmesg:" 记录 → 追加正常结束结论（循环遍历判定，避免 grep 空文件误判）
+    # 否则所有 exitcode 为 0 且 error.log 无"检测到 stress"/"dmesg" 记录 → 追加正常结束结论（循环遍历判定，避免 grep 空文件误判）
     local pids_count ec_count all_zero=1
     pids_count=$(awk 'NF{n++} END{print n+0}' "$pids_file" 2>/dev/null)
     ec_count=$(ls "$dir"/*.exitcode 2>/dev/null | wc -l)
@@ -1090,7 +1247,7 @@ cmd_monitor_loop() {
             [ -f "$ec" ] || continue
             [ "$(cat "$ec" 2>/dev/null)" = "0" ] || { all_zero=0; break; }
         done
-        if [ "$all_zero" -eq 1 ] && ! grep -qE '检测到 stress|dmesg:' "$dir/error.log" 2>/dev/null; then
+        if [ "$all_zero" -eq 1 ] && ! grep -qE '检测到 stress|dmesg' "$dir/error.log" 2>/dev/null; then
             echo "[$(now)] 压测结束：全部正常（exitcode=0）" >> "$dir/error.log"
         fi
     fi

@@ -84,13 +84,49 @@ sudo bash oneclick.sh hdd --timeout 8h
 要点：
 
 - **全测顺序**：自动挂载（`disk-mount.sh mount --disks all --yes`）→ 每块数据盘 → 系统盘 → CPU → 内存；
+- **数据盘默认复用（不清盘）**：自动挂载**默认复用已有文件系统**——有分区测首个分区（分区无文件系统时自动 `mkfs.ext4 -m 0` 该分区），无分区但整盘已有文件系统直接挂载，空盘才整盘格式化；`blkid` 探测失败（重试 5 次）的盘不格式化、直接跳过，其他盘继续（最终退出码 1）；
+- **`--rebuild` 会清空数据盘**：`sudo bash oneclick.sh all --rebuild` / `sudo bash oneclick.sh hdd --rebuild` 会卸载旧 `/mnt/HDD*`、清空该盘分区表、重建 1 个 GPT 分区并格式化；菜单选 `1` / `2` 时会先询问 `是否重新分区并格式化数据盘？(y/N)：`，**默认 N**（直接回车 = 复用）；未指定 `--rebuild` 时输出 `未指定 --rebuild，本次复用已有文件系统；如需重建请加 --rebuild`；`sysdisk` / `cpu` / `mem` 带 `--rebuild` 会被忽略并提示仅对 all/hdd 生效；
+- **`--dry-run` 预演挂载**：`bash disk-mount.sh mount --disks all --dry-run` 只打印执行计划、不写任何数据（也不写 `mount.log`），适合正式挂载前核对盘符与动作；
 - **每块数据盘一个窗口**，窗口标题为 `压测-HDDxx`（另有 `压测-系统盘` / `压测-CPU` / `压测-内存`）；无图形环境（SSH、无 `DISPLAY`）自动降级为后台并行执行；
 - **失败即停**：启动阶段任一任务失败，立即停止启动后续任务并打印已启动清单与失败原因；
-- **自动复盘**：全部结束后自动逐个 `review` 并生成汇总 `summary.txt`，位置为 `/root/stress-test/oneclick-<时间>/summary.txt`（存在异常结论时退出码 1）；
+- **自动复盘**：全部结束后自动逐个 `review` 并生成汇总 `summary.txt`，位置为 `/root/stress-test/oneclick-<时间>/summary.txt`（存在异常结论，或自动挂载阶段存在跳过/失败盘时，批次退出码 1；summary 会标注 `自动挂载: 存在跳过/失败盘（退出码 N…）`）；
 - **命令可见性**：每个任务启动前主终端打印 `[<时间>] 任务 HDD01 将执行：` 与其后的 `  $ bash <包绝对路径>/stress-test.sh start hdd --timeout 10h --dirs /mnt/HDD01`；自动挂载前打印 `  $ bash <包绝对路径>/disk-mount.sh mount --disks all --yes`；复盘前打印 `  $ bash <包绝对路径>/stress-test.sh review --dir <结果目录>`。窗口内首屏也有同样的启动命令 banner（`==== HDD01 启动命令 ====` / `  $ …` / `======================`）；
 - **命令落盘**：上述命令写入批次目录的 `commands.txt`（逐条可复制）与 `commands.sh`（可重放启动）；同目录另生成 `env.txt`（环境快照），用途见第 2 节；启动失败时始终单独打印“该任务压测命令（可直接复制重跑）：”；
 - **`--quiet` 静默**：`sudo bash oneclick.sh all --quiet`（或 `ONECLICK_SHOW_CMD=0 sudo -E bash oneclick.sh all`）关闭终端命令打印，三个命令文件照常生成；
 - 其它子命令：`sudo bash oneclick.sh status` 查看最近批次状态（有批次且存在 `commands.txt` 时会额外提示 `查看本次执行过的命令：cat <批次>/commands.txt`），`sudo bash oneclick.sh review` 重新生成复盘。
+
+### 4.2 自动挂载默认行为（disk-mount.sh mount）
+
+`disk-mount.sh mount` **默认不清盘**，按现场口径逐盘决策：
+
+| 盘状态 | 默认动作 |
+|---|---|
+| 已挂载（含 LVM/RAID 后代） | 跳过，不重复挂载 |
+| 有分区 | 只测首个**非扩展**分区：分区有文件系统 → 直接挂载；分区无文件系统 → `mkfs.ext4 -m 0 <分区>` 后挂载 |
+| 无分区、整盘有文件系统 | 直接挂载整盘，不重新格式化 |
+| 无分区、空盘 | `mkfs.ext4 -m 0 <整盘>` 后挂载 |
+
+要点：
+
+- **多分区盘只测首个分区**：计划中显式提示 `本盘有 N 个分区，默认仅测第一个（sdb1，xxxG）；需要整盘覆盖请用 --rebuild`；
+- **扩展分区不参与默认格式化**：msdos 扩展分区（`0x5`/`0xf`/`0x85`）本身不当作可测分区，默认取首个逻辑分区；若只发现扩展分区容器，或存在分区表但解析不到可用分区，该盘跳过、不自动格式化（需要重建请加 `--rebuild`），批次退出码 1；
+- **blkid 失败不格式化**：每个设备最多探测 5 次（间隔 1 秒），仍失败则跳过该盘、其他盘继续，结束时退出码 1，并汇总 `因 blkid 失败跳过：sdb（5 次探测均失败，未格式化）`；
+- **挂载点编号不复用**：已占用的 `/mnt/HDDnn` 不会被覆盖，按最小可用编号分配（如已挂 `HDD01`，新盘用 `HDD02`）；
+- **`--rebuild` 会清空该盘分区表**：卸载 `/mnt/HDD*` 旧挂载 → `parted mklabel gpt` → `mkpart primary ext4 1MiB 100%` → `partprobe` → `mkfs.ext4 -m 0 <分区>` → 挂载分区（NVMe 为 `p1`，不盲拼）；同盘存在非 `/mnt/HDD*` 挂载点（含 LVM/RAID 后代，如业务目录 `/data`）时整盘跳过、不做任何写操作；
+- **`--dry-run`**：`bash disk-mount.sh mount --disks all --dry-run`（等价 `DRY_RUN=1`）只打印计划、末尾输出 `（DRY RUN，未执行）`、不写 `mount.log`，退出码与真实执行一致；
+- **系统盘永不参与**：`df /` 识别到的系统盘在任何模式都不分区 / 不格式化 / 不挂载；系统盘识别不可靠（如 `df /` 为 `/dev/root`）时，非 dry-run 直接中止、不执行任何写操作。
+
+### 4.3 结果判定要点
+
+`stress-test.sh review` 生成 `summary.txt`，首行按以下**优先级**给出 `结论:`（后者不覆盖前者）：
+
+1. **内核 I/O 错误 → 异常**：`dmesg` 增量命中 `EXT4-fs error`、`I/O error`、`Buffer I/O error`、`blk_update_request`、`critical medium error`、`ata`/`nvme` 错误等即判 `异常（内核 I/O 错误，见 error.log）`，**即使 `status.txt` 为 `OK` 也不覆盖**；错误按设备归因（`devices.txt` 记录本任务分区名 + 整盘名 + `lsblk` KNAME），其他盘的报错进入 `error-unattributed.log`，只计数、不污染本盘结论（summary 中显示 `未归因内核 I/O 错误 N 条`）；
+2. **ENOSPC → 空间不足（非磁盘故障）**：命中 `No space left on device` 时结论为 `异常（空间不足 ENOSPC，非磁盘故障）`，与磁盘硬件故障区分；
+3. 其他 `error.log` 命中（`检测到 stress` / `dmesg`）→ 异常；否则按 `status.txt`（`OK` 正常 / `FAILED` 异常 / `ABORTED` 按原因 / `STOPPED` 已手动停止）。
+
+**系统盘压测 = 根文件系统压测**：`--sysdisk` / `--sysdisk-only` 时压测目录固定为 `/stresstest-hdd`（不分区、不格式化、不挂载），`run-config.txt` 与 `summary.txt` 写明 `压测对象: 系统盘（根文件系统压测）` 与 `覆盖边界: 不覆盖 /boot、/boot/efi、swap、未分配空间；LVM/RAID 下写入可能跨多个物理盘`。
+
+**压测目录必须是独立挂载点**：`start hdd` / `start combo` 启动前校验每个目录（默认 `/mnt/HDD*` 或显式 `--dirs`），未挂载或落在系统盘根文件系统上会直接拒绝（退出码 1，不启动压测）。
 
 ## 5. 验证
 

@@ -91,6 +91,16 @@ sudo bash oneclick.sh review
 
 **全测做的事**（按顺序）：自动挂载 `disk-mount.sh mount --disks all --yes` → 每块数据盘一个任务（每个任务一个终端窗口）→ 系统盘 → CPU → 内存 → 等待全部结束 → 自动逐个 `review` 并生成汇总。
 
+- **数据盘默认复用，`--rebuild` 才重建**：菜单选 `1` / `2` 时会在启动前询问一次 `是否重新分区并格式化数据盘？(y/N)：`，**默认 N**（直接回车即复用已有文件系统，输入 `y` 才重建）；子命令显式带 `--rebuild` 等效于回答 y，且菜单不再询问：
+
+  ```bash
+  sudo bash oneclick.sh all --rebuild
+  sudo bash oneclick.sh hdd --rebuild
+  ```
+
+  未指定时输出 `未指定 --rebuild，本次复用已有文件系统；如需重建请加 --rebuild`；`sysdisk` / `cpu` / `mem` 带 `--rebuild` 会被忽略并提示"仅对 all/hdd 生效"。
+- **部分盘挂载失败不中断**：自动挂载返回非 0 但已存在 `/mnt/HDD*` 时，`all` / `hdd` 模式会告警并继续启动已挂载盘的任务（一个挂载点都没有才退出）；批次 summary 标注 `自动挂载: 存在跳过/失败盘（退出码 N，未挂载盘未参与压测）`，批次最终退出码为 1。
+
 - **窗口标题**：`压测-HDDxx`（数据盘）、`压测-系统盘`、`压测-CPU`、`压测-内存`，窗口内实时 `tail -f` 该任务的 `monitor.csv`。
 - **窗口关掉不影响压测**：压测与监控本身以 `nohup` 后台运行，窗口只是查看入口；关掉窗口（或 Ctrl-C 只退出查看）压测继续，可再 `sudo bash oneclick.sh status` 查看。
 - **无图形环境（SSH）自动降级**：检测不到 `DISPLAY` / `WAYLAND_DISPLAY` 或无可用终端时，自动改为后台并行执行，输出写入批次目录的 `<任务>.out`。需要强制后台（不弹窗）时：
@@ -150,7 +160,8 @@ bash disk-mount.sh list
 
 输出会标出**系统盘**（`df /` 的底层盘，标"（系统盘，跳过）"，永不测试）以及每块非系统盘的状态：
 - 已挂载（跳过）
-- 有分区（将直接挂载）
+- 有分区（默认测首个分区；分区有文件系统直接挂载，无文件系统先 `mkfs.ext4 -m 0` 该分区）
+- 未分区但已有文件系统（将直接挂载，不重新格式化）
 - 未分区空盘（将 `mkfs.ext4 -m 0` 后挂载）
 
 ### 3.2 挂载测试盘（交互流程）
@@ -162,17 +173,48 @@ bash disk-mount.sh mount
 交互流程：
 
 1. 列出全部可用非系统盘（盘符、容量、状态），提示 `输入要纳入测试的盘符（逗号分隔，all 全部）：`，输入如 `sdb,sdc` 或 `all`；
-2. 脚本打印**完整执行计划**：每盘一行显示设备、容量、动作（`有分区：直接挂载 /dev/sdb1 → /mnt/HDD01` 或 `无分区空盘：mkfs.ext4 -m 0 /dev/sdb 后挂载 → /mnt/HDD01`）；
+2. 脚本打印**完整执行计划**：每盘一行显示设备、容量、动作，例如 `有分区：直接挂载 /dev/sdb1 → /mnt/HDD01`、`分区无文件系统：mkfs.ext4 -m 0 /dev/sdb1 后挂载 → /mnt/HDD01`、`无分区空盘：mkfs.ext4 -m 0 /dev/sdb 后挂载 → /mnt/HDD01`、`重建：清空分区表 → 建 1 分区 → mkfs.ext4 -m 0 /dev/sdb1 → /mnt/HDD01`；
 3. 提示 `请确认执行以上计划（y/N）：`，**单个 `y` 确认后才执行**；输入其他任意内容则取消、不执行任何操作；
-4. 执行：空盘先 `mkfs.ext4 -m 0`（预留 0% 空间）再挂载；有分区的盘直接挂载分区；**已挂载的盘跳过**（不会重复挂载）；每步写入挂载日志 `/root/stress-test/mount.log`。
+4. 执行：默认模式按计划挂载/格式化，`--rebuild` 按重建步骤执行；每步写入挂载日志 `/root/stress-test/mount.log`。
+
+**默认模式（不清盘）**：
+
+- 有分区 → **只测首个分区**：分区已有文件系统直接挂载；分区无文件系统自动 `mkfs.ext4 -m 0 <分区>` 后挂载；
+- 无分区 → 整盘已有文件系统直接挂载（不重新格式化）；空盘整盘 `mkfs.ext4 -m 0` 后挂载；
+- 多分区盘计划中显式提示 `本盘有 N 个分区，默认仅测第一个（sdb1，xxxG）；需要整盘覆盖请用 --rebuild`；
+- 默认只取首个**非扩展分区**：msdos 扩展分区（`0x5`/`0xf`/`0x85`）不参与格式化；若只发现扩展分区容器，或存在分区表但解析不到可用分区，该盘跳过且不自动格式化（需要重建请加 `--rebuild`），最终退出码 1；
+- `blkid` 探测失败会重试 5 次（间隔 1 秒），仍失败则**跳过该盘、绝不格式化**，其他盘继续，最终退出码 1（汇总 `因 blkid 失败跳过：sdb（5 次探测均失败，未格式化）`）；
+- 挂载点编号**不复用**：已占用的 `/mnt/HDDnn` 会跳过，按最小可用编号分配（预置 `HDD01` 时新盘用 `HDD02`）；
+- 已挂载的盘跳过；同盘存在非 `/mnt/HDD*` 挂载点（含 LVM/RAID 后代）时显式提示并跳过。
+
+**重建模式（`--rebuild`，会清空该盘分区表）**：
+
+- 步骤：卸载该盘 `/mnt/HDD*` 旧挂载 → `parted -s <盘> mklabel gpt` → `mkpart primary ext4 1MiB 100%` → `partprobe` → `udevadm settle` → 解析分区（NVMe 为 `p1`，不盲拼）→ `mkfs.ext4 -m 0 <分区>` → 挂载分区；
+- 任一步失败只跳过该盘、继续其他盘，结束时退出码 1 并列出失败盘与原因；
+- 同盘存在非 `/mnt/HDD*` 挂载点（业务数据，含 LVM/RAID 后代）时整盘跳过、不做任何写操作；系统盘任何模式都不进入该流程；
+- 重建会**清空该盘全部数据与分区表**，执行前务必核对盘符与容量。
+
+三种常用命令：
+
+```bash
+# 1) 默认复用已有文件系统（已有 ext4 分区直接挂载；仅无文件系统的分区/空盘做 mkfs）
+bash disk-mount.sh mount --disks sdb,sdc
+
+# 2) 重建：清空分区表 → 建 1 个分区 → mkfs.ext4 → 挂载（会清空数据盘，需 y 确认）
+bash disk-mount.sh mount --disks sdb,sdc --rebuild
+
+# 3) 预演：只打印计划，不执行任何写操作、不写 mount.log
+bash disk-mount.sh mount --disks sdb,sdc --dry-run
+```
 
 要点：
 
-- **空盘会自动格式化**（`mkfs.ext4 -m 0`）——执行前必有"计划 + y 确认"两道关卡，确认前务必核对盘符与容量；
-- 挂载点按纳入顺序编号：`/mnt/HDD01`、`/mnt/HDD02` …；
+- **默认不清盘**：只有显式 `--rebuild` 才会清空分区表；默认复用流程中的 `mkfs` 仅针对"分区无文件系统"或"空盘"，且执行前必有"计划 + y 确认"两道关卡；
+- 挂载点按最小可用编号分配：`/mnt/HDD01`、`/mnt/HDD02` …（已占用编号不复用）；
 - 选择含系统盘或无效盘会被拒绝并退出（exit 1）；
+- 系统盘识别不可靠（`df /` 不是 `/dev/*`、`lsblk` 不认识该设备等）时，非 dry-run 直接中止、不执行任何写操作；
 - 非交互环境（无终端）必须指定盘：`bash disk-mount.sh mount --disks sdb,sdc`（等价于交互选择，`all` = 全部）；
-- **演练用 DRY_RUN**：`DRY_RUN=1 bash disk-mount.sh mount` 只打印执行计划、不执行任何写操作（含不写 mount.log），适合正式挂载前核对计划。
+- **预演用 `--dry-run`（等价 `DRY_RUN=1`）**：`bash disk-mount.sh mount --disks all --dry-run` 只打印执行计划、不执行任何写操作（含不写 mount.log），末尾固定输出 `（DRY RUN，未执行）`，退出码与真实执行一致。
 
 ### 3.3 启动硬盘压测
 
@@ -181,6 +223,7 @@ bash stress-test.sh start hdd
 ```
 
 - 默认扫描 `/mnt/HDD*` 全部挂载点，每盘一个 `stress --hdd 1 --hdd-bytes 10G` 后台进程，各自独立日志 `stress-HDD01.log`、`stress-HDD02.log` …（stress 的 hdd 模式在当前目录写压测文件，因此每盘必须在各自挂载点下运行，脚本已自动 cd 进各目录）；
+- **压测目录必须是独立挂载点**：脚本启动前逐个校验（默认 `/mnt/HDD*` 与显式 `--dirs` 都校验），未挂载或落在系统盘根文件系统上会直接拒绝（退出码 1，不启动压测、不建结果目录）；
 - 只测指定盘：`bash stress-test.sh start hdd --dirs "/mnt/HDD01 /mnt/HDD02"`；
 - 盘未挂载时脚本会报错并提示（见第 7 节）。
 
@@ -235,6 +278,10 @@ bash stress-test.sh stop
 │   ├── monitor.csv        # 30 秒一条系统状态（原始数据，可 Excel 打开）
 │   ├── stress.log         # stress 原始输出（hdd 模式为 stress-HDDxx.log 每盘一份；combo 为 CPU+内存进程输出，各盘/系统盘另见 stress-HDDxx.log、stress-SYSDISK.log）
 │   ├── stress.exitcode    # stress 退出码（hdd 模式为 stress-HDDxx.exitcode 每盘一份；combo 另含 stress-SYSDISK.exitcode）
+│   ├── error.log / error-HDDxx.log / error-SYSDISK.log  # stress stderr 与内核 I/O/OOM 报错（空=无错误；I/O 报错带 `dmesg io:` 前缀）
+│   ├── error-unattributed.log  # 无法归因到本盘的 I/O 报错条数来源（只计数，不计入本盘结论）
+│   ├── devices.txt        # 本任务压测盘设备名（分区名 + 整盘名 + lsblk KNAME，用于 I/O 报错归因）
+│   ├── status.txt         # 运行状态（state=OK/FAILED/ABORTED/STOPPED、oom、io 等）
 │   ├── stress.pids / monitor.pid   # 进程记录（脚本内部使用）
 │   └── summary.txt        # review 生成的复盘总结（见第 5 节）
 ├── mount.log              # 挂载/格式化/卸载全步骤日志（disk-mount.sh 写，hdd 挂载问题看这个）
@@ -248,19 +295,37 @@ bash stress-test.sh review                                              # 自动
 bash stress-test.sh review --dir /root/stress-test/20261113-143000-cpu  # 指定目录
 ```
 
-`review` 读取该目录的监控与配置，生成并打印 `summary.txt`，包含：类型、机型、开始时间、计划超时、预计结束时间（按监控覆盖时长估算）、监控数据行数、监控覆盖时长、**CPU 使用率均值/峰值、内存峰值（kB）、磁盘读/写峰值（MB/s）**、各 stress **退出码**（0 = 正常结束，非 0 = 异常或被中断）以及原始数据文件清单。
+`review` 读取该目录的监控与配置，生成并打印 `summary.txt`，包含：`结论:`、类型、机型、开始时间、计划超时、预计结束时间（按监控覆盖时长估算）、监控数据行数、监控覆盖时长、**CPU 使用率均值/峰值、内存峰值（kB）、磁盘读/写峰值（MB/s）**、各 stress **退出码**（0 = 正常结束，非 0 = 异常或被中断）以及原始数据文件清单。
 
-> 说明：复盘只给出事实数据，不下"通过/不通过"结论；判定由使用者根据退出码与峰值数据自行完成。
+**结果判定（结论优先级，后者不覆盖前者）**：
+
+| 优先级 | 命中条件 | 结论 |
+|---|---|---|
+| 1 | 内核 I/O 错误：`error.log` 含 `dmesg io:`（如 `EXT4-fs error`、`I/O error`、`Buffer I/O error`、`blk_update_request`、`critical medium error`、`ata`/`nvme` 错误） | `异常（内核 I/O 错误，见 error.log）`——**`status.txt` 为 `OK` 也不改变** |
+| 2 | `error.log` / `error-HDD*.log` / `error-SYSDISK.log` 命中 `No space left on device` | `异常（空间不足 ENOSPC，非磁盘故障）` |
+| 3 | `error.log` 命中 `检测到 stress` / `dmesg` | `异常（压测进程/内核报错，见 error.log）` |
+| 4 | 按 `status.txt` | `OK` → 正常；`FAILED` → 异常（退出码非 0）；`ABORTED` → 按原因；`STOPPED` → 已手动停止 |
+
+- **I/O 错误即异常**：内核 I/O 报错优先于 `status=OK`；报错按设备归因，`devices.txt` 记录本任务的分区名与整盘名（如 `sdb1`、`sdb`、`dm-0`），只有本盘设备的报错写入 `error.log`；
+- **未归因条数含义**：无法归因到本盘（或 `devices.txt` 缺失，如同机其他盘报错）的 I/O 报错写入 `error-unattributed.log`，`summary.txt` 显示 `未归因内核 I/O 错误 N 条（error-unattributed.log，不计入本盘结论）`——不改变本盘结论，但说明整机存在其他 I/O 报错，需人工核查；
+- **ENOSPC 与盘故障区分**：`No space left on device` 表示写入量超过可用空间（如首分区小于 `--hdd-bytes`），结论单独标注"非磁盘故障"，不要按坏盘处理；
+- **系统盘口径**：系统盘任务的 `run-config.txt` 与 `summary.txt` 回显 `压测对象: 系统盘（根文件系统压测）` 与 `覆盖边界: 不覆盖 /boot、/boot/efi、swap、未分配空间；LVM/RAID 下写入可能跨多个物理盘`。
+
+> 说明：结论基于上述证据（错误日志 + 状态文件）自动给出，最终判定仍建议结合业务影响与硬件巡检结果。
 
 原始数据文件清单与含义：
 
 | 文件 | 含义 |
 |---|---|
-| `run-config.txt` | 本次测试参数与命令原文 |
+| `run-config.txt` | 本次测试参数与命令原文（系统盘任务另含压测对象/覆盖边界） |
 | `info-before.txt` | 测试前系统快照 |
 | `monitor.csv` | 全程 30s 一条的系统状态原始数据 |
 | `stress.log` / `stress-HDDxx.log` / `stress-SYSDISK.log` | stress 原始输出（hdd 逐盘一份；combo 组合进程 + 系统盘） |
 | `stress.exitcode` / `stress-HDDxx.exitcode` / `stress-SYSDISK.exitcode` | 退出码（0 正常 / 非 0 异常） |
+| `error.log` / `error-HDDxx.log` / `error-SYSDISK.log` | stress stderr 与内核 I/O/OOM 报错（I/O 报错带 `dmesg io:` 前缀） |
+| `error-unattributed.log` | 无法归因到本盘的 I/O 报错（只计数，不改本盘结论） |
+| `devices.txt` | 本任务压测盘设备名（分区名 + 整盘名 + lsblk KNAME） |
+| `status.txt` | 运行状态（`state=`、`oom=`、`io=` 等） |
 | `mount.log` | 挂载/格式化步骤日志（hdd 流程） |
 | `operations.log` | start/stop 操作历史 |
 
@@ -287,7 +352,16 @@ stress 被 kill 或系统重启导致中断时，退出码文件为非 0，`revi
 结果目录按 `<时间戳>-<类型>` 命名，同一秒冲突会自动顺延 1 秒，**不会覆盖**旧结果；重复 start 会产生新的独立目录，多轮结果可对比。
 
 **报"未发现 /mnt/HDD* 挂载点"？**
-硬盘测试前必须先挂载：`bash disk-mount.sh mount`；或显式指定 `--dirs "/mnt/HDD01 …"`。
+硬盘测试前必须先挂载：`bash disk-mount.sh mount`；或显式指定 `--dirs "/mnt/HDD01 …"`。显式 `--dirs` 的目录同样会校验是否为独立挂载点，不是则直接拒绝启动（退出码 1）。
+
+**挂载时提示"因 blkid 失败跳过：sdb"？**
+表示该盘/分区的文件系统探测连续 5 次失败（设备忙、未就绪、权限等），脚本**不会格式化该盘**、直接跳过，其他盘照常挂载，结束时退出码 1。请等设备就绪（`udevadm settle`）后重跑；若多块盘中只有部分失败，可先用已挂载成功的 `/mnt/HDD*` 开始压测。
+
+**结论为"异常（空间不足 ENOSPC，非磁盘故障）"？**
+压测写入量超过该盘可用空间（常见于首分区容量小于 `--hdd-bytes`，默认 10G）。属空间不足、不是坏盘，可换大分区或调小 `--hdd-bytes` 后重测；`disk-mount.sh mount` 计划中会提前提示"首分区容量可能不足以写入 10G，可能 ENOSPC"。
+
+**结论为"异常（内核 I/O 错误，见 error.log）"？**
+`dmesg` 增量检测到该盘设备的 I/O 报错（`EXT4-fs error`、`I/O error`、`Buffer I/O error`、`blk_update_request`、`critical medium error`、`ata`/`nvme` 错误等），即使 `status.txt` 为 `OK` 也判异常。需结合 `error.log` 原始行与硬件巡检判断是否换盘；`summary.txt` 中"未归因内核 I/O 错误 N 条"表示另有报错无法归因到本盘（不计入本盘结论），也建议一并核查。
 
 **监控进程什么时候退出？**
 `monitor-loop` 在 `stress.pids` 中所有进程消失后自动结束（正常跑完或被停止后）。若压测还在跑但 status 显示"监控进程: 已退出"，属异常，请反馈。
@@ -340,7 +414,8 @@ bash stress-test.sh start mem --vm 12 --vm-bytes 60G
 ## 9. 安全提示
 
 - **系统盘永不测试**：disk-mount.sh 按 `df /` 识别系统盘并在任何分支硬跳过，`list` 中标出；选择含系统盘的盘符会被直接拒绝。stress hdd 压测只跑在 `/mnt/HDD*` 挂载点（或 `--dirs` 指定的目录），不涉及系统盘。
-- **测试盘必须为已确认的空盘**：无分区空盘会自动 `mkfs.ext4 -m 0` **格式化**——执行前必打印计划并要求 `y` 确认，确认前务必核对盘符、容量、动作。
+- **默认复用、不整盘清空**：`disk-mount.sh mount` 默认只挂载已有文件系统，仅对"无文件系统的分区"或"空盘"执行 `mkfs.ext4 -m 0`；但请注意 `mkfs` 仍会覆盖该分区/整盘原有内容——执行前必打印计划并要求 `y` 确认，确认前务必核对盘符、容量、动作。
+- **`--rebuild` 会清空数据盘分区表**：只有显式 `--rebuild`（或 oneclick 菜单输入 `y`）才卸载旧 `/mnt/HDD*`、清空分区表并重建 1 个分区；同盘存在非 `/mnt/HDD*` 挂载点（业务数据）时整盘跳过。正式执行前建议先 `bash disk-mount.sh mount --disks all --dry-run` 核对计划。
 - **执行前确认计划**：mount 的挂载计划、umount 的卸载清单都要确认无误后再执行；start 启动后可在结果目录的 `run-config.txt` 核对实际机型与参数（`status` 只显示类型、进程数、剩余时长等概览）。
 - **内存总量勿超物理内存**：`start mem/combo` 默认按本机实测推导——下发总量为 `MemTotal × 82%`，并受 `MemTotal × 85%`（环境变量 `MEM_MAX_PCT`，默认 85）**分配上限**约束，超出时自动下调并在启动输出与 `run-config.txt` 中标注，无需手工换算；**85% 只是分配上限，不是 80% 的验收达成阈值**，两者不可混用。显式 `--vm-bytes` 不受该机制约束（仅打印警告），手动调大时请自行核对，避免 OOM。
 - 压测会显著提升 CPU 温度与功耗，请确认机房散热环境；10h 长测已 nohup 后台化，可脱离 ssh 会话，但**请勿在压测期间重启服务器**（结果目录会保留，但进程不会自动恢复）。
@@ -393,6 +468,7 @@ bash stress-test.sh start combo --sysdisk    # CPU + 内存 + 数据盘 + 系统
 - `--sysdisk-only`：**无论是否有数据盘都只压系统盘**，不扫描 `/mnt/HDD*`（即使存在也不压）；仅对 hdd 模式生效，`combo` 模式会提示改用 `start hdd --sysdisk-only` 并退出，`cpu`/`mem` 模式提示忽略；不能与 `--dirs` 同时使用。
 - `--sysdisk` **仅对 hdd/combo 模式生效**；用于 cpu/mem 模式会被忽略并提示"`--sysdisk` 仅对 hdd/combo 模式生效，cpu/mem 模式忽略该选项"。
 - **运行位置**：系统盘 hdd 进程在 `/stresstest-hdd` 目录下运行（脚本自动创建，需 root 权限，创建失败会提示"无法创建系统盘压测目录 /stresstest-hdd"）。stress 会在此目录写压测文件（大小约等于 `--hdd-bytes`），**测试结束后脚本不自动清理**，确认结果已拷回后请手动清理：`rm -f /stresstest-hdd/*`（压测运行期间请勿执行）。
+- **压测对象与覆盖边界**：系统盘压测即**根文件系统压测**（不分区、不格式化、不挂载），`run-config.txt` 与 `summary.txt` 会写明 `压测对象: 系统盘（根文件系统压测）` 与 `覆盖边界: 不覆盖 /boot、/boot/efi、swap、未分配空间；LVM/RAID 下写入可能跨多个物理盘`——结论只代表根文件系统所在存储链路，不代表整块系统盘或全部物理盘。
 - **空间预检**：启动前脚本先检查 `/` 可用空间，要求 ≥ `hdd-bytes × 1.2`（如默认 `--hdd-bytes 10G` 需 ≥ 12G），不足则整体退出、不启动任何进程、不建结果目录，并提示"系统盘 / 可用空间不足"。注意 `--sysdisk` 的空间预检要求 `--hdd-bytes` **以 G 为单位**（如 `10G`）。
 - **`--dirs` 勿与系统盘重复**：`--dirs` 显式指定的目录请勿包含 `/stresstest-hdd` 或系统盘相关路径（默认 `/mnt/HDD*` 扫描不涉及系统盘）。
 - **建议先冒烟**：正式 10h 前先做一次 60s 冒烟验证全链路，结束后确认结果目录出现 `stress-SYSDISK.log` 且退出码为 0：

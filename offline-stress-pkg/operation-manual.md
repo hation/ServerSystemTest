@@ -3,7 +3,7 @@
 Kylin V10 SP3 服务器 **CPU / 内存 / 硬盘** 压力测试操作手册（适用三类机型：海光 5380 / 7380 / 7360）。
 
 配套脚本（本离线包内）：
-- `stress-test.sh` —— 压测主控：`start cpu|mem|hdd|combo` / `status` / `stop` / `review`
+- `stress-test.sh` —— 压测主控：`start cpu|mem|hdd|combo` / `status` / `stop` / `review` / `snapshot`
 - `disk-mount.sh` —— 测试盘挂载辅助：`list` / `mount` / `umount`
 
 ---
@@ -37,7 +37,7 @@ bash verify.sh         # 验证：版本检查 + 10 秒冒烟压测 + dmidecode 
 
 > 本节为**分步执行**时使用：逐条命令手工启动，适合只想压单项或需要自行控制节奏的场景。想一条命令跑完全流程，直接用 [2.1 一键全测](#21-一键全测oneclicksh)。
 
-默认按**本机实测规格**推导参数（CPU `floor(逻辑线程数 × 86%)`、内存 `MemTotal × 82%`、`--vm` 等于实际内存条根数，详见第 8 节），默认时长 **10 小时**（`--timeout 10h`）：
+默认按**本机实测规格**推导参数（CPU `round(物理核数 × 1.5625)`、`--vm` 等于实际内存条根数、单 worker = `单条容量 − max(6G, 单条容量/8)`，三道上限取最小后自动下调，`mem`/`combo` 固定 `--vm-keep`，详见第 8 节），默认时长 **10 小时**（`--timeout 10h`）：
 
 ```bash
 # CPU 压测
@@ -89,7 +89,9 @@ sudo bash oneclick.sh status
 sudo bash oneclick.sh review
 ```
 
-**全测做的事**（按顺序）：自动挂载 `disk-mount.sh mount --disks all --yes` → 每块数据盘一个任务（每个任务一个终端窗口）→ 系统盘 → CPU → 内存 → 等待全部结束 → 自动逐个 `review` 并生成汇总。
+**全测做的事**（按顺序）：自动挂载 `disk-mount.sh mount --disks all --yes` → **COMBO**：CPU+内存组合任务（一个终端、一个结果目录，不再拆成独立的 CPU、内存任务）→ **每块数据盘一个 `HDDxx` 任务**（独立终端、独立结果目录）→ **SYSDISK**：系统盘任务（`--sysdisk-only`，独立终端）→ 等待全部结束 → 自动逐个 `review` 并生成汇总。
+
+> COMBO 由 oneclick 自动带 `--peer-disks <数据盘数+1>`：内存计划会把同时在跑的各数据盘与系统盘计入页缓存预留，但 COMBO 只跑 CPU+内存，不在自己进程内启动 hdd，每块盘只由各自的 `HDDxx` 任务压一次。手工单测一般无需使用该参数（见第 10 节）。
 
 - **数据盘默认复用，`--rebuild` 才重建**：菜单选 `1` / `2` 时会在启动前询问一次 `是否重新分区并格式化数据盘？(y/N)：`，**默认 N**（直接回车即复用已有文件系统，输入 `y` 才重建）；子命令显式带 `--rebuild` 等效于回答 y，且菜单不再询问：
 
@@ -101,7 +103,7 @@ sudo bash oneclick.sh review
   未指定时输出 `未指定 --rebuild，本次复用已有文件系统；如需重建请加 --rebuild`；`sysdisk` / `cpu` / `mem` 带 `--rebuild` 会被忽略并提示"仅对 all/hdd 生效"。
 - **部分盘挂载失败不中断**：自动挂载返回非 0 但已存在 `/mnt/HDD*` 时，`all` / `hdd` 模式会告警并继续启动已挂载盘的任务（一个挂载点都没有才退出）；批次 summary 标注 `自动挂载: 存在跳过/失败盘（退出码 N，未挂载盘未参与压测）`，批次最终退出码为 1。
 
-- **窗口标题**：`压测-HDDxx`（数据盘）、`压测-系统盘`、`压测-CPU`、`压测-内存`，窗口内实时 `tail -f` 该任务的 `monitor.csv`。
+- **窗口标题**：`压测-组合CPU+内存`（COMBO）、`压测-HDDxx`（每块数据盘）、`压测-系统盘`；单资源模式另有 `压测-CPU`、`压测-内存`。每个窗口内实时 `tail -f` 该任务的 `monitor.csv`，窗口之间互不影响。
 - **窗口关掉不影响压测**：压测与监控本身以 `nohup` 后台运行，窗口只是查看入口；关掉窗口（或 Ctrl-C 只退出查看）压测继续，可再 `sudo bash oneclick.sh status` 查看。
 - **无图形环境（SSH）自动降级**：检测不到 `DISPLAY` / `WAYLAND_DISPLAY` 或无可用终端时，自动改为后台并行执行，输出写入批次目录的 `<任务>.out`。需要强制后台（不弹窗）时：
 
@@ -109,14 +111,16 @@ sudo bash oneclick.sh review
   ONECLICK_GUI=0 sudo -E bash oneclick.sh all
   ```
 
-- **失败即停**：启动阶段任一任务启动失败，立即停止启动后续任务，并打印已启动任务清单与失败原因。
-- **结果位置**：每次运行在 `/root/stress-test/oneclick-<时间>/` 建一个批次目录，汇总在 `/root/stress-test/oneclick-<时间>/summary.txt`（各任务的完整结果仍在各自的 `<时间戳>-<类型>/` 结果目录，`summary.txt` 末尾列出结果目录清单；存在异常结论时退出码 1）。批次目录内主要文件：
+- **失败策略**：**COMBO 启动失败 → 中止本批次**，不再启动后续数据盘与系统盘，批次退出码 1（核心 CPU+内存负载没起来）；**数据盘 / SYSDISK 启动失败 → 记录到 `failed-tasks.txt` 后跳过**，继续启动其余任务，批次最终退出码 1。现场看到最终 `rc=1` 时，先看 `summary.txt` 的"启动失败（跳过、未计入复盘）"和 `failed-tasks.txt`（含每个失败任务的完整命令）：失败的盘按记录命令单独重跑即可，已成功启动的任务结果不受影响；若 `rc=1` 但无失败任务，则看各任务结论是否有异常。
+- **结果位置**：每次运行在 `/root/stress-test/oneclick-<时间>/` 建一个批次目录，汇总在 `/root/stress-test/oneclick-<时间>/summary.txt`。各任务的完整结果在各自的 `<时间戳>-<类型>/` 结果目录：**COMBO 只有一个结果目录**（`<时间戳>-combo/`，仅 CPU+内存组合进程与其 `monitor.csv`，不含任何 hdd 数据），**每块数据盘各自一个** `<时间戳>-hdd/`（该盘的 `stress-HDDxx.log`、`monitor.csv`、`summary.txt`），**系统盘一个** `<时间戳>-hdd/`（仅 `stress-SYSDISK.log` 等系统盘结果）；`summary.txt` 末尾列出全部结果目录。存在异常结论、挂载跳过/失败、或任务启动失败时，批次退出码 1。批次目录内主要文件：
 
   | 文件 | 含义 |
   |---|---|
   | `summary.txt` | 一键汇总：逐任务结论 + 各任务结果目录 |
   | `plan.txt` | 任务计划（启动前），格式 `id\|类型\|附加参数` |
   | `tasks.txt` | 已启动任务，格式 `id\|类型\|结果目录` |
+  | `failed-tasks.txt` | 启动失败被跳过的任务，格式 `任务ID\|完整命令`（summary 同步列出） |
+  | `aborted` | COMBO 启动失败、批次中止的标记文件 |
   | `start.time` / `timeout.txt` | 批次开始时间与统一超时 |
   | `mount.log` | 自动挂载输出 |
   | `<任务>.out` | 后台降级模式下该任务的输出 |
@@ -276,6 +280,9 @@ bash stress-test.sh stop
 │   ├── run-config.txt     # 本次机型、类型、参数、开始时间、超时、命令原文
 │   ├── info-before.txt    # 测试前快照：lscpu / free -h / df -h / lsblk / stress --version
 │   ├── monitor.csv        # 30 秒一条系统状态（原始数据，可 Excel 打开）
+│   ├── runtime-snapshot.txt # 启动/60s/600s/每 600s 的进程快照（cmdline、cwd、VmRSS、Threads）
+│   ├── actual-params.txt  # 最新实际参数（CPU/VM worker、vm-bytes、vm-keep、hdd 进程与 cwd）
+│   ├── runtime-final.txt  # 结束时的最终状态、退出码与实际参数副本
 │   ├── stress.log         # stress 原始输出（hdd 模式为 stress-HDDxx.log 每盘一份；combo 为 CPU+内存进程输出，各盘/系统盘另见 stress-HDDxx.log、stress-SYSDISK.log）
 │   ├── stress.exitcode    # stress 退出码（hdd 模式为 stress-HDDxx.exitcode 每盘一份；combo 另含 stress-SYSDISK.exitcode）
 │   ├── error.log / error-HDDxx.log / error-SYSDISK.log  # stress stderr 与内核 I/O/OOM 报错（空=无错误；I/O 报错带 `dmesg io:` 前缀）
@@ -295,7 +302,9 @@ bash stress-test.sh review                                              # 自动
 bash stress-test.sh review --dir /root/stress-test/20261113-143000-cpu  # 指定目录
 ```
 
-`review` 读取该目录的监控与配置，生成并打印 `summary.txt`，包含：`结论:`、类型、机型、开始时间、计划超时、预计结束时间（按监控覆盖时长估算）、监控数据行数、监控覆盖时长、**CPU 使用率均值/峰值、内存峰值（kB）、磁盘读/写峰值（MB/s）**、各 stress **退出码**（0 = 正常结束，非 0 = 异常或被中断）以及原始数据文件清单。
+`review` 读取该目录的监控与配置，生成并打印 `summary.txt`，包含：`结论:`、类型、机型、开始时间、计划超时、预计结束时间（按监控覆盖时长估算）、监控数据行数、监控覆盖时长、**CPU 使用率均值/峰值、内存峰值（kB）、磁盘读/写峰值（MB/s）**、各 stress **退出码**（0 = 正常结束，非 0 = 异常或被中断）、**执行一致性**以及原始数据文件清单。
+
+**执行一致性**：`review` 把 `run-config.txt` 的计划值与 `actual-params.txt` 的实际 CPU/VM worker、`--vm-keep`、hdd 进程数、cwd、RSS 逐项对拍，输出 `== 执行一致性 ==` 的 PASS/FAIL/UNKNOWN。UNKNOWN（旧目录、缺字段、只有 start/60s 快照）不改变结论；FAIL 只在原结论为“正常”时改为“异常（执行与计划不一致）”，I/O/ENOSPC/STOPPED 优先级不变。运行中可用 `bash stress-test.sh snapshot <结果目录>` 手动补抓一次快照，仅作展示。
 
 **结果判定（结论优先级，后者不覆盖前者）**：
 
@@ -320,6 +329,9 @@ bash stress-test.sh review --dir /root/stress-test/20261113-143000-cpu  # 指定
 | `run-config.txt` | 本次测试参数与命令原文（系统盘任务另含压测对象/覆盖边界） |
 | `info-before.txt` | 测试前系统快照 |
 | `monitor.csv` | 全程 30s 一条的系统状态原始数据 |
+| `runtime-snapshot.txt` | 启动/60s/600s/每 600s 的进程快照（cmdline、cwd、VmRSS、Threads） |
+| `actual-params.txt` | 最新实际参数（CPU/VM worker、vm-bytes、vm-keep、hdd 进程与 cwd） |
+| `runtime-final.txt` | 结束时的最终状态、退出码与实际参数副本 |
 | `stress.log` / `stress-HDDxx.log` / `stress-SYSDISK.log` | stress 原始输出（hdd 逐盘一份；combo 组合进程 + 系统盘） |
 | `stress.exitcode` / `stress-HDDxx.exitcode` / `stress-SYSDISK.exitcode` | 退出码（0 正常 / 非 0 异常） |
 | `error.log` / `error-HDDxx.log` / `error-SYSDISK.log` | stress stderr 与内核 I/O/OOM 报错（I/O 报错带 `dmesg io:` 前缀） |
@@ -381,30 +393,43 @@ stress 被 kill 或系统重启导致中断时，退出码文件为非 0，`revi
 
 | 参数 | 推导规则 | 环境变量（默认值） |
 |---|---|---|
-| CPU worker 数 | `floor(逻辑线程数 × 86%)`，下限 1 | `CPU_MAX_PCT=86` |
-| 内存总量 | `MemTotal × 82%` | `MEM_TARGET_PCT=82` |
+| CPU worker 数 | `round(物理核数 × 1.5625)`，下限 1（64 物理核 → 100） | 物理核识别失败时回退 `round(nproc × 78%)`：`CPU_MAX_PCT=78` |
 | `--vm` 内存条根数 | 等于实际内存条根数：`dmidecode -t 17` 统计已安装槽位；失败回退 EDAC（`/sys/devices/system/edac/mc`） | `DMI_BIN=dmidecode`、`EDAC_ROOT=…` |
-| 单 worker 字节 | `round(MemTotal × 82% / 根数)` GiB（四舍五入到 1G，通常落在 81–83%） | — |
-| 硬上限 | `根数 × 单 worker ≤ MemTotal × 85%`，超限逐 G 下调 | `MEM_MAX_PCT=85` |
+| 单 worker 字节 | `单条容量 − max(6G, 单条容量/8)`（32G→26G、64G→56G、128G→112G） | — |
+| 兜底单 worker | 混合容量 / EDAC 无容量 / 显式 `--vm` ≠ DIMM 根数：`MemTotal × 82% ÷ 根数` | `MEM_TARGET_PCT=82`（仅兜底路径） |
+| 分配上限 | `min(模块总容量 × 88%, MemTotal × 92%, MemTotal − (盘数 × hdd-bytes × 1.2 + 8G))`，超限逐 GiB 下调单 worker | `MEM_MAX_PCT=88`、`MEM_TOTAL_MAX_PCT=92`、`DISK_CACHE_FACTOR_PCT=120`、`DISK_CACHE_MIN_G=8` |
+| `--vm-keep` | `mem` / `combo` 固定追加（内存常驻、压力持续），`cpu` / `hdd` 不加 | — |
 
-- **内存条根数探测失败**（dmidecode 结果无效（0 或超过 256）时自动回退 EDAC；dmidecode 与 EDAC 两路来源都无效才算探测失败）：本次 `start mem/combo` 直接中止（退出码 1，不建结果目录、不启动 stress），并直接给出**可复制执行的建议命令**——按本机 MemTotal 算好 16 个 worker 与单 worker 字节（总量 = 82%，不超 85%），例如 `bash stress-test.sh start mem --vm 16 --vm-bytes 51G --timeout 10h`；若知道实际根数，推荐只填根数 `bash stress-test.sh start mem --vm <实际根数>`，单 worker 字节由脚本自动推导。MemTotal 也读不到时，建议命令改为同时给 `--vm` 与 `--vm-bytes`。根数可从开机 BIOS 内存信息、机箱/主板标签获取，或 `sudo lshw -class memory | grep -c 'bank:'`；离线包已内置 `rpms/dmidecode-3.2-10.el8.x86_64.rpm`，`sudo bash install.sh` 后即可恢复自动探测。`start cpu` 不受影响。
+- **三道上限取最小**：`cap_module`（模块总容量 × 88%，避免吃穿模块容量）、`cap_mem`（MemTotal × 92%，防 OOM）、`cap_disk`（MemTotal − 盘数 × hdd-bytes × 1.2 − 8G，给页缓存/脏页留空间）。盘越多、内存越小，自动压得越低。`combo` / `mem` 的"盘数"取 `max(实际盘目录数 + --sysdisk, --peer-disks N)`（未传 `--peer-disks` 时仅按实际盘数）。
+- **多盘自动下调示例**（12 块数据盘、`--hdd-bytes 10G`，磁盘预留 12×10G×1.2+8G = 152G）：
+
+  | 内存规格 | `cap_disk` | 单 worker | 实际下发总量 |
+  |---|---|---|---|
+  | 512G / 16×32G | 360G | 22G | 352G |
+  | 768G / 24×32G | 616G | 25G | 600G |
+  | 1024G / 16×64G | 872G | 54G | 864G |
+  | 1152G / 18×64G | 1000G | 55G | 990G |
+
+  > 上表按标称容量估算；实际 MemTotal 略低，脚本按 MemTotal 计算时单 worker 可能再低 1G（例如 512G 场景约 21G、1024G 场景约 53G）。
+
+- **内存条根数探测失败**（dmidecode 结果无效（0 或超过 256）时自动回退 EDAC；dmidecode 与 EDAC 两路来源都无效才算探测失败）：本次 `start mem/combo` 直接中止（退出码 1，不建结果目录、不启动 stress），并直接给出**可复制执行的建议命令**——按本机 MemTotal 算好 16 个 worker 与单 worker 字节（兜底总量 = 82%，不超 92%），例如 `bash stress-test.sh start mem --vm 16 --vm-bytes <脚本推导值>G --timeout 10h`；若知道实际根数，推荐只填根数 `bash stress-test.sh start mem --vm <实际根数>`，单 worker 字节由脚本自动推导。MemTotal 也读不到时，建议命令改为同时给 `--vm` 与 `--vm-bytes`。根数可从开机 BIOS 内存信息、机箱/主板标签获取，或 `sudo lshw -class memory | grep -c 'bank:'`；离线包已内置 `rpms/dmidecode-3.2-10.el8.x86_64.rpm`，`sudo bash install.sh` 后即可恢复自动探测。`start cpu` 不受影响。
 - **MemTotal 不可读**（`/proc/meminfo` 无 MemTotal）且走自动推导：同样中止（退出码 1）；若显式给了 `--vm-bytes`，则按显式值继续，并在 `run-config.txt` 标注"未做内存裁剪"。
 - **单 worker 不足 1G**（如 MemTotal 4G / 16 根）：报错退出（退出码 1），提示"单 worker 内存不足 1G（MemTotal XG / N 根），无法压测"。
-- **显式参数优先**：`--cpu` / `--vm` / `--vm-bytes` 给出即原样使用，自动推导只补未给出的参数；显式 `--vm-bytes` 不做 85% 裁剪（仅打印超限警告）。
+- **显式参数优先**：`--cpu` / `--vm` / `--vm-bytes` 给出即原样使用，自动推导只补未给出的参数；显式 `--vm-bytes` 不做分配上限裁剪（仅打印超限警告）。
 - `--model` 仅用于 `run-config.txt` / `review` 的机型标注与"实测线程 vs 标称线程"交叉校验，**不参与参数分配**。
 
-### 8.1 四种现场内存规格回算
+### 8.1 四组标定案例回算（v3 回归样本）
 
-| 实测 MemTotal | DIMM 根数 | 单根容量 | 推导 `--vm` | 单 worker | 实际下发总量 | 占物理内存 |
+| 内存规格 | DIMM 根数 | 单根容量 | 推导 `--vm` | 单 worker | 实际下发总量 | 占模块总容量 |
 |---|---|---|---|---|---|---|
-| 502.5 GiB | 16 | 32 GiB | 16 | 26G | 416G | 82.8% |
-| 754.5 GiB | 12 | 64 GiB | 12 | 52G | 624G | 82.7% |
-| 994.7 GiB | 16 | 64 GiB | 16 | 51G | 816G | 82.0% |
-| 1120.7 GiB | 18 | 64 GiB | 18 | 51G | 918G | 81.9% |
+| 512G | 16 | 32 GiB | 16 | 26G | 416G | 81.25% |
+| 1024G | 16 | 64 GiB | 16 | 56G | 896G | 87.5% |
+| 1152G | 18 | 64 GiB | 18 | 56G | 1008G | 87.5% |
+| 768G | 24 | 32 GiB | 24 | 26G | 624G | 81.25% |
 
-> 四种规格均为 128 线程（7380 类），CPU worker 统一推导为 `floor(128 × 86%) = 110`；内存占物理内存比例均落在 81–83%。
+> 四组均为 64 物理核（128 线程），CPU worker 统一推导为 `round(64 × 1.5625) = 100`；单 worker 按单条容量规则推导，总量均落在模块总容量 88% 上限内。数据盘较多时再受 `cap_disk` 约束自动下调（见上表）。
 
-默认 `--timeout 10h`。**显式参数可覆盖自动推导**：`--timeout`、`--cpu`、`--vm`、`--vm-bytes`、`--hdd-bytes`、`--dirs` 均可手动指定；hdd/combo 模式还可加 `--sysdisk`（压系统盘，见第 11 节），例如：
+默认 `--timeout 10h`。**显式参数可覆盖自动推导**：`--timeout`、`--cpu`、`--vm`、`--vm-bytes`、`--hdd-bytes`、`--dirs`、`--peer-disks`（仅 combo/mem）均可手动指定；hdd/combo 模式还可加 `--sysdisk`（压系统盘，见第 11 节），例如：
 
 ```bash
 bash stress-test.sh start cpu --timeout 6h --cpu 64
@@ -417,7 +442,7 @@ bash stress-test.sh start mem --vm 12 --vm-bytes 60G
 - **默认复用、不整盘清空**：`disk-mount.sh mount` 默认只挂载已有文件系统，仅对"无文件系统的分区"或"空盘"执行 `mkfs.ext4 -m 0`；但请注意 `mkfs` 仍会覆盖该分区/整盘原有内容——执行前必打印计划并要求 `y` 确认，确认前务必核对盘符、容量、动作。
 - **`--rebuild` 会清空数据盘分区表**：只有显式 `--rebuild`（或 oneclick 菜单输入 `y`）才卸载旧 `/mnt/HDD*`、清空分区表并重建 1 个分区；同盘存在非 `/mnt/HDD*` 挂载点（业务数据）时整盘跳过。正式执行前建议先 `bash disk-mount.sh mount --disks all --dry-run` 核对计划。
 - **执行前确认计划**：mount 的挂载计划、umount 的卸载清单都要确认无误后再执行；start 启动后可在结果目录的 `run-config.txt` 核对实际机型与参数（`status` 只显示类型、进程数、剩余时长等概览）。
-- **内存总量勿超物理内存**：`start mem/combo` 默认按本机实测推导——下发总量为 `MemTotal × 82%`，并受 `MemTotal × 85%`（环境变量 `MEM_MAX_PCT`，默认 85）**分配上限**约束，超出时自动下调并在启动输出与 `run-config.txt` 中标注，无需手工换算；**85% 只是分配上限，不是 80% 的验收达成阈值**，两者不可混用。显式 `--vm-bytes` 不受该机制约束（仅打印警告），手动调大时请自行核对，避免 OOM。
+- **内存总量勿超物理内存**：`start mem/combo` 默认按本机实测推导——单 worker 按 `单条容量 − max(6G, 单条容量/8)`，总量受**三道上限取最小**约束（`模块总容量 × 88%`、`MemTotal × 92%`、`MemTotal − (盘数 × hdd-bytes × 1.2 + 8G)`，环境变量 `MEM_MAX_PCT` / `MEM_TOTAL_MAX_PCT` / `DISK_CACHE_FACTOR_PCT` / `DISK_CACHE_MIN_G`），超出时自动下调并在启动输出与 `run-config.txt` 中标注，无需手工换算；**分配上限不是验收达成阈值**，两者不可混用。显式 `--vm-bytes` 不受该机制约束（仅打印警告），手动调大时请自行核对，避免 OOM。
 - 压测会显著提升 CPU 温度与功耗，请确认机房散热环境；10h 长测已 nohup 后台化，可脱离 ssh 会话，但**请勿在压测期间重启服务器**（结果目录会保留，但进程不会自动恢复）。
 
 ## 10. 组合测试（start combo）
@@ -446,6 +471,7 @@ bash stress-test.sh start combo
   ```
 
 - **复盘**：与单测相同，`bash stress-test.sh review`（自动选最新结果目录）或 `bash stress-test.sh review --dir <结果目录>`；`summary.txt` 会列出各退出码文件。
+- **高级：`--peer-disks N`**（仅 `combo` / `mem`）：声明"外部另有多少路并发 hdd 流"，只参与内存预留（`cap_disk` 取 `max(实际盘目录数+--sysdisk, N)`）与展示，不启动 hdd 进程；**出现该参数即不再自动扫描 `/mnt/HDD*`**，此时只有显式 `--dirs` 才会在 combo 内起 hdd，`--peer-disks 0` 表示纯 CPU+内存。oneclick `all` 会自动传（值 = 数据盘数+1），手工单测一般不用。
 - 组合 `--dirs` 与 `--sysdisk` 的完整用法（与脚本 usage 示例一致）：
 
   ```bash

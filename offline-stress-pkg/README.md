@@ -16,7 +16,7 @@ offline-stress-pkg/
 ├── README.md                      本说明文档
 ├── install.sh                     安装脚本（含 root 检查、SHA256 校验、已装同版本检测）
 ├── verify.sh                      验证脚本（检查安装版本 + 10 秒冒烟压测 + dmidecode 可用性）
-├── stress-test.sh                 压测主控脚本（CPU/内存/硬盘压测：start/status/stop/review）
+├── stress-test.sh                 压测主控脚本（CPU/内存/硬盘压测：start/status/stop/review/snapshot）
 ├── oneclick.sh                    一键压测入口（菜单/子命令：自动挂载+分窗+自动复盘）
 ├── disk-mount.sh                  挂载辅助脚本（list/mount/umount，硬盘压测前挂载测试盘）
 ├── mount-iso.sh                   U盘+yum源脚本（build/mount/status/umount，构建源并配置本地源）
@@ -83,16 +83,18 @@ sudo bash oneclick.sh hdd --timeout 8h
 
 要点：
 
-- **全测顺序**：自动挂载（`disk-mount.sh mount --disks all --yes`）→ 每块数据盘 → 系统盘 → CPU → 内存；
+- **全测任务构成（顺序即启动顺序）**：自动挂载（`disk-mount.sh mount --disks all --yes`）→ **COMBO**（CPU+内存组合任务：一个终端、一个结果目录，不再拆成 CPU、内存两个任务）→ **每块数据盘一个 `HDDxx` 任务**（独立终端、独立结果目录）→ **SYSDISK**（系统盘任务，`--sysdisk-only`，独立终端）；
+- **COMBO 只跑 CPU+内存**：oneclick 自动为 COMBO 传 `--peer-disks <数据盘数+1>`，让内存计划把同时在跑的各数据盘与系统盘计入页缓存预留（`cap_disk`），但 COMBO 内不启动任何 hdd 进程，每块盘只由自己的 `HDDxx` 任务压一次；
 - **数据盘默认复用（不清盘）**：自动挂载**默认复用已有文件系统**——有分区测首个分区（分区无文件系统时自动 `mkfs.ext4 -m 0` 该分区），无分区但整盘已有文件系统直接挂载，空盘才整盘格式化；`blkid` 探测失败（重试 5 次）的盘不格式化、直接跳过，其他盘继续（最终退出码 1）；
 - **`--rebuild` 会清空数据盘**：`sudo bash oneclick.sh all --rebuild` / `sudo bash oneclick.sh hdd --rebuild` 会卸载旧 `/mnt/HDD*`、清空该盘分区表、重建 1 个 GPT 分区并格式化；菜单选 `1` / `2` 时会先询问 `是否重新分区并格式化数据盘？(y/N)：`，**默认 N**（直接回车 = 复用）；未指定 `--rebuild` 时输出 `未指定 --rebuild，本次复用已有文件系统；如需重建请加 --rebuild`；`sysdisk` / `cpu` / `mem` 带 `--rebuild` 会被忽略并提示仅对 all/hdd 生效；
 - **`--dry-run` 预演挂载**：`bash disk-mount.sh mount --disks all --dry-run` 只打印执行计划、不写任何数据（也不写 `mount.log`），适合正式挂载前核对盘符与动作；
-- **每块数据盘一个窗口**，窗口标题为 `压测-HDDxx`（另有 `压测-系统盘` / `压测-CPU` / `压测-内存`）；无图形环境（SSH、无 `DISPLAY`）自动降级为后台并行执行；
-- **失败即停**：启动阶段任一任务失败，立即停止启动后续任务并打印已启动清单与失败原因；
-- **自动复盘**：全部结束后自动逐个 `review` 并生成汇总 `summary.txt`，位置为 `/root/stress-test/oneclick-<时间>/summary.txt`（存在异常结论，或自动挂载阶段存在跳过/失败盘时，批次退出码 1；summary 会标注 `自动挂载: 存在跳过/失败盘（退出码 N…）`）；
+- **每块数据盘一个窗口**，窗口标题为 `压测-HDDxx`；COMBO 窗口为 `压测-组合CPU+内存`，系统盘为 `压测-系统盘`（单资源模式另有 `压测-CPU` / `压测-内存`）；无图形环境（SSH、无 `DISPLAY`）自动降级为后台并行执行，输出写入批次目录的 `<任务>.out`；
+- **失败策略**：**COMBO 启动失败 → 中止本批次**，不再启动数据盘与系统盘，批次退出码 1（核心 CPU+内存负载未起来）；**数据盘 / SYSDISK 启动失败 → 记录到 `failed-tasks.txt` 后跳过**，继续启动其余任务，批次最终退出码 1，`summary.txt` 的"启动失败（跳过、未计入复盘）"列出失败任务；
+- **自动复盘**：全部结束后自动逐个 `review` 并生成汇总 `summary.txt`，位置为 `/root/stress-test/oneclick-<时间>/summary.txt`（存在异常结论、任务启动失败，或自动挂载阶段存在跳过/失败盘时，批次退出码 1；summary 会标注 `自动挂载: 存在跳过/失败盘（退出码 N…）` 与"启动失败（跳过、未计入复盘）"清单）；
 - **命令可见性**：每个任务启动前主终端打印 `[<时间>] 任务 HDD01 将执行：` 与其后的 `  $ bash <包绝对路径>/stress-test.sh start hdd --timeout 10h --dirs /mnt/HDD01`；自动挂载前打印 `  $ bash <包绝对路径>/disk-mount.sh mount --disks all --yes`；复盘前打印 `  $ bash <包绝对路径>/stress-test.sh review --dir <结果目录>`。窗口内首屏也有同样的启动命令 banner（`==== HDD01 启动命令 ====` / `  $ …` / `======================`）；
 - **命令落盘**：上述命令写入批次目录的 `commands.txt`（逐条可复制）与 `commands.sh`（可重放启动）；同目录另生成 `env.txt`（环境快照），用途见第 2 节；启动失败时始终单独打印“该任务压测命令（可直接复制重跑）：”；
 - **`--quiet` 静默**：`sudo bash oneclick.sh all --quiet`（或 `ONECLICK_SHOW_CMD=0 sudo -E bash oneclick.sh all`）关闭终端命令打印，三个命令文件照常生成；
+- **高级用户：`--peer-disks N`（仅 `start combo` / `start mem`）**：显式声明"同时另有 N 路并发 hdd 流"，只参与内存预留与展示（`cap_disk` 按 `max(实际盘目录数+--sysdisk, N)` 计算），**不启动任何 hdd 进程**；`start cpu` / `start hdd` 收到时只告警、不改变行为；取值须为非负整数，`--peer-disks 0` 表示纯 CPU+内存。**该参数一旦出现即禁用自动 glob**——combo/mem 不再扫描 `/mnt/HDD*`，只有显式 `--dirs` 才会在 combo 内启动 hdd 进程，从而避免与外部每盘任务重复压盘；未出现该参数时保持原有自动扫描行为。oneclick `all` 会自动传给 COMBO（值 = 数据盘数 + 1），手工单测一般无需关心。
 - 其它子命令：`sudo bash oneclick.sh status` 查看最近批次状态（有批次且存在 `commands.txt` 时会额外提示 `查看本次执行过的命令：cat <批次>/commands.txt`），`sudo bash oneclick.sh review` 重新生成复盘。
 
 ### 4.2 自动挂载默认行为（disk-mount.sh mount）
@@ -123,6 +125,9 @@ sudo bash oneclick.sh hdd --timeout 8h
 1. **内核 I/O 错误 → 异常**：`dmesg` 增量命中 `EXT4-fs error`、`I/O error`、`Buffer I/O error`、`blk_update_request`、`critical medium error`、`ata`/`nvme` 错误等即判 `异常（内核 I/O 错误，见 error.log）`，**即使 `status.txt` 为 `OK` 也不覆盖**；错误按设备归因（`devices.txt` 记录本任务分区名 + 整盘名 + `lsblk` KNAME），其他盘的报错进入 `error-unattributed.log`，只计数、不污染本盘结论（summary 中显示 `未归因内核 I/O 错误 N 条`）；
 2. **ENOSPC → 空间不足（非磁盘故障）**：命中 `No space left on device` 时结论为 `异常（空间不足 ENOSPC，非磁盘故障）`，与磁盘硬件故障区分；
 3. 其他 `error.log` 命中（`检测到 stress` / `dmesg`）→ 异常；否则按 `status.txt`（`OK` 正常 / `FAILED` 异常 / `ABORTED` 按原因 / `STOPPED` 已手动停止）。
+4. **执行一致性**：`review` 会把 `run-config.txt` 的计划值与 `actual-params.txt` 的实际 CPU/VM worker、`--vm-keep`、hdd 进程数、cwd、RSS 逐项对拍，输出 `== 执行一致性 ==` 的 PASS/FAIL/UNKNOWN。UNKNOWN（旧目录、缺字段、只有 start/60s 快照）不改变结论；FAIL 只在原结论为“正常”时改为“异常（执行与计划不一致）”，I/O/ENOSPC/STOPPED 优先级不变。
+
+**运行时证据文件**：`runtime-snapshot.txt`（启动、60s、600s、之后每 600s 及手动 `snapshot` 的进程 cmdline/cwd/VmRSS/Threads）、`actual-params.txt`（最新实际参数）、`runtime-final.txt`（结束状态与退出码）。运行中可执行 `bash stress-test.sh snapshot <结果目录>` 手动补抓一次，仅作展示、不作为一致性证据。
 
 **系统盘压测 = 根文件系统压测**：`--sysdisk` / `--sysdisk-only` 时压测目录固定为 `/stresstest-hdd`（不分区、不格式化、不挂载），`run-config.txt` 与 `summary.txt` 写明 `压测对象: 系统盘（根文件系统压测）` 与 `覆盖边界: 不覆盖 /boot、/boot/efi、swap、未分配空间；LVM/RAID 下写入可能跨多个物理盘`。
 
@@ -172,12 +177,20 @@ rpm -e dmidecode   # 可选：仅在不需要自动探测内存条根数时卸�
 
 ## 8. 压测用法示例
 
-正式压测请直接用包内 `stress-test.sh`：CPU/内存参数由脚本按**本机实测规格**推导（CPU `floor(nproc × 86%)`、内存 `MemTotal × 82%`、`--vm` = 实际内存条根数），**默认命令不需要 `--model`**：
+正式压测请直接用包内 `stress-test.sh`：CPU/内存参数由脚本按**本机实测规格**自动推导（v3 通用公式），**默认命令不需要 `--model`**：
+
+- **CPU worker** = `round(物理核数 × 1.5625)`（如 64 物理核 → 100；物理核识别失败时回退 `round(nproc × 78%)`）；
+- **VM worker** = 实际内存条根数；**单 worker** = `单条容量 − max(6G, 单条容量/8)`（32G→26G、64G→56G、128G→112G）；
+- **三道上限取最小**：`模块总容量 × 88%`、`MemTotal × 92%`、`MemTotal − (盘数 × hdd-bytes × 1.2 + 8G)`；`combo` / `mem` 的"盘数"取 `max(实际盘目录数 + --sysdisk, --peer-disks N)`（未传该参数时仅按实际盘数）。超限逐 GiB 自动下调（如 1024G/16×64G 在 12 块数据盘场景，单 worker 由 56G 自动降到 54G）。该 12 盘示例按标称容量估算，实际 MemTotal 略低，脚本按 MemTotal 计算时可能再低 1G（例如 512G 约 21G、1024G 约 53G）；
+- **`mem` / `combo` 固定追加 `--vm-keep`**（内存常驻、压力持续）；`cpu` / `hdd` 不加。
 
 ```bash
 bash stress-test.sh start cpu
 bash stress-test.sh start mem
 bash stress-test.sh start combo
+
+# 显式覆盖示例（显式参数优先，仍受分配上限告警提示）
+bash stress-test.sh start mem --vm 16 --vm-bytes 56G
 ```
 
 `--model 5380|7380|7360|auto` 仅用于 `run-config.txt` / `review` 的机型标注与"实测线程 vs 标称线程"交叉校验，**不影响任何压测参数**（默认 `auto` 已够用）。

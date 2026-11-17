@@ -37,6 +37,8 @@ START_TIME=""
 MODE=""
 TERM_KIND=""
 ABORTED=0
+# 启动失败标记：数据盘/系统盘启动失败时置 1（COMBO 失败另由 ABORTED 中止后续），批次最终退出 1
+START_FAILED=0
 LAST_TASK_CMD=""
 # 数据盘重建开关：默认 0（复用已有文件系统）；--rebuild 或菜单输入 y 才置 1
 REBUILD=0
@@ -53,7 +55,7 @@ usage() {
   bash oneclick.sh --help
 
 运行子命令:
-  all       全测：数据盘 + 系统盘 + CPU + 内存
+  all       全测：CPU+内存组合 + 每块数据盘独立任务 + 系统盘
   hdd       只测数据盘（每个 /mnt/HDD* 一个任务）
   sysdisk   只测系统盘
   cpu       只测 CPU
@@ -62,7 +64,7 @@ usage() {
   review    对最近一次批次逐个复盘并生成汇总
 
 菜单项:
-  1) 全测
+  1) 全测（CPU+内存组合 + 每盘独立 + 系统盘）
   2) 只测硬盘
   3) 只测系统盘
   4) 只测 CPU
@@ -78,14 +80,14 @@ usage() {
   --help             显示本帮助
 
 执行顺序:
-  前置检查 → 自动挂载（all/hdd）→ 每块数据盘一个窗口 → 系统盘 → CPU → 内存 → 失败即停
+  前置检查 → 自动挂载（all/hdd）→ CPU+内存组合 → 每块数据盘一个窗口 → 系统盘
   → 等待全部结束 → 自动逐个复盘 → 输出汇总（批次目录 summary.txt，存在异常结论则退出码 1）
 任务窗口:
-  标题固定为 压测-HDDxx / 压测-系统盘 / 压测-CPU / 压测-内存；
+  标题固定为 压测-组合CPU+内存 / 压测-HDDxx / 压测-系统盘 / 压测-CPU / 压测-内存；
   无图形环境（SSH、无 DISPLAY）自动降级为后台并行执行，输出写入批次目录 <任务>.out。
 提示:
   默认复用数据盘已有文件系统；仅 --rebuild（或菜单输入 y）才会重新分区并格式化数据盘。
-  启动阶段任一任务失败，立即停止启动后续任务，并打印已启动任务清单与失败原因。
+  启动阶段 COMBO 失败即中止批次；单盘/系统盘启动失败会记录到 failed-tasks.txt 后继续其余任务，最终退出码 1。
 EOF
 }
 
@@ -168,6 +170,7 @@ task_title() {
     case "$1" in
         HDD*) echo "压测-$1" ;;
         SYSDISK) echo "压测-系统盘" ;;
+        COMBO) echo "压测-组合CPU+内存" ;;
         CPU) echo "压测-CPU" ;;
         MEM) echo "压测-内存" ;;
         *) echo "压测-$1" ;;
@@ -279,8 +282,18 @@ write_plan() {
     case "$mode" in
         all)
             dirs=$(collect_hdd_dirs)
-            if [ -z "$dirs" ]; then
-                echo "未发现数据盘，跳过数据盘任务"
+            # 先计数再写计划：计划顺序即启动顺序（COMBO 先启动），N = 数据盘数 + 1（固定含系统盘）
+            local hdd_count=0
+            if [ -n "$dirs" ]; then
+                while IFS= read -r d; do
+                    [ -n "$d" ] || continue
+                    case "$d" in *'|'*) die "目录名含 | 不受支持：$d" ;; esac
+                    hdd_count=$((hdd_count + 1))
+                done <<< "$dirs"
+            fi
+            printf 'COMBO|combo|--peer-disks|%s\n' "$((hdd_count + 1))" >> "$plan"
+            if [ "$hdd_count" -eq 0 ]; then
+                echo "未发现数据盘，跳过数据盘任务（COMBO peer=1 + 系统盘）"
             else
                 while IFS= read -r d; do
                     [ -n "$d" ] || continue
@@ -290,8 +303,6 @@ write_plan() {
                 done <<< "$dirs"
             fi
             printf 'SYSDISK|hdd|--sysdisk-only\n' >> "$plan"
-            printf 'CPU|cpu|\n' >> "$plan"
-            printf 'MEM|mem|\n' >> "$plan"
             ;;
         hdd)
             dirs=$(collect_hdd_dirs)
@@ -460,6 +471,20 @@ run_review_all() {
 
     {
         echo ""
+        echo "启动失败（跳过、未计入复盘）:"
+        if [ -s "$BATCH/failed-tasks.txt" ]; then
+            while IFS='|' read -r id _; do
+                [ -n "$id" ] || continue
+                echo "  $id"
+            done < "$BATCH/failed-tasks.txt"
+        else
+            echo "  无"
+        fi
+    } >> "$BATCH/summary.txt"
+    [ -s "$BATCH/failed-tasks.txt" ] && bad=$((bad + 1))
+
+    {
+        echo ""
         echo "结果目录:"
         if [ -f "$BATCH/tasks.txt" ]; then
             while IFS='|' read -r id type dir; do
@@ -619,15 +644,26 @@ run_mode() {
         else
             echo "该任务压测命令（可直接复制重跑）："
             printf '  $ %s\n' "$LAST_TASK_CMD"
+            # 失败任务落盘：summary 与 failed-tasks.txt 可见（格式：任务ID|完整命令）
+            printf '%s|%s\n' "$id" "$LAST_TASK_CMD" >> "$BATCH/failed-tasks.txt"
             echo "已启动任务：${started:-无}"
-            echo "因 $id 启动失败，停止启动后续任务"
-            ABORTED=1
-            echo "任务 $id 启动失败，已停止启动后续任务" > "$BATCH/aborted"
-            break
+            if [ "$id" = "COMBO" ]; then
+                # COMBO 是核心 CPU+内存负载：失败即中止本批次，不再启动后续任务
+                echo "因 $id 启动失败，停止启动后续任务（CPU+内存组合未起来）"
+                ABORTED=1
+                echo "任务 $id 启动失败，已停止启动后续任务" > "$BATCH/aborted"
+                break
+            fi
+            # 数据盘/系统盘启动失败：记录后跳过，继续启动其余任务；最终退出码 1
+            START_FAILED=1
+            echo "因 $id 启动失败，已跳过并继续启动后续任务（记录：$BATCH/failed-tasks.txt）"
         fi
     done < "$BATCH/plan.txt"
 
     echo "已启动 $n 个任务（批次目录：$BATCH）"
+    if [ "$START_FAILED" -eq 1 ]; then
+        echo "启动失败并跳过的任务：$(awk -F'|' 'NF > 0 { printf "%s%s", sep, $1; sep = ", " }' "$BATCH/failed-tasks.txt" 2>/dev/null)（见 $BATCH/failed-tasks.txt）"
+    fi
     [ "$n" -gt 0 ] || exit 1
 
     echo "[$(now)] 等待全部任务结束（轮询间隔 ${POLL_INTERVAL} 秒）"
@@ -639,7 +675,7 @@ run_mode() {
     run_review_all
     review_rc=$?
 
-    if [ "$ABORTED" -eq 1 ] || [ "$review_rc" -ne 0 ] || [ "$MOUNT_RC" -ne 0 ]; then
+    if [ "$ABORTED" -eq 1 ] || [ "$START_FAILED" -eq 1 ] || [ "$review_rc" -ne 0 ] || [ "$MOUNT_RC" -ne 0 ]; then
         exit 1
     fi
     exit 0
@@ -650,7 +686,7 @@ run_mode() {
 show_menu() {
     cat <<EOF
 ==== 一键压测 ====
-  1) 全测（数据盘 + 系统盘 + CPU + 内存）
+  1) 全测（CPU+内存组合 + 每盘独立 + 系统盘）
   2) 只测硬盘（数据盘）
   3) 只测系统盘
   4) 只测 CPU

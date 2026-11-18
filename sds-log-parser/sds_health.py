@@ -215,8 +215,12 @@ def build_suggestions(events: list[EventRecord]) -> list[str]:
 
 # ---------- 健康判定主入口 ----------
 
-def assess_health(inv, sensors, events) -> list[ComponentHealth]:
-    """综合事件证据 + 状态字段双来源，输出组件健康判定列表。"""
+def assess_health(inv, sensors, events, raid_bp_text: str | None = None) -> list[ComponentHealth]:
+    """综合事件证据 + 状态字段双来源，输出组件健康判定列表。
+
+    raid_bp_text: 背板 Raid_BP_Conf_Info.ini 原文（可选）。含 "Failed To Match"
+    时将该背板组件置为「提示」（设计文档 binding authority 规则）。
+    """
     standby = _is_standby(sensors)
     # key=(category, name) -> {'status', 'evidence', 'suggestions'}
     comps: dict = {}
@@ -298,6 +302,21 @@ def assess_health(inv, sensors, events) -> list[ComponentHealth]:
             _upsert('电源', name, '提示', f'[清单] 电源状态 {ps}')
         else:
             _upsert('电源', name, '正常')
+
+    # 3.5) 背板 Raid_BP_Conf_Info.ini 含 "Failed To Match" → 提示
+    #      （设计文档 binding authority；不区分大小写；仅升级不降级）
+    #      命中已有的背板组件时取健康列表中排在最前的那个（与输出排序一致），
+    #      使真实样例中的清单背板（FrontBackPlane3）而非事件传感器组件被标提示
+    if raid_bp_text and 'failed to match' in raid_bp_text.lower():
+        bp_evidence = '[未知] Info Raid_BP_Conf_Info: Failed To Match The Configuration'
+        bp_suggestion = ['检查背板配置与当前硬件是否匹配，必要时联系技术支持。']
+        order = {cat: i for i, cat in enumerate(_CATEGORY_ORDER)}
+        bp_keys = sorted((k for k in comps if k[0] == '背板'),
+                         key=lambda k: (order.get(k[0], len(order)), k[1]))
+        if bp_keys:
+            _upsert(*bp_keys[0], '提示', bp_evidence, bp_suggestion)
+        else:
+            _upsert('背板', 'BackPlane', '提示', bp_evidence, bp_suggestion)
 
     # 4) 组装输出（evidence 最多 5 条；按类别稳定排序）
     order = {cat: i for i, cat in enumerate(_CATEGORY_ORDER)}

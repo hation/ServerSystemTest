@@ -645,6 +645,22 @@ def test_suggestions():
     assert suggs2 and '联系技术支持' in suggs2[0], '无匹配事件应返回兜底建议'
 
 
+def test_health_backplane_failed_match():
+    """raid_bp_text 含 "Failed To Match" → 背板判提示；不传该参数行为不变。"""
+    inv = InventoryData()
+    inv.backplanes = [{'name': 'FrontBackPlane3', 'health_status': 'Normal'}]
+    health = assess_health(inv, [], [], raid_bp_text='[NOTE: Failed To Match The Configuration...]')
+    bps = [c for c in health if c.category == '背板']
+    assert bps, '应存在背板组件'
+    assert bps[0].status == '提示', '背板应判提示'
+    assert any('failed to match' in e.lower() for e in bps[0].evidence), \
+        '背板 evidence 应含 "failed to match"（大小写不敏感）'
+    # 不传 raid_bp_text → 背板保持正常（不因该参数变异常）
+    health2 = assess_health(inv, [], [])
+    bps2 = [c for c in health2 if c.category == '背板']
+    assert bps2 and bps2[0].status == '正常', '不传 raid_bp_text 时背板应保持正常'
+
+
 # ---------- 运行器 ----------
 
 def main() -> int:

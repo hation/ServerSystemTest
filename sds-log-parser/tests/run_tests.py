@@ -947,6 +947,38 @@ def test_event_csv_suggestion_junk_cleaned():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_event_csv_suggestion_dangling_trimmed():
+    """Suggestion 若因源数据截断而以半截句子结尾（无句末标点）→
+    回退到最后一个完整句子；正常结尾（有句末标点）保持不变。"""
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        csv_path = os.path.join(tmp_dir, 'dangling.csv')
+        header = ('Record Time Stamp,Severity Level,Severity Level ID,SensorTypeStr,SensorName,'
+                  'Event Dir,Event Occurred Time,DescInfo,Explanation,Suggestion\n')
+        # 场景 1：结尾是半截句子 "...If the d"（源截断，无内嵌 CSV 残渣）
+        row1 = ('2026-11-15 06:24:40,Major,0x2,Drive Slot (Bay),Disk_F23_Status,Assertion event,'
+                '2026-11-15 06:24:39,"Drive Fault"," ",'
+                '"1. Log in to HDM and verify all drives are identified. If a drive cannot be '
+                'identified, re-install the drive. 2. View the drive status. If the d"\n')
+        # 场景 2：正常以句号结尾 → 不变
+        row2 = ('2026-11-15 06:24:40,Major,0x2,Drive Slot (Bay),Disk_F23_Status,Assertion event,'
+                '2026-11-15 06:24:39,"Drive Fault"," ","1. Log in to HDM and verify. No action is required."\n')
+        with open(csv_path, 'wb') as f:
+            f.write(header.encode('utf-8') + row1.encode('utf-8') + row2.encode('utf-8'))
+        evs = parse_event_csv(csv_path)
+        assert len(evs) == 2
+        expected = ('1. Log in to HDM and verify all drives are identified. '
+                    'If a drive cannot be identified, re-install the drive. '
+                    '2. View the drive status.')
+        assert evs[0].suggestion == expected, \
+            f'半截结尾应回退到完整句子，实际：{evs[0].suggestion!r}'
+        assert 'If the d' not in evs[0].suggestion, '不应保留半截结尾'
+        assert evs[1].suggestion == '1. Log in to HDM and verify. No action is required.', \
+            '正常结尾应保持不变'
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 # ---------- 运行器 ----------
 
 def main() -> int:

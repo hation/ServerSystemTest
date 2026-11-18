@@ -84,18 +84,37 @@ def _get_column(row: list[str], col: dict, field: str) -> str:
 
 _CSV_ROW_LEAK = re.compile(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},(?:Info|Minor|Major|Critical),0x')
 
+# 句子边界：句号前为非数字字母/中文，后随空白+大写字母或中文（排除 "1." "2." 数字编号）
+_SENTENCE_BOUNDARY = re.compile(r'(?<=[A-Za-z\u4e00-\u9fff。])\.(?=\s+[A-Z\u4e00-\u9fff])')
+
+
+def _trim_dangling_sentence(text: str) -> str:
+    """源数据截断导致文本以半截句子结尾（无句末标点）时，回退到最后一个完整句子。"""
+    if not text:
+        return text
+    if text[-1] in '.。!?':
+        return text
+    boundary = None
+    for m in _SENTENCE_BOUNDARY.finditer(text):
+        boundary = m.end()
+    if boundary is not None:
+        return text[:boundary].strip()
+    return text
+
 
 def _clean_suggestion(text: str) -> str:
-    """截断 Suggestion 列中内嵌的原始 CSV 行残渣。
+    """截断 Suggestion 列中内嵌的原始 CSV 行残渣，并回退源截断的半截句子。
 
     HDM 导出的 Suggestion 列偶尔会在官方建议文本后拼接一条原始 CSV 行
-    （形如 '2026-11-15 06:29:07,Info,0x0,Button / Switch,Button,...'）。
-    该残渣始于时间戳+级别+0x 编号模式，从首个匹配处截断，保留官方文本。
+    （形如 '2026-11-15 06:29:07,Info,0x0,Button / Switch,Button,...'），且官方
+    文本本身可能被截断在半句话（如 "...in the message. If the d"）。
+    该残渣始于时间戳+级别+0x 编号模式，从首个匹配处截断，随后把结尾的
+    半截句子回退到最后一个完整句子，仅保留完整可读的官方文本。
     """
     m = _CSV_ROW_LEAK.search(text)
     if m:
-        return text[: m.start()].strip()
-    return text
+        text = text[: m.start()].strip()
+    return _trim_dangling_sentence(text)
 
 
 def parse_event_csv(path: str | None) -> list[EventRecord]:

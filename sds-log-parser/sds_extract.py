@@ -49,12 +49,12 @@ _FILE_SUFFIXES = {
 
 
 def _is_unsafe_member_name(name: str) -> bool:
-    """判断 tar 成员名是否危险（路径穿越 / 绝对路径 / Windows 盘符）。"""
+    """判断 tar 成员名是否危险（路径穿越 / 绝对路径 / Windows 盘符 / 折叠到 . 或 ..）。"""
     if not name:
         return True
     # 统一用 posix 分隔符处理，防 Windows 反斜杠绕过
     norm = posixpath.normpath(name.replace('\\', '/'))
-    if norm == '..' or norm.startswith('../') or norm.startswith('/'):
+    if norm in ('.', '..') or norm.startswith('../') or norm.startswith('/'):
         return True
     # Windows 盘符前缀（如 C:/xxx），posixpath 无法识别
     if len(norm) >= 2 and norm[1] == ':' and norm[0].isalpha():

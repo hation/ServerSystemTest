@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sds_ai import build_ai_payload, call_ai
 from sds_extract import SDSNotTarError, cleanup, extract_sds, read_text_file
 from sds_events import EventRecord, parse_event_csv, parse_sbe, parse_visible_log
-from sds_health import ComponentHealth, assess_health, build_suggestions
+from sds_health import ComponentHealth, _field_status, assess_health, build_suggestions
 from sds_inventory import InventoryData, parse_inventory
 from sds_sensors import SensorReading, parse_sensors
 
@@ -142,7 +142,7 @@ def test_extract_non_tar():
 
 
 def test_extract_traversal():
-    """含 ../ 与绝对路径成员的恶意 tar → 不落盘、不抛异常。"""
+    """含 ../、绝对路径与 a/.. 折叠成员的恶意 tar → 不落盘、不抛异常。"""
     tmp_dir = tempfile.mkdtemp()
     try:
         sds_path = os.path.join(tmp_dir, 'evil.sds')
@@ -153,6 +153,10 @@ def test_extract_traversal():
             abs_member = tarfile.TarInfo('/tmp/abs_evil')
             abs_member.size = 3
             tar.addfile(abs_member, io.BytesIO(b'abs'))
+            # 病态成员 a/..：normpath 折叠为 '.'，应被拒绝而非触发 PermissionError
+            dot_member = tarfile.TarInfo('a/..')
+            dot_member.size = 4
+            tar.addfile(dot_member, io.BytesIO(b'evil'))
         result = extract_sds(sds_path)
         try:
             # '../evil' 不应落到临时目录或其父目录
@@ -161,6 +165,8 @@ def test_extract_traversal():
             assert not os.path.exists(os.path.join(parent, 'evil'))
             # 绝对路径成员不应落盘
             assert not os.path.exists(os.path.join(result.root_dir, 'tmp', 'abs_evil'))
+            # a/.. 折叠为 '.'：root 下应无任何落盘内容，且整体不崩溃
+            assert os.listdir(result.root_dir) == []
         finally:
             cleanup(result)
     finally:
@@ -692,6 +698,26 @@ def test_health_backplane_failed_match():
     health2 = assess_health(inv, [], [])
     bps2 = [c for c in health2 if c.category == '背板']
     assert bps2 and bps2[0].status == '正常', '不传 raid_bp_text 时背板应保持正常'
+
+
+def test_field_status_values():
+    """_field_status：黑名单优先（Abnormal→异常），精确白名单（Healthy→正常），
+    未知词（Not Present/N/A/Unknown）→ 未知，不再把非故障词误判为异常。"""
+    # 黑名单优先：'abnormal' 含于 'Abnormal'，必须判异常（不能因'normal'子串漏报）
+    assert _field_status('Abnormal') == '异常'
+    # 未知词 → 未知（修复前被误判为异常）
+    assert _field_status('Not Present') == '未知'
+    assert _field_status('N/A') == '未知'
+    assert _field_status('Unknown') == '未知'
+    assert _field_status('none') == '未知'
+    # 精确白名单（修复前 Healthy/Enabled 被误判为异常）
+    assert _field_status('Healthy') == '正常'
+    assert _field_status('Normal') == '正常'
+    assert _field_status('ok') == '正常'
+    assert _field_status('present') == '正常'
+    # 缺失 → 未知
+    assert _field_status(None) == '未知'
+    assert _field_status('') == '未知'
 
 
 def test_ai_prompt_contains_facts():

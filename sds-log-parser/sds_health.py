@@ -157,12 +157,18 @@ def _fan_rpm_zero(reading) -> bool:
 # ---------- 清单状态字段判定 ----------
 
 def _field_status(value) -> str:
-    """清单状态字段文本 → 状态：Normal/ok 等 → 正常；其他 → 异常；缺失 → 未知。"""
+    """清单状态字段文本 → 状态：黑名单优先（abnormal/fault/error/fail/disabled/critical → 异常），
+    精确白名单（ok/good/present/yes/normal/healthy/enabled → 正常），
+    unknown/na/none 等 → 未知；其余 → 异常。"""
     if not value:
         return '未知'
     low = str(value).strip().lower()
-    if 'normal' in low or low in ('ok', 'good', 'present', 'yes'):
+    if any(k in low for k in ('abnormal', 'fault', 'error', 'fail', 'disabled', 'critical')):
+        return '异常'
+    if low in ('ok', 'good', 'present', 'yes', 'normal', 'healthy', 'enabled'):
         return '正常'
+    if low in ('unknown', 'na', 'n/a', 'not present', 'none'):
+        return '未知'
     return '异常'
 
 

@@ -28,6 +28,7 @@
 #   EDAC_ROOT        DIMM 根数第二探测来源（默认 /sys/devices/system/edac/mc）
 # 退出码：0=正常（含无运行任务）；1=用法错误/前置条件不满足
 # 说明：全程不 set -e；压测与监控均 nohup 后台运行、全部落盘，可脱离 ssh 会话。
+#       CPU worker 按逻辑线程（物理核 × 每核线程数，SMT 探测；未知默认开）× 25/32 推导。
 
 STRESS_TEST_ROOT="${STRESS_TEST_ROOT:-/root/stress-test}"
 MONITOR_INTERVAL="${MONITOR_INTERVAL:-30}"
@@ -68,7 +69,9 @@ usage() {
   bash stress-test.sh snapshot <结果目录>   # 立即抓取一次运行时证据快照
 
 推导规则（不传对应参数时自动生效）:
-  CPU worker 数 = max(1, round(物理核数 × 1.5625))（物理核识别失败回退 nproc × 78%，环境变量 CPU_MAX_PCT）
+  CPU worker 数 = max(1, round(逻辑线程数 × 25/32))，逻辑线程 = 物理核 × 每核线程数（SMT 探测，未知默认开）；
+                  SMT 关闭（每核1线程）时逻辑线程减半，worker 相应减半（5380→25、7360→38、7380→50）；
+                  物理核识别失败回退 nproc × 78%（环境变量 CPU_MAX_PCT）
   内存单 worker = 单条容量 − max(6G, 单条容量/8)，VM worker = DIMM 根数
   内存上限 = min(模块总容量 × 88%, MemTotal × 92%,
                  MemTotal − (盘数 × hdd-bytes × 1.2 + 8G))，超限逐 GiB 下调单 worker
@@ -79,7 +82,7 @@ usage() {
                          只影响内存推导与展示，不启动 hdd 进程；出现即不再自动扫描 /mnt/HDD*
 
 示例:
-  bash stress-test.sh start cpu                # 按物理核推导跑 CPU 压测（默认 10h）
+  bash stress-test.sh start cpu                # 按逻辑线程推导跑 CPU 压测（默认 10h）
   bash stress-test.sh start mem                # 按实测 MemTotal 与内存条根数推导跑内存压测（默认 10h）
   bash stress-test.sh start hdd --dirs "/mnt/HDD01 /mnt/HDD02"
   bash stress-test.sh start hdd --sysdisk       # 仅压系统盘（无数据盘时）
@@ -136,16 +139,67 @@ physical_cores() {
     echo "$n"
 }
 
-# 自动推导 CPU worker 数（唯一公式）：max(1, round(物理核 × 1.5625))；
-# 物理核识别失败回退 round(nproc × CPU_MAX_PCT%)。成功设置 CPU_WORKERS_AUTO / CPU_PHYS_CORES 并返回 0；
-# 物理核与 nproc 均不可用时返回 1（由调用方报错退出）。
+# SMT 每核线程数探测（参与 CPU worker 分配）：输出 2（开）/ 1（关）/ 空串（未知/不支持）。
+# 优先级与 smt_status 一致：lscpu "Thread(s) per core" → /sys/devices/system/cpu/smt/active → /sys/devices/system/cpu/smt/control → 未知
+smt_tpc() {
+    local tpc=""
+    tpc=$("$LSCPU_BIN" 2>/dev/null | grep -i "Thread(s) per core" | tr -dc '0-9')
+    case "$tpc" in
+        1|2) echo "$tpc"; return 0 ;;
+    esac
+    if [ -f /sys/devices/system/cpu/smt/active ]; then
+        case "$(cat /sys/devices/system/cpu/smt/active 2>/dev/null)" in
+            1) echo 2; return 0 ;;
+            0) echo 1; return 0 ;;
+        esac
+    fi
+    if [ -f /sys/devices/system/cpu/smt/control ]; then
+        case "$(cat /sys/devices/system/cpu/smt/control 2>/dev/null)" in
+            on) echo 2; return 0 ;;
+            off|forceoff) echo 1; return 0 ;;
+            notsupported) return 0 ;;
+        esac
+    fi
+    echo ""
+}
+
+# SMT 状态探测（每核线程数来自 smt_tpc；参与 CPU worker 分配）：
+# 优先级 lscpu "Thread(s) per core" → /sys/devices/system/cpu/smt/active → /sys/devices/system/cpu/smt/control → 未知
+# 输出：开(每核2线程) / 关(每核1线程) / 不支持 / 未知
+smt_status() {
+    local tpc
+    tpc=$(smt_tpc)
+    case "$tpc" in
+        2) echo "开(每核2线程)"; return 0 ;;
+        1) echo "关(每核1线程)"; return 0 ;;
+    esac
+    if [ -f /sys/devices/system/cpu/smt/control ]; then
+        case "$(cat /sys/devices/system/cpu/smt/control 2>/dev/null)" in
+            notsupported) echo "不支持"; return 0 ;;
+        esac
+    fi
+    echo "未知"
+}
+
+# 自动推导 CPU worker 数（唯一公式）：max(1, round(逻辑线程 × 25/32))；
+# 公式口径：所有机型统一；逻辑线程 = 物理核 × 每核线程数（SMT 探测，未知默认按开 tpc=2）；
+# SMT 关闭（每核1线程）时逻辑线程减半，worker 相应减半：5380→25、7360→38、7380→50。
+# 物理核识别失败回退 round(nproc × CPU_MAX_PCT%)。成功设置 CPU_WORKERS_AUTO / CPU_PHYS_CORES /
+# CPU_LOGICAL_THREADS / CPU_SMT_TPC 并返回 0；物理核与 nproc 均不可用时返回 1（由调用方报错退出）。
 cpu_workers_auto() {
-    local c w n
+    local c w n tpc logical
     c=$(physical_cores)
     CPU_PHYS_CORES="$c"
     CPU_WORKERS_AUTO=""
+    CPU_LOGICAL_THREADS=""
+    CPU_SMT_TPC=""
     if [ "$c" -ge 1 ]; then
-        w=$(( (c * 25 + 8) / 16 ))
+        tpc=$(smt_tpc)
+        [ -z "$tpc" ] && tpc=2
+        logical=$(( c * tpc ))
+        w=$(( (logical * 25 + 16) / 32 ))
+        CPU_LOGICAL_THREADS="$logical"
+        CPU_SMT_TPC="$tpc"
     else
         n=$(logical_cpus)
         case "$n" in ''|*[!0-9]*) return 1 ;; esac
@@ -162,20 +216,28 @@ nominal_threads() {
     case "$1" in 5380) echo 64 ;; 7360) echo 96 ;; 7380) echo 128 ;; *) echo "" ;; esac
 }
 
-# 实测线程数与机型标称值交叉校验：偏差 >10% 时提示并记日志，不改变任何参数
+# 实测线程数与机型标称值交叉校验：偏差 >10% 时提示并记日志，不改变任何参数。
+# $3 为 SMT 状态文本（smt_status 输出），用于区分"实测≈标称一半"的提示口径
 check_model_threads() {
-    local model="$1" n="$2" nominal diff pct hint=""
+    local model="$1" n="$2" smt="$3" nominal diff pct hint=""
     nominal=$(nominal_threads "$model")
     [ -n "$nominal" ] || return 0
     case "$n" in ''|*[!0-9]*) return 0 ;; esac
     diff=$(( nominal - n )); [ "$diff" -lt 0 ] && diff=$(( -diff ))
     [ $(( diff * 100 )) -gt $(( nominal * 10 )) ] || return 0
     pct=$(( diff * 100 / nominal ))
-    # 实测约为标称一半 → 提示疑似单路 CPU
+    # 实测约为标称一半 → 结合 SMT 状态区分：SMT 关闭时逻辑线程减半属预期；SMT 开启/未知仍提示疑似单路 CPU
     if [ $(( n * 2 )) -ge $(( nominal * 9 / 10 )) ] && [ $(( n * 2 )) -le $(( nominal * 11 / 10 )) ]; then
-        hint="，疑似单路 CPU（另一路未识别）"
+        case "$smt" in
+            *"关(每核1线程)"*) hint="，SMT 关闭（每核1线程），逻辑线程减半属预期；CPU worker 将按逻辑线程 78.125% 推导" ;;
+            *) hint="，疑似单路 CPU（另一路未识别）" ;;
+        esac
     fi
-    echo "警告：机型 $model 标称 ${nominal} 线程，实测 ${n} 线程（偏差 ${pct}%）${hint}；CPU 参数按实测推导"
+    if [ -n "$hint" ]; then
+        echo "警告：机型 $model 标称 ${nominal} 线程，实测 ${n} 线程（偏差 ${pct}%）${hint}"
+    else
+        echo "警告：机型 $model 标称 ${nominal} 线程，实测 ${n} 线程（偏差 ${pct}%）；CPU 参数按实测推导"
+    fi
     log_op "model-check 机型 $model 标称 ${nominal} 线程，实测 ${n} 线程（偏差 ${pct}%，仅交叉校验）"
 }
 
@@ -721,13 +783,15 @@ cmd_start() {
         *) echo "未知机型：$model（应为 5380|7380|7360|auto）"; exit 1 ;;
     esac
 
-    # CPU 参数：按物理核推导（显式 --cpu 直接使用）；hdd 模式不推导、不校验
-    # 物理核识别失败时回退 round(nproc × CPU_MAX_PCT%)；--model 只做线程数交叉校验
-    local cpus="" phys_cores=0 cpu_note=""
+    # CPU 参数：按逻辑线程推导（显式 --cpu 直接使用）；hdd 模式不推导、不校验
+    # 逻辑线程 = 物理核 × 每核线程数（SMT 探测，未知默认开）；物理核识别失败时回退 round(nproc × CPU_MAX_PCT%)
+    # SMT 状态在此探测一次（参与 CPU worker 分配）；hdd 模式不探测（不推导 CPU）
+    local cpus="" phys_cores=0 cpu_note="" smt_txt=""
     if [ "$type" != "hdd" ]; then
+        smt_txt=$(smt_status)
         cpus=$(logical_cpus)
         case "$cpus" in ''|*[!0-9]*) cpus="" ;; esac
-        [ -n "$cpus" ] && check_model_threads "$model" "$cpus"
+        [ -n "$cpus" ] && check_model_threads "$model" "$cpus" "$smt_txt"
         if [ -z "$cpu_opt" ]; then
             if ! cpu_workers_auto; then
                 echo "无法探测 CPU 数量（nproc 与物理核均不可用），已中止；请检查 nproc/lscpu 或用 --cpu 显式指定"
@@ -736,7 +800,11 @@ cmd_start() {
             cpu_opt="$CPU_WORKERS_AUTO"
             phys_cores="$CPU_PHYS_CORES"
             if [ "$phys_cores" -ge 1 ]; then
-                cpu_note="（物理核 ${phys_cores} × 1.5625）"
+                if [ "$CPU_SMT_TPC" = "1" ]; then
+                    cpu_note="（逻辑线程 ${CPU_LOGICAL_THREADS} × 25/32，SMT 关/每核1线程）"
+                else
+                    cpu_note="（逻辑线程 ${CPU_LOGICAL_THREADS} × 25/32，SMT 开/每核2线程）"
+                fi
             else
                 cpu_note="（物理核识别失败，nproc ${cpus} × ${CPU_MAX_PCT}%）"
             fi
@@ -1067,19 +1135,19 @@ cmd_start() {
                 plan_total="$(( per_mb * vm_opt ))M"
             fi
         fi
-        log_op "mem-plan dimms=${vm_opt} source=${DIMM_SOURCE} per=${plan_per} total=${plan_total} per_mb=${per_mb}M total_mb=$(( per_mb * vm_opt ))M target=${MEM_TARGET_PCT}% cap=${cap_g:-unknown}G cap_module_g=${cap_module_g:-none} cap_mem_g=${cap_mem_g:-none} cap_disk_g=${cap_disk_g:-none} disk_streams=${disk_streams} peer_disks=${peer_disks} disk_streams_eff=${disk_streams_eff} disk_streams_source=${disk_streams_source} vm_keep=${vm_keep} cpu=${cpu_opt}(nproc=${cpus:-none},physical_cores=${phys_cores})"
+        log_op "mem-plan dimms=${vm_opt} source=${DIMM_SOURCE} per=${plan_per} total=${plan_total} per_mb=${per_mb}M total_mb=$(( per_mb * vm_opt ))M target=${MEM_TARGET_PCT}% cap=${cap_g:-unknown}G cap_module_g=${cap_module_g:-none} cap_mem_g=${cap_mem_g:-none} cap_disk_g=${cap_disk_g:-none} disk_streams=${disk_streams} peer_disks=${peer_disks} disk_streams_eff=${disk_streams_eff} disk_streams_source=${disk_streams_source} vm_keep=${vm_keep} cpu=${cpu_opt}(nproc=${cpus:-none},physical_cores=${phys_cores}) smt=${smt_txt:-none}"
         mem_plan_desc="内存计划：${vm_opt} 根 × ${plan_per} = ${plan_total}（来源: ${DIMM_SOURCE}；上限 ${cap_g:-未知}G；--vm-keep 常驻）"
     fi
 
     # 资源计划汇总（显示与落盘）：覆盖 physical_cores/nproc/cpu_workers/dimms/per_worker_g/
-    # mem_total_g/cap_module_g/cap_mem_g/cap_disk_g/disk_streams/peer_disks/disk_streams_eff/vm_keep
+    # mem_total_g/cap_module_g/cap_mem_g/cap_disk_g/disk_streams/peer_disks/disk_streams_eff/vm_keep/smt
     local per_worker_g_txt="none" per_worker_mb_txt="none" per_worker_raw="none"
     if [ "$type" = "mem" ] || [ "$type" = "combo" ]; then
         per_worker_mb_txt="$per_mb"
         per_worker_raw="$vm_bytes_opt"
         if [ $(( per_mb % 1024 )) -eq 0 ]; then per_worker_g_txt=$(( per_mb / 1024 )); fi
     fi
-    res_plan_line="physical_cores=${phys_cores:-none} nproc=${cpus:-none} cpu_workers=${cpu_opt:-none} dimms=${vm_opt:-none} per_worker_g=${per_worker_g_txt} per_worker_mb=${per_worker_mb_txt} per_worker_raw=${per_worker_raw} mem_total_g=${mem_total_gb_desc:-none} cap_module_g=${cap_module_g:-none} cap_mem_g=${cap_mem_g:-none} cap_disk_g=${cap_disk_g:-none} disk_streams=${disk_streams} peer_disks=${peer_disks} disk_streams_eff=${disk_streams_eff} disk_streams_source=${disk_streams_source} vm_keep=${vm_keep}"
+    res_plan_line="physical_cores=${phys_cores:-none} nproc=${cpus:-none} cpu_workers=${cpu_opt:-none} dimms=${vm_opt:-none} per_worker_g=${per_worker_g_txt} per_worker_mb=${per_worker_mb_txt} per_worker_raw=${per_worker_raw} mem_total_g=${mem_total_gb_desc:-none} cap_module_g=${cap_module_g:-none} cap_mem_g=${cap_mem_g:-none} cap_disk_g=${cap_disk_g:-none} disk_streams=${disk_streams} peer_disks=${peer_disks} disk_streams_eff=${disk_streams_eff} disk_streams_source=${disk_streams_source} vm_keep=${vm_keep} smt=${smt_txt:-none}"
     log_op "resource-plan $res_plan_line"
 
     # 建结果目录（时间戳，防覆盖；同秒冲突时顺延）
@@ -1117,6 +1185,7 @@ cmd_start() {
             cpu)
                 echo "物理核数: $phys_cores"
                 echo "CPU 逻辑线程: ${cpus:-未知}"
+                echo "SMT 状态: ${smt_txt}"
                 echo "CPU worker 数: $cpu_opt$cpu_note"
                 echo "VM keep: $vm_keep"
                 echo "HDD 进程数: $disk_streams"
@@ -1125,6 +1194,7 @@ cmd_start() {
             mem)
                 echo "物理核数: $phys_cores"
                 echo "CPU 逻辑线程: ${cpus:-未知}"
+                echo "SMT 状态: ${smt_txt}"
                 echo "CPU worker 数: $cpu_opt$cpu_note"
                 echo "$mem_dimm_desc"
                 echo "$mem_per_desc"
@@ -1146,6 +1216,7 @@ cmd_start() {
             combo)
                 echo "物理核数: $phys_cores"
                 echo "CPU 逻辑线程: ${cpus:-未知}"
+                echo "SMT 状态: ${smt_txt}"
                 echo "CPU worker 数: $cpu_opt$cpu_note"
                 echo "$mem_dimm_desc"
                 echo "$mem_per_desc"

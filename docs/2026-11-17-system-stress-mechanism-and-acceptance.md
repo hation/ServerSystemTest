@@ -8,7 +8,7 @@
 ## 0. 一页结论
 
 1. **一套算法，两个入口**：单测 `stress-test.sh start ...` 与一键 `oneclick.sh` 共用同一套参数推导；oneclick 不复制公式，只负责挂载、拆分任务和启动终端。
-2. **CPU 按物理核分配**：`round(物理核数 × 1.5625)`，2×32C 得到 100 个 worker；SMT 开启时相当于逻辑线程的 78%，留 22% 给内存 worker、hdd、内核和监控。
+2. **CPU 按逻辑线程分配（SMT 参与）**：`round(逻辑线程 × 25/32)`，逻辑线程 = 物理核 × 每核线程数（SMT 探测）；SMT 开启时 2×32C 的 128 逻辑线程得到 100 个 worker，占逻辑线程 78%，留 22% 给内存 worker、hdd、内核和监控；SMT 关闭时逻辑线程减半，worker 按 78.125% 推导（如 7380 → 50）。
 3. **内存按内存条分配**：VM worker 数 = DIMM 根数；单 worker = 单条容量 − `max(6G, 单条/8)`；总量同时受“模块总容量 88%、MemTotal 92%、磁盘页缓存预留”三道上限约束，超限自动下调。
 4. **场景 A（CPU+内存）**：一个 `stress` 进程同时跑 `--cpu` 与 `--vm --vm-keep`，一个结果目录，适合 CPU/DRAM 的功耗、发热、RAS 与调度验证。
 5. **场景 B（CPU+内存+硬盘）**：一个 COMBO 任务（CPU+内存）+ 每块数据盘一个独立 HDD 任务 + 系统盘任务；各自终端与结果目录，`--peer-disks` 只把并发盘数带入 COMBO 的内存预留，不会二次压盘。
@@ -49,25 +49,28 @@ stress-test.sh review --dir <结果目录>  →  summary.txt / 结论 / 执行�
 
 ## 2. 资源分配机制
 
-### 2.1 CPU：按物理核定标
+### 2.1 CPU：按逻辑线程定标（SMT 参与分配）
 
 ```text
 物理核 C（lscpu 去重 Core+Socket；失败则 /proc/cpuinfo）
-CPU worker = max(1, floor((C × 25 + 8) / 16))     # 等价 round(C × 1.5625)
-物理核识别失败 → floor(nproc × 78%)
+逻辑线程 L = C × 每核线程数（SMT 探测：开=2、关=1、未知默认开）
+CPU worker = max(1, round(L × 25 / 32))     # SMT 开启时等价 round(C × 1.5625)
+物理核识别失败 → round(nproc × 78%)
 显式 --cpu 优先，不做二次调整
 ```
 
-| 物理核 | CPU worker | SMT 开启时占逻辑线程 |
+| 物理核（SMT 开启时） | CPU worker | SMT 开启时占逻辑线程 |
 |---|---|---|
 | 32C | 50 | 50/64 = 78% |
 | 48C | 75 | 75/96 = 78% |
 | 64C（2×32C） | **100** | 100/128 = 78% |
 | 96C | 150 | 150/192 = 78% |
 
-为什么是 1.5625：现场四组案例都是 2×32C + `--cpu 100`，即“每个物理核 1.56 个 worker”。把它固化为每核系数后，任何新机型都能按物理核数直接缩放，不需要机型表。SMT 开启时它等价于逻辑线程的 78%，留出的 22% 是共享池；SMT 关闭时就是 1.56 倍超订，和案例口径一致。
+为什么是 25/32：现场四组案例都是 2×32C + `--cpu 100`（SMT 开启，128 逻辑线程），即“每个逻辑线程 25/32 个 worker”（等价“每个物理核 1.5625 个 worker”）。把它固化为逻辑线程系数后，任何新机型都能按物理核 × 每核线程数直接缩放，不需要机型表。SMT 开启时它等价于逻辑线程的 78%，留出的 22% 是共享池；SMT 关闭时逻辑线程减半，worker 按逻辑线程 78.125% 推导（5380→25、7360→38、7380→50），不再是 1.56 倍超订。
 
-对应实现：`stress-test.sh:142-158`（`cpu_workers_auto`）、`stress-test.sh:724-747`（`cmd_start` 推导）。
+对应实现：`stress-test.sh:184-212`（`cpu_workers_auto`）、`stress-test.sh:786-815`（`cmd_start` 推导）。
+
+**SMT 状态探测与分配（方案A）**：`smt_tpc`/`smt_status` 函数（`stress-test.sh:142-164` 的 `smt_tpc`、`166-182` 的 `smt_status`），探测优先级 `lscpu "Thread(s) per core"` → `/sys/devices/system/cpu/smt/active` → `/sys/devices/system/cpu/smt/control` → 未知，输出 开(每核2线程) / 关(每核1线程) / 不支持 / 未知。SMT 状态**参与 CPU worker 分配**：逻辑线程 = 物理核 × 每核线程数（tpc，未知默认按开 tpc=2），worker = `round(逻辑线程 × 25/32)`（`cpu_workers_auto` 整数实现 `w=$(( (logical*25+16)/32 ))`，见 `stress-test.sh:184-212`）；SMT 关闭（每核1线程）时逻辑线程减半，worker 相应减半：5380→25、7360→38、7380→50。探测结果同时用于：① 资源计划标注（run-config.txt 的 `smt=` 字段与 "SMT 状态:" 行）；② 机型交叉校验提示——实测线程 ≈ 标称一半时，若 SMT 关闭则提示 "SMT 关闭（每核1线程），逻辑线程减半属预期；CPU worker 将按逻辑线程 78.125% 推导"，SMT 开启/未知仍提示疑似单路 CPU。
 
 ### 2.2 内存：按内存条定标 + 三道上限
 
@@ -316,7 +319,7 @@ stress-test.sh start combo
 ## 6. 可靠性论证
 
 1. **单一事实源**：CPU/内存/盘参数只在 `stress-test.sh` 推导；oneclick 只拼 `start ...` 命令，不出现公式或固定值。单测与一键的 `physical_cores/nproc/dimms/per_worker_g/cap_*` 可对拍（测试 A5）。
-2. **案例可复现**：四组现场配置精确得到 100/16×26G、100/16×56G、100/18×56G、100/24×26G；新机型按物理核数缩放，不依赖机型分支。
+2. **案例可复现**：四组现场配置精确得到 100/16×26G、100/16×56G、100/18×56G、100/24×26G；新机型按物理核 × 每核线程数缩放，不依赖机型分支。
 3. **三道上限防超配**：模块 88%、MemTotal 92%、盘页缓存预留取最小；12 盘小内存自动下调，不靠现场手工拍数。
 4. **并发不重复压盘**：`--peer-disks` 出现即禁用 COMBO 自动扫描 `/mnt/HDD*`；只有显式 `--dirs` 才在 COMBO 内启动 hdd；每盘任务独立终端。
 5. **结论不被 OK 掩盖**：I/O 错误优先级最高，`status=OK` 不能覆盖；ENOSPC 与盘故障分开。
@@ -339,7 +342,7 @@ stress-test.sh start combo
 | COMBO 无设备清单 | 盘 I/O 错误可能同时落到 COMBO 与盘任务 | 保守不漏判；按错误行的设备名和盘任务 `summary` 定位 |
 | 12 盘 + 小内存页缓存紧张 | 盘吞吐下降、抖动 | `cap_disk` 自动下调；或分阶段先盘后混合 |
 | dmesg 游标同时间戳 | 极少数同秒追加行可能漏检 | 关键字+时间窗口复核；关键场景保留完整 dmesg |
-| SMT 关闭 | 100 worker 是 1.56 倍超订 | 与案例口径一致；需要保守时用 `--cpu` 覆盖 |
+| SMT 关闭 | CPU worker 按逻辑线程（=物理核）78.125% 推导，worker 减半（如 7380 → 50），不再是 1.56 倍超订 | 属预期口径；需要保守时用 `--cpu` 覆盖 |
 | 系统盘只测根文件系统 | 不覆盖 /boot、EFI、swap、未分配空间；LVM/RAID 可能跨盘 | `run-config`/`summary` 已注明，不宣称“整盘通过” |
 | 默认 10h | 与现场 24h 不同 | 验收显式 `--timeout 24h` |
 | 快照竞态/短任务 | 启动瞬间或 <60s 的任务可能没有 60s 以上证据 | 一致性判 UNKNOWN，不误判 FAIL；结论仍按 status/error |
@@ -384,7 +387,7 @@ stress-test.sh start combo
 ### 9.1 公式速查
 
 ```text
-CPU worker      = round(物理核数 × 1.5625)         # 失败回退 nproc×78%
+CPU worker      = round(逻辑线程 × 25/32)     # 逻辑线程 = 物理核×每核线程数；SMT 开启时等价 round(物理核×1.5625)；失败回退 nproc×78%
 VM worker       = DIMM 根数
 单 worker       = 单条容量 − max(6G, 单条/8)
 cap_module      = 模块总容量 × 88%
@@ -398,7 +401,7 @@ hdd worker      = 每数据盘 1 个；系统盘单独 1 个
 
 | 机制 | 位置 |
 |---|---|
-| CPU 推导 | `stress-test.sh:142-158`、`724-747` |
+| CPU 推导 | `stress-test.sh:184-212`、`786-815` |
 | 内存三道上限/单根推导 | `stress-test.sh:888-925`、`927-997` |
 | stress 参数组装 | `stress-test.sh:1095-1102` |
 | 设备归因 | `stress-test.sh:396-414`、`2053-2066` |

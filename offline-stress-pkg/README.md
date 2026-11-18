@@ -179,7 +179,8 @@ rpm -e dmidecode   # 可选：仅在不需要自动探测内存条根数时卸�
 
 正式压测请直接用包内 `stress-test.sh`：CPU/内存参数由脚本按**本机实测规格**自动推导（v3 通用公式），**默认命令不需要 `--model`**：
 
-- **CPU worker** = `round(物理核数 × 1.5625)`（如 64 物理核 → 100；物理核识别失败时回退 `round(nproc × 78%)`）；
+- **CPU worker** = `round(逻辑线程 × 25/32)`（逻辑线程 = 物理核 × 每核线程数，SMT 探测开=2/关=1/未知默认开；如 64 物理核 SMT 开启（128 逻辑线程）→ 100，SMT 关闭（64 逻辑线程）→ 50，5380/7360/7380 对应 50/75/100 与 25/38/50；物理核识别失败时回退 `round(nproc × 78%)`）；
+- **SMT 状态参与 CPU worker 分配**（`lscpu Thread(s) per core` / sysfs smt 探测结果写入 run-config 的 `smt=` 字段；SMT 关闭时逻辑线程减半，worker 相应减半；探测结果同时用于资源计划标注与机型交叉校验）；
 - **VM worker** = 实际内存条根数；**单 worker** = `单条容量 − max(6G, 单条容量/8)`（32G→26G、64G→56G、128G→112G）；
 - **三道上限取最小**：`模块总容量 × 88%`、`MemTotal × 92%`、`MemTotal − (盘数 × hdd-bytes × 1.2 + 8G)`；`combo` / `mem` 的"盘数"取 `max(实际盘目录数 + --sysdisk, --peer-disks N)`（未传该参数时仅按实际盘数）。超限逐 GiB 自动下调（如 1024G/16×64G 在 12 块数据盘场景，单 worker 由 56G 自动降到 54G）。该 12 盘示例按标称容量估算，实际 MemTotal 略低，脚本按 MemTotal 计算时可能再低 1G（例如 512G 约 21G、1024G 约 53G）；
 - **`mem` / `combo` 固定追加 `--vm-keep`**（内存常驻、压力持续）；`cpu` / `hdd` 不加。

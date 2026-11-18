@@ -37,7 +37,7 @@ bash verify.sh         # 验证：版本检查 + 10 秒冒烟压测 + dmidecode 
 
 > 本节为**分步执行**时使用：逐条命令手工启动，适合只想压单项或需要自行控制节奏的场景。想一条命令跑完全流程，直接用 [2.1 一键全测](#21-一键全测oneclicksh)。
 
-默认按**本机实测规格**推导参数（CPU `round(物理核数 × 1.5625)`、`--vm` 等于实际内存条根数、单 worker = `单条容量 − max(6G, 单条容量/8)`，三道上限取最小后自动下调，`mem`/`combo` 固定 `--vm-keep`，详见第 8 节），默认时长 **10 小时**（`--timeout 10h`）：
+默认按**本机实测规格**推导参数（CPU `round(逻辑线程 × 25/32)`（SMT 参与分配：逻辑线程 = 物理核 × 每核线程数，SMT 探测开=2/关=1/未知默认开）、`--vm` 等于实际内存条根数、单 worker = `单条容量 − max(6G, 单条容量/8)`，三道上限取最小后自动下调，`mem`/`combo` 固定 `--vm-keep`，详见第 8 节），默认时长 **10 小时**（`--timeout 10h`）：
 
 ```bash
 # CPU 压测
@@ -326,7 +326,7 @@ bash stress-test.sh review --dir /root/stress-test/20261113-143000-cpu  # 指定
 
 | 文件 | 含义 |
 |---|---|
-| `run-config.txt` | 本次测试参数与命令原文（系统盘任务另含压测对象/覆盖边界） |
+| `run-config.txt` | 本次测试参数与命令原文（资源计划含 `smt=` SMT 状态字段，SMT 参与 CPU worker 分配；系统盘任务另含压测对象/覆盖边界） |
 | `info-before.txt` | 测试前系统快照 |
 | `monitor.csv` | 全程 30s 一条的系统状态原始数据 |
 | `runtime-snapshot.txt` | 启动/60s/600s/每 600s 的进程快照（cmdline、cwd、VmRSS、Threads） |
@@ -393,13 +393,14 @@ stress 被 kill 或系统重启导致中断时，退出码文件为非 0，`revi
 
 | 参数 | 推导规则 | 环境变量（默认值） |
 |---|---|---|
-| CPU worker 数 | `round(物理核数 × 1.5625)`，下限 1（64 物理核 → 100） | 物理核识别失败时回退 `round(nproc × 78%)`：`CPU_MAX_PCT=78` |
+| CPU worker 数 | `round(逻辑线程 × 25/32)`，下限 1；逻辑线程 = 物理核 × 每核线程数（SMT 探测：开=2、关=1、未知默认开）；SMT 开启 5380/7360/7380 → 50/75/100，SMT 关闭 → 25/38/50 | 物理核识别失败时回退 `round(nproc × 78%)`：`CPU_MAX_PCT=78` |
 | `--vm` 内存条根数 | 等于实际内存条根数：`dmidecode -t 17` 统计已安装槽位；失败回退 EDAC（`/sys/devices/system/edac/mc`） | `DMI_BIN=dmidecode`、`EDAC_ROOT=…` |
 | 单 worker 字节 | `单条容量 − max(6G, 单条容量/8)`（32G→26G、64G→56G、128G→112G） | — |
 | 兜底单 worker | 混合容量 / EDAC 无容量 / 显式 `--vm` ≠ DIMM 根数：`MemTotal × 82% ÷ 根数` | `MEM_TARGET_PCT=82`（仅兜底路径） |
 | 分配上限 | `min(模块总容量 × 88%, MemTotal × 92%, MemTotal − (盘数 × hdd-bytes × 1.2 + 8G))`，超限逐 GiB 下调单 worker | `MEM_MAX_PCT=88`、`MEM_TOTAL_MAX_PCT=92`、`DISK_CACHE_FACTOR_PCT=120`、`DISK_CACHE_MIN_G=8` |
 | `--vm-keep` | `mem` / `combo` 固定追加（内存常驻、压力持续），`cpu` / `hdd` 不加 | — |
 
+- **SMT 状态参与 CPU worker 分配**：`smt_tpc`/`smt_status`（`lscpu Thread(s) per core` → `/sys/devices/system/cpu/smt/active` → `control` → 未知）探测每核线程数，逻辑线程 = 物理核 × tpc（未知默认按开 tpc=2），CPU worker = `round(逻辑线程 × 25/32)`；结果写入 run-config 的 `smt=` 字段，同时用于资源计划标注与机型交叉校验；SMT 关闭（每核1线程）时逻辑线程减半，worker 相应减半（5380→25、7360→38、7380→50）。
 - **三道上限取最小**：`cap_module`（模块总容量 × 88%，避免吃穿模块容量）、`cap_mem`（MemTotal × 92%，防 OOM）、`cap_disk`（MemTotal − 盘数 × hdd-bytes × 1.2 − 8G，给页缓存/脏页留空间）。盘越多、内存越小，自动压得越低。`combo` / `mem` 的"盘数"取 `max(实际盘目录数 + --sysdisk, --peer-disks N)`（未传 `--peer-disks` 时仅按实际盘数）。
 - **多盘自动下调示例**（12 块数据盘、`--hdd-bytes 10G`，磁盘预留 12×10G×1.2+8G = 152G）：
 
@@ -427,7 +428,7 @@ stress 被 kill 或系统重启导致中断时，退出码文件为非 0，`revi
 | 1152G | 18 | 64 GiB | 18 | 56G | 1008G | 87.5% |
 | 768G | 24 | 32 GiB | 24 | 26G | 624G | 81.25% |
 
-> 四组均为 64 物理核（128 线程），CPU worker 统一推导为 `round(64 × 1.5625) = 100`；单 worker 按单条容量规则推导，总量均落在模块总容量 88% 上限内。数据盘较多时再受 `cap_disk` 约束自动下调（见上表）。
+> 四组均为 64 物理核、SMT 开启（128 逻辑线程），CPU worker 统一推导为 `round(128 × 25/32) = 100`；单 worker 按单条容量规则推导，总量均落在模块总容量 88% 上限内。数据盘较多时再受 `cap_disk` 约束自动下调（见上表）。
 
 默认 `--timeout 10h`。**显式参数可覆盖自动推导**：`--timeout`、`--cpu`、`--vm`、`--vm-bytes`、`--hdd-bytes`、`--dirs`、`--peer-disks`（仅 combo/mem）均可手动指定；hdd/combo 模式还可加 `--sysdisk`（压系统盘，见第 11 节），例如：
 

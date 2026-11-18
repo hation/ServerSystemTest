@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sds_extract import SDSNotTarError, cleanup, extract_sds, read_text_file
 from sds_inventory import parse_inventory
 from sds_sensors import parse_sensors
+from sds_events import parse_event_csv, parse_sbe, parse_visible_log
 
 
 # ---------- 测试用例 ----------
@@ -438,6 +439,143 @@ def test_sensors_empty():
         assert parse_sensors(empty) == []
         # 不存在的路径同样不抛异常
         assert parse_sensors(os.path.join(tmp_dir, 'missing.ini')) == []
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_event_csv():
+    """test.csv：表头 10 列、\x00 去除、引号内多行字段、severity/sensor/desc/suggestion 映射。"""
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        path = os.path.join(tmp_dir, 'test.csv')
+        content = (
+            'Record Time Stamp,Severity Level,Severity Level ID,SensorTypeStr,'
+            'SensorName,Event Dir,Event Occurred Time,DescInfo,Explanation,Suggestion\n'
+            '2026-11-13 08:00:01,Major,0x1,Drive Backplane,Disk_F23_Status,'
+            'Assertion event,2026-11-13 08:00:00\x00,"Drive Fault\x00 on slot F23\n'
+            'Please replace the disk"," ",\n'
+            '2026-11-13 08:05:00,Info,0x0,Management Subsystem Health,Health,'
+            'Assertion event,2026-11-13 08:05:00,"HDM reset ok"," "," "\n'
+        )
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        records = parse_event_csv(path)
+        assert len(records) == 2
+        r0 = records[0]
+        assert r0.source == 'csv'
+        assert r0.timestamp == '2026-11-13 08:00:01'
+        assert r0.severity == 'Major'
+        assert r0.sensor_name == 'Disk_F23_Status'
+        # \x00 已去除、引号内换行保留为多行字段
+        assert 'Drive Fault on slot F23' in r0.desc
+        assert '\n' in r0.desc
+        assert '\x00' not in r0.desc
+        # 行尾无 Suggestion 列值 → 空串
+        assert r0.suggestion == ''
+        r1 = records[1]
+        assert r1.severity == 'Info'
+        assert r1.sensor_name == 'Health'
+        assert r1.desc == 'HDM reset ok'
+        assert r1.suggestion == ''  # " "（空格）视为空
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_event_csv_missing_suggestion():
+    """Suggestion 列为空 + 缺文件/空文件/仅表头 → 空串与空列表，绝不抛异常。"""
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        path = os.path.join(tmp_dir, 'test.csv')
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(
+                'Record Time Stamp,Severity Level,Severity Level ID,SensorTypeStr,'
+                'SensorName,Event Dir,Event Occurred Time,DescInfo,Explanation,Suggestion\n'
+                '2026-11-13 09:00:00,Info,0x0,NA,NA,NA,,No suggestion here,,\n'
+            )
+        records = parse_event_csv(path)
+        assert len(records) == 1
+        r = records[0]
+        assert r.suggestion == ''
+        assert r.desc == 'No suggestion here'
+        assert r.source == 'csv'
+        # 缺文件 / 空文件 / 仅表头 / 不存在路径 → 空列表
+        assert parse_event_csv(None) == []
+        empty = os.path.join(tmp_dir, 'empty.csv')
+        with open(empty, 'w', encoding='utf-8') as f:
+            f.write('')
+        assert parse_event_csv(empty) == []
+        header_only = os.path.join(tmp_dir, 'header.csv')
+        with open(header_only, 'w', encoding='utf-8') as f:
+            f.write(
+                'Record Time Stamp,Severity Level,Severity Level ID,SensorTypeStr,'
+                'SensorName,Event Dir,Event Occurred Time,DescInfo,Explanation,Suggestion\n'
+            )
+        assert parse_event_csv(header_only) == []
+        assert parse_event_csv(os.path.join(tmp_dir, 'missing.csv')) == []
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_sbe_fallback():
+    """假 .sbe：0x3F 分段、\x00 分隔的可读串提取传感器名+描述；timestamp 标未知。"""
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        path = os.path.join(tmp_dir, 'event.sbe')
+        payload = (
+            b's\x00e\x00f\x00'                       # 全为 <3 字符碎片：应被跳过
+            + b'\x3f' + b'Disk_F23_Status\x00Drive Fault'
+            + b'\x3f' + b'Restore Factory Defaults'
+        )
+        with open(path, 'wb') as f:
+            f.write(payload)
+        records = parse_sbe(path)
+        assert len(records) == 2
+        r0 = records[0]
+        assert r0.source == 'sbe'
+        assert r0.timestamp == '未知'
+        assert r0.sensor_name == 'Disk_F23_Status'
+        assert 'Drive Fault' in r0.desc
+        # 单段单串：desc 兜底取自身
+        r1 = records[1]
+        assert r1.sensor_name == 'Restore Factory Defaults'
+        assert r1.desc == 'Restore Factory Defaults'
+        # 缺文件 / 空文件 → 空列表
+        assert parse_sbe(None) == []
+        empty = os.path.join(tmp_dir, 'empty.sbe')
+        with open(empty, 'wb') as f:
+            f.write(b'')
+        assert parse_sbe(empty) == []
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_visible_log():
+    """visible.log：UTF-8 主路径读取，返回非空原始行；缺文件 → []。"""
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        path = os.path.join(tmp_dir, 'visible.log')
+        lines = [
+            '%# 2026-11-13 14:37:36.621 HOST [hdm] 123 [INFO]: [sys] HDM service started',
+            '%# 2026-11-13 14:38:02.100 HOST [sensor] 456 [INFO]: [sensor] Inlet_Temp read ok 中文描述',
+            '',
+        ]
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines))
+        parsed = parse_visible_log(path)
+        assert len(parsed) == 2
+        assert parsed[0].startswith('%# 2026-11-13 14:37:36.621')
+        # UTF-8 主路径解码（走 read_text_file，顺带覆盖其 UTF-8 用例）
+        assert '中文描述' in parsed[1]
+        # 缺文件 / 空文件 / 全空行 → 空列表
+        assert parse_visible_log(None) == []
+        empty = os.path.join(tmp_dir, 'empty.log')
+        with open(empty, 'w', encoding='utf-8') as f:
+            f.write('')
+        assert parse_visible_log(empty) == []
+        blank = os.path.join(tmp_dir, 'blank.log')
+        with open(blank, 'w', encoding='utf-8') as f:
+            f.write('   \n\n\t\n')
+        assert parse_visible_log(blank) == []
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

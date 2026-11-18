@@ -123,11 +123,13 @@ def _locate_files(root: str) -> dict:
             matches.sort(key=lambda p: len(os.path.normpath(p)))
             found[key] = matches[0]
 
-    # sbe：优先在 event_extract 内找，找不到再全局找
+    # sbe：优先在 event_extract 内找，找不到再全局找；遍历排序保证确定性
     sbe = None
     ev_ex = os.path.join(root, 'event_extract')
     if os.path.isdir(ev_ex):
-        for dirpath, _dirnames, filenames in os.walk(ev_ex):
+        for dirpath, dirnames, filenames in os.walk(ev_ex):
+            dirnames.sort()
+            filenames.sort()
             for fn in filenames:
                 if fn.lower().endswith('.sbe'):
                     sbe = os.path.join(dirpath, fn)
@@ -135,7 +137,7 @@ def _locate_files(root: str) -> dict:
             if sbe:
                 break
     if sbe is None:
-        for rel, full in rel_files:
+        for rel, full in sorted(rel_files):
             if rel.endswith('.sbe'):
                 sbe = full
                 break

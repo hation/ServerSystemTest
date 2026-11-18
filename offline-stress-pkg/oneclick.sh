@@ -3,6 +3,8 @@
 # 用法：bash oneclick.sh --help
 # 说明：启动编排（参数/菜单、前置检查、自动挂载、任务计划、终端窗口或后台启动、
 #       内部子命令 __task、就绪握手、失败即停）+ 等待全部结束 + 自动逐个复盘 + 汇总。
+#       --no-hdd：仅 all 模式生效，排除所有硬盘（数据盘+系统盘），仅测 CPU+内存（COMBO peer=0），
+#       跳过自动挂载且与 --rebuild 互斥。
 #       status/review 子命令均基于最近一次批次目录（$STRESS_TEST_ROOT/oneclick-*）。
 PKG_DIR="$(cd "$(dirname "$0")" && pwd)"
 STRESS_TEST_ROOT="${STRESS_TEST_ROOT:-/root/stress-test}"
@@ -42,6 +44,8 @@ START_FAILED=0
 LAST_TASK_CMD=""
 # 数据盘重建开关：默认 0（复用已有文件系统）；--rebuild 或菜单输入 y 才置 1
 REBUILD=0
+# 排除硬盘开关：仅 all 模式生效；--no-hdd 置 1（任务计划只写 COMBO peer=0，跳过数据盘/系统盘任务）
+NO_HDD=0
 # 自动挂载退出码：all/hdd 记录 disk-mount.sh 的结果，非 0 表示存在跳过/失败盘，批次最终退出 1
 MOUNT_RC=0
 
@@ -55,7 +59,7 @@ usage() {
   bash oneclick.sh --help
 
 运行子命令:
-  all       全测：CPU+内存组合 + 每块数据盘独立任务 + 系统盘
+  all       全测：CPU+内存组合 + 每块数据盘独立任务 + 系统盘（--no-hdd 时排除硬盘，仅测 CPU+内存）
   hdd       只测数据盘（每个 /mnt/HDD* 一个任务）
   sysdisk   只测系统盘
   cpu       只测 CPU
@@ -76,6 +80,7 @@ usage() {
 选项:
   --timeout <时长>   所有任务统一超时，默认 10h（数字 + 可选 d/h/m/s，如 10h、30m）
   --rebuild          重新分区并格式化数据盘（会清空数据盘；仅 all/hdd 生效）
+  --no-hdd           仅 all 模式生效：排除所有硬盘（数据盘+系统盘），仅测 CPU+内存（COMBO peer=0）；跳过自动挂载，与 --rebuild 互斥
   --quiet            不在终端打印实际执行的命令（命令仍写入批次目录）
   --help             显示本帮助
 
@@ -265,22 +270,33 @@ write_plan() {
     : > "$plan"
     case "$mode" in
         all|hdd)
-            do_mount
-            rc=$?
-            # 记录挂载结果：存在跳过/失败盘时批次最终退出码须为 1（FR-2）
-            MOUNT_RC="$rc"
-            if [ "$rc" -ne 0 ]; then
-                if [ "$mode" = "hdd" ]; then
-                    # 只测硬盘：部分盘失败但已有挂载点则继续（设计 §7/FR-2），一个都没有才退出
-                    dirs=$(collect_hdd_dirs)
-                    [ -n "$dirs" ] || die "未发现已挂载的数据盘（/mnt/HDD*），请先运行 bash disk-mount.sh mount"
+            if [ "$NO_HDD" -eq 1 ]; then
+                # --no-hdd：排除所有硬盘，跳过自动挂载（MOUNT_RC 保持 0，批次退出码不被挂载结果影响）
+                MOUNT_RC=0
+            else
+                do_mount
+                rc=$?
+                # 记录挂载结果：存在跳过/失败盘时批次最终退出码须为 1（FR-2）
+                MOUNT_RC="$rc"
+                if [ "$rc" -ne 0 ]; then
+                    if [ "$mode" = "hdd" ]; then
+                        # 只测硬盘：部分盘失败但已有挂载点则继续（设计 §7/FR-2），一个都没有才退出
+                        dirs=$(collect_hdd_dirs)
+                        [ -n "$dirs" ] || die "未发现已挂载的数据盘（/mnt/HDD*），请先运行 bash disk-mount.sh mount"
+                    fi
+                    echo "警告：自动挂载返回非 0（$rc），继续按当前已挂载盘执行；挂载日志：$BATCH/mount.log"
                 fi
-                echo "警告：自动挂载返回非 0（$rc），继续按当前已挂载盘执行；挂载日志：$BATCH/mount.log"
             fi
             ;;
     esac
     case "$mode" in
         all)
+            if [ "$NO_HDD" -eq 1 ]; then
+                # --no-hdd：排除所有硬盘，仅测 CPU+内存（COMBO peer=0），不枚举数据盘、不写系统盘任务
+                printf 'COMBO|combo|--peer-disks|0\n' >> "$plan"
+                echo "已排除硬盘（--no-hdd），仅测 CPU+内存（COMBO peer=0）"
+                return
+            fi
             dirs=$(collect_hdd_dirs)
             # 先计数再写计划：计划顺序即启动顺序（COMBO 先启动），N = 数据盘数 + 1（固定含系统盘）
             local hdd_count=0
@@ -765,6 +781,10 @@ main() {
                 REBUILD=1
                 shift
                 ;;
+            --no-hdd)
+                NO_HDD=1
+                shift
+                ;;
             --timeout)
                 if [ $# -lt 2 ]; then
                     echo "缺少 --timeout 取值"
@@ -796,6 +816,15 @@ main() {
                 ;;
         esac
     done
+
+    if [ "$NO_HDD" -eq 1 ] && [ "$mode" != "all" ]; then
+        echo "--no-hdd 仅支持 all 模式"
+        exit 1
+    fi
+    if [ "$NO_HDD" -eq 1 ] && [ "$REBUILD" -eq 1 ]; then
+        echo "--rebuild 与 --no-hdd 不能同时使用（--no-hdd 不涉及任何硬盘）"
+        exit 1
+    fi
 
     if ! [[ "$TIMEOUT" =~ ^[0-9]+[dhms]?$ ]]; then
         echo "--timeout 取值非法：$TIMEOUT（应形如 10h / 30m / 8h）"

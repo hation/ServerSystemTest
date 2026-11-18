@@ -85,6 +85,7 @@ sudo bash oneclick.sh
 ```bash
 sudo bash oneclick.sh all --timeout 10h
 sudo bash oneclick.sh hdd --timeout 8h
+sudo bash oneclick.sh all --no-hdd --timeout 10h   # 排除所有硬盘（数据盘+系统盘），仅测 CPU+内存（COMBO peer=0）；跳过自动挂载，与 --rebuild 互斥；--no-hdd 仅 all 模式支持
 sudo bash oneclick.sh status
 sudo bash oneclick.sh review
 ```

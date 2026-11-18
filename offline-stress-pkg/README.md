@@ -79,6 +79,7 @@ sudo bash install.sh
 sudo bash oneclick.sh                # 菜单：1 全测 / 2 只测硬盘 / 3 只测系统盘 / 4 只测 CPU / 5 只测内存 / 6 查看状态 / 7 生成复盘
 sudo bash oneclick.sh all --timeout 10h
 sudo bash oneclick.sh hdd --timeout 8h
+sudo bash oneclick.sh all --no-hdd --timeout 10h   # 排除所有硬盘（数据盘+系统盘），仅测 CPU+内存（COMBO peer=0）；跳过自动挂载，与 --rebuild 互斥
 ```
 
 要点：

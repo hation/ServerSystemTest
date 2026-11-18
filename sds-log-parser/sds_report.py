@@ -2,7 +2,8 @@
 
 将解包解析 + 健康判定的结构化结果渲染为中文 Markdown 体检报告。
 章节结构（spec「report」节，标题逐字对齐）：
-`# 服务器体检报告`（机器标识 + 采集时间）→ `## 1. 整机信息`（表格）→
+`# 服务器体检报告`（机器标识 + 采集时间）→ `## 0. 分析汇总`（整机概览 /
+健康总览 / 核心结论 三要点）→ `## 1. 整机信息`（表格）→
 `## 2. 硬件健康状态`（表格：组件/状态/依据摘要）→ `## 3. 异常详情`
 （每个异常/提示组件小节：事件列表）→ `## 4. 修复建议`（组件→建议）→
 （可选）`## 5. AI 综合分析`（仅 ai_markdown 非 None 时）→ `## 附录`
@@ -16,6 +17,7 @@
 运行时零第三方依赖，仅用 Python 3.12 标准库。
 """
 
+import re
 from datetime import datetime
 
 # 附录各子节展示条数上限
@@ -25,6 +27,15 @@ _SENSOR_CAP = 50         # 传感器概要：展示 N 个
 
 # 传感器概要中重点传感器前缀（优先展示，其次按名称排序）
 _KEY_SENSOR_PREFIXES = ('PSU', 'FAN', 'Total_Power', 'Inlet_Temp', 'Outlet_Temp')
+
+# 核心结论规则兜底的类别优先级（高 → 低，取首个异常/提示组件）
+_CATEGORY_PRIORITY = ('硬盘', 'PCIe', '电源', '背板', '内存', 'CPU', '风扇', '温度', '其他')
+
+# 核心结论取用上限（AI 首要点句与规则结论关键词均截断至此）
+_CONCLUSION_LIMIT = 120
+
+# 事件严重度排名（规则结论关键词取最高严重度的证据描述）
+_SEVERITY_RANK = {'Critical': 4, 'Major': 3, 'Minor': 2, 'Info': 1}
 
 
 def _one_line(value) -> str:
@@ -166,6 +177,105 @@ def _render_ai(ai_markdown) -> str:
     return '## 5. AI 综合分析\n\n' + text
 
 
+def _ai_conclusion(ai_markdown) -> str:
+    """提取 AI 首要点句作为核心结论候选（供 render_summary 内部用）。
+
+    规则：跳过空行与 Markdown 标题行，取首个列表项/正文句，
+    去掉行首 `#`/`*`/`-`/`+` 标记与行内 `**` 强调，strip 后截断 ≤120 字；
+    无可用内容（None/空/纯标记残留为空）返回空串，由调用方回退规则结论。
+    """
+    for raw in str(ai_markdown or '').splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#'):
+            continue
+        text = re.sub(r'^[\s*\-+]+', '', line)
+        text = text.replace('**', '').strip()
+        if not text:
+            continue
+        return text[:_CONCLUSION_LIMIT] if len(text) > _CONCLUSION_LIMIT else text
+    return ''
+
+
+def _rule_conclusion(health) -> str:
+    """规则兜底结论：按类别优先级取首个异常/提示组件的一句话。
+
+    类别优先级：硬盘 > PCIe > 电源 > 背板 > 内存 > CPU > 风扇 > 温度 > 其他；
+    文案为 类别（组件名）链路 + 关键事件关键词。无异常/提示组件时返回
+    '未发现异常组件。'。
+    """
+    comps = [c for c in (health or [])
+             if getattr(c, 'status', None) in ('异常', '提示')]
+    if not comps:
+        return '未发现异常组件。'
+
+    def _rank(comp):
+        cat = getattr(comp, 'category', None) or ''
+        if cat in _CATEGORY_PRIORITY:
+            return _CATEGORY_PRIORITY.index(cat)
+        return len(_CATEGORY_PRIORITY) - 1  # 未识别类别按「其他」处理
+
+    comp = min(comps, key=_rank)
+    name = getattr(comp, 'name', None) or '未知组件'
+    category = getattr(comp, 'category', None) or '其他'
+    # 关键事件关键词：取证据中严重度最高的一条描述（如 The disk is missing）
+    keyword, best_rank = '', -1
+    for ev in (getattr(comp, 'evidence', None) or []):
+        ev = _one_line(ev)
+        if not ev:
+            continue
+        desc = ev.split('] ', 1)[-1].strip()
+        if not desc:
+            continue
+        sev = desc.partition(' ')[0]
+        rank = _SEVERITY_RANK.get(sev, 0)
+        if rank > best_rank:
+            best_rank = rank
+            keyword = desc.partition(' ')[2].strip() or desc
+    if keyword:
+        if len(keyword) > _CONCLUSION_LIMIT:
+            keyword = keyword[:_CONCLUSION_LIMIT]
+        return f'最可能问题集中在{category}（{name}）链路：{keyword}。'
+    return f'最可能问题集中在{category}（{name}）链路，建议优先排查。'
+
+
+def render_summary(inv, health, ai_markdown=None) -> str:
+    """## 0. 分析汇总：整机概览 / 健康总览 / 核心结论 三要点。
+
+    核心结论 AI 优先（_ai_conclusion 非空时取 AI 首要点句），否则规则兜底
+    （_rule_conclusion）。健康总览计数：正常 X · 异常 Y · 提示 Z；
+    未知组件 >0 时追加 '· 未知 W'，避免噪声。
+    """
+    machine = (inv.machine or {}) if inv is not None else {}
+    firmware = (inv.firmware or {}) if inv is not None else {}
+    overview = (f'- 产品型号: {_fmt(machine.get("product_name"))} / '
+                f'序列号: {_fmt(machine.get("serial_number"))} / '
+                f'固件: BIOS={_fmt(firmware.get("BIOS"))}, '
+                f'HDM={_fmt(firmware.get("HDM"))}, '
+                f'CPLD={_fmt(firmware.get("CPLD"))}')
+    counts = {'正常': 0, '异常': 0, '提示': 0, '未知': 0}
+    for comp in (health or []):
+        status = getattr(comp, 'status', None) or '未知'
+        counts[status] = counts.get(status, 0) + 1
+    health_line = (f'- 正常 {counts["正常"]} · 异常 {counts["异常"]} '
+                   f'· 提示 {counts["提示"]}')
+    if counts.get('未知', 0) > 0:
+        health_line += f' · 未知 {counts["未知"]}'
+    ai_concl = _ai_conclusion(ai_markdown)
+    conclusion = ai_concl if ai_concl else _rule_conclusion(health)
+    return '\n'.join([
+        '## 0. 分析汇总',
+        '',
+        '### 整机概览',
+        overview,
+        '',
+        '### 健康总览',
+        health_line,
+        '',
+        '### 核心结论',
+        f'- {conclusion}',
+    ])
+
+
 def _render_appendix(inv, sensors, health, events, visible_lines) -> str:
     """## 附录：操作日志摘录 / 其他事件 / 固件版本 / 传感器概要。"""
     lines = ['## 附录', '']
@@ -267,6 +377,8 @@ def render_report(inv, sensors, health, events, visible_lines,
         '',
         _machine_header(inv),
         f'- 采集时间：{report_time}',
+        '',
+        render_summary(inv, health, ai_markdown),
         '',
         _render_inventory(inv),
         '',

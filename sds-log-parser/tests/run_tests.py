@@ -804,7 +804,8 @@ def test_ai_http_failure():
 
 
 def test_report_sections():
-    """构造最小数据 → render_report 输出含 4 个必选章节标题与附录；
+    """构造最小数据 → render_report 输出含 5 个必选章节标题（0-4）与附录，
+    `## 0. 分析汇总` 位于 `## 1. 整机信息` 之前；
     ai_markdown=None 时无 ## 5 章节，非 None 时含。"""
     from sds_report import render_report
     inv = InventoryData()
@@ -829,14 +830,142 @@ def test_report_sections():
     sensors = [SensorReading('Total_Power', '320.0', 'Watts', 'ok')]
     visible = ['%# 2026-11-13 14:37:36.621 HOST [hdm] 1 [INFO]: HDM service started']
     base = render_report(inv, sensors, health, events, visible, None, '2026-11-18 12:00:00')
-    for title in ('# 服务器体检报告', '## 1. 整机信息', '## 2. 硬件健康状态',
-                  '## 3. 异常详情', '## 4. 修复建议', '## 附录'):
+    for title in ('# 服务器体检报告', '## 0. 分析汇总', '## 1. 整机信息',
+                  '## 2. 硬件健康状态', '## 3. 异常详情', '## 4. 修复建议', '## 附录'):
         assert title in base, f'报告应含章节 {title}'
+    assert base.index('## 0. 分析汇总') < base.index('## 1. 整机信息'), \
+        '分析汇总章节应位于整机信息章节之前'
     assert '## 5. AI 综合分析' not in base, 'ai_markdown=None 时不应含 AI 章节'
     assert 'H3C UniServer R4930 G5 H3' in base, '整机信息应含机器型号'
     with_ai = render_report(inv, sensors, health, events, visible, '这是 AI 综合结论', '2026-11-18 12:00:00')
     assert '## 5. AI 综合分析' in with_ai, 'ai_markdown 非 None 时应含 AI 章节'
     assert '这是 AI 综合结论' in with_ai, 'AI 章节应含 AI 结论原文'
+
+
+def test_summary_sections():
+    """render_summary 输出 `## 0. 分析汇总` 与三要点；整机概览含机型/序列号/固件版本；
+    健康总览计数 正常 1 · 异常 1 · 提示 1；核心结论为规则结论（含 Disk_F23_Status）。"""
+    from sds_report import render_summary
+    inv = InventoryData()
+    inv.machine = {
+        'product_name': 'H3C UniServer R4930 G5 H3',
+        'serial_number': '210235A566526AN0000P',
+        'product_part_number': '0235A566',
+        'baseboard': {},
+    }
+    inv.firmware = {'BIOS': '5.97 V500R001B01D097', 'HDM': '3.66 HDM V100R001B05D110', 'CPLD': 'V00D'}
+    health = [
+        ComponentHealth(
+            name='Disk_F23_Status', category='硬盘', status='异常',
+            evidence=['[2026-11-15 06:24:39] Major The disk is missing'],
+            suggestions=['重新安装该硬盘；若反复出现故障请更换硬盘。'],
+        ),
+        ComponentHealth(
+            name='FrontBackPlane3', category='背板', status='提示',
+            evidence=['[未知] Info Raid_BP_Conf_Info: Failed To Match The Configuration'],
+            suggestions=['核对背板配置与硬盘槽位映射。'],
+        ),
+        ComponentHealth(name='A0', category='内存', status='正常', evidence=[], suggestions=[]),
+    ]
+    out = render_summary(inv, health)
+    assert '## 0. 分析汇总' in out, '应含章节标题'
+    for key in ('### 整机概览', '### 健康总览', '### 核心结论'):
+        assert key in out, f'应含要点 {key}'
+    # 整机概览：机型 / 序列号 / 固件
+    assert 'H3C UniServer R4930 G5 H3' in out, '整机概览应含机型'
+    assert '210235A566526AN0000P' in out, '整机概览应含序列号'
+    assert '5.97 V500R001B01D097' in out, '整机概览应含 BIOS 版本'
+    assert '3.66 HDM V100R001B05D110' in out, '整机概览应含 HDM 版本'
+    assert 'V00D' in out, '整机概览应含 CPLD 版本'
+    # 健康总览
+    assert '正常 1 · 异常 1 · 提示 1' in out, '健康总览计数应为 正常 1 · 异常 1 · 提示 1'
+    # 核心结论：规则兜底（硬盘优先级高于背板）
+    assert 'Disk_F23_Status' in out, '核心结论应含 Disk_F23_Status'
+
+
+def test_summary_rule_conclusion():
+    """_rule_conclusion：无异常/提示 → '未发现异常组件。'；
+    硬盘 + PCIe 两异常 → 硬盘优先级更高（取硬盘）。"""
+    from sds_report import _rule_conclusion
+    # 仅正常组件 → 未发现异常组件
+    ok_health = [ComponentHealth(name='A0', category='内存', status='正常', evidence=[], suggestions=[])]
+    assert _rule_conclusion(ok_health) == '未发现异常组件。'
+    # 硬盘 + PCIe 两异常 → 硬盘优先
+    both = [
+        ComponentHealth(
+            name='Disk_F23_Status', category='硬盘', status='异常',
+            evidence=['[2026-11-15 06:24:39] Major The disk is missing'], suggestions=[],
+        ),
+        ComponentHealth(
+            name='PCIe_Card3_HBA', category='PCIe', status='异常',
+            evidence=['[2026-11-15 06:16:53] Minor Device Disabled: PCIe module information not obtained---Slot: 3'],
+            suggestions=[],
+        ),
+    ]
+    concl = _rule_conclusion(both)
+    assert '硬盘' in concl and 'Disk_F23_Status' in concl, '硬盘优先级应高于 PCIe'
+    assert 'The disk is missing' in concl, '关键词应取最高严重度（Major）证据描述'
+
+
+def test_summary_ai_conclusion():
+    """核心结论 AI 优先：跳过标题行、取首个列表要点句、去 Markdown 标记；
+    空/纯空白回退规则结论；纯加粗文本去标记后作为结论；超长首句截断 ≤120 字。"""
+    from sds_report import render_summary
+    inv = InventoryData()
+    inv.machine = {
+        'product_name': 'H3C UniServer R4930 G5 H3',
+        'serial_number': '210235A566526AN0000P',
+        'product_part_number': '0235A566',
+        'baseboard': {},
+    }
+    inv.firmware = {'BIOS': '5.97 V500R001B01D097', 'HDM': '3.66', 'CPLD': 'V00D'}
+    health = [
+        ComponentHealth(
+            name='Disk_F23_Status', category='硬盘', status='异常',
+            evidence=['[2026-11-15 06:24:39] Major The disk is missing'], suggestions=[],
+        ),
+    ]
+    # AI 优先：跳过 '### 异常链路推断' 标题行，取首个 '- ' 列表要点句
+    ai = '### 异常链路推断\n- 最可能问题集中在 HBA（PCIe slot 3）链路。\n- 次要点：请更换硬盘。'
+    out = render_summary(inv, health, ai_markdown=ai)
+    assert '最可能问题集中在 HBA（PCIe slot 3）链路' in out, '核心结论应为 AI 首要点句'
+    # 空 / 纯空白 → 回退规则结论，不抛异常
+    for empty in ('', '   '):
+        out2 = render_summary(inv, health, ai_markdown=empty)
+        assert 'Disk_F23_Status' in out2, f'ai_markdown={empty!r} 应回退规则结论'
+    # 纯加粗文本 → 去 ** 标记后作为核心结论，不抛异常
+    out3 = render_summary(inv, health, ai_markdown='**bold only**')
+    assert 'bold only' in out3, '纯加粗文本应去 ** 标记后作为核心结论'
+    # 超长首句 → 截断 ≤120 字
+    long_ai = '这是非常长的 AI 第一要点句内容。' * 12
+    out4 = render_summary(inv, health, ai_markdown=long_ai)
+    conclusion_line = [l for l in out4.split('### 核心结论')[1].splitlines() if l.startswith('- ')][0]
+    assert len(conclusion_line) - 2 <= 120, f'AI 结论应截断 ≤120 字，实际 {len(conclusion_line) - 2}'
+
+
+def test_summary_unknown_count():
+    """健康总览：未知组件 >0 时追加 '· 未知 W'；无未知组件时不出现 '未知'。"""
+    from sds_report import render_summary
+    inv = InventoryData()
+    inv.machine = {
+        'product_name': 'H3C UniServer R4930 G5 H3',
+        'serial_number': '210235A566526AN0000P',
+        'product_part_number': '0235A566',
+        'baseboard': {},
+    }
+    inv.firmware = {'BIOS': '5.97 V500R001B01D097', 'HDM': '3.66', 'CPLD': 'V00D'}
+    # 含 1 个未知组件 → 追加 '· 未知 1'
+    health = [
+        ComponentHealth(name='CPU1_A0', category='内存', status='未知', evidence=[], suggestions=[]),
+        ComponentHealth(name='A0', category='内存', status='正常', evidence=[], suggestions=[]),
+    ]
+    out = render_summary(inv, health)
+    overview = [l for l in out.splitlines() if l.startswith('- 正常')][0]
+    assert '· 未知 1' in overview, '未知 >0 应追加 · 未知 1'
+    # 无未知组件 → 不出现 '未知'
+    health2 = [ComponentHealth(name='A0', category='内存', status='正常', evidence=[], suggestions=[])]
+    out2 = render_summary(inv, health2)
+    assert '未知' not in out2, '无未知组件时不应出现 未知'
 
 
 def test_facts_pack_always_written():

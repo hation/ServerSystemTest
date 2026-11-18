@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sds_extract import SDSNotTarError, cleanup, extract_sds, read_text_file
 from sds_inventory import parse_inventory
+from sds_sensors import parse_sensors
 
 
 # ---------- 测试用例 ----------
@@ -383,6 +384,60 @@ def test_inventory_empty_files():
         inv4 = parse_inventory({})
         assert inv4.psus == []
         assert inv4.firmware['HDM'] is None
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_sensors_parse():
+    """sensor_info.ini 管道分隔表：跳过表头/注释/空行，前 4 列解析 name/value/unit/status。"""
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        path = os.path.join(tmp_dir, 'sensor_info.ini')
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(
+                'Sensor Name      | Reading    | Unit       | Status| Crit low  | Major low | Minor low | Minor high| Major high| Crit high \n'
+                '# 注释行：应被跳过\n'
+                '; 分号注释行：也应被跳过\n'
+                'PSU1_VIN         | 223.200    | Volts      | ok    | na        | na        | na        | na        | na        | na        \n'
+                'PSU2_VIN         | 223.200    | Volts      | ok    | na        | na        | na        | na        | na        | na        \n'
+                '\n'
+                'PSU1_Status      | 0x0        | discrete   | 0x0180| na        | na        | na        | na        | na        | na        \n'
+                'FAN1_Status      | 0x0        | discrete   | 0x0180| na        | na        | na        | na        | na        | na        \n'
+                'Total_Power      | 320.0      | Watts      | ok    | na        | na        | na        | na        | na        | na        \n'
+                'Inlet_Temp       | 24.5       | degrees C  | ok    | na        | na        | na        | 50.000    | 52.000    | 55.000    \n'
+            )
+        readings = parse_sensors(path)
+        assert len(readings) == 6
+        by_name = {r.name: r for r in readings}
+        # 重点关注传感器：值/单位/状态四列解析正确
+        assert by_name['PSU1_VIN'].value == '223.200'
+        assert by_name['PSU1_VIN'].unit == 'Volts'
+        assert by_name['PSU1_VIN'].status == 'ok'
+        assert by_name['PSU2_VIN'].value == '223.200'
+        assert by_name['PSU2_VIN'].unit == 'Volts'
+        assert by_name['PSU1_Status'].status == '0x0180'
+        assert by_name['PSU1_Status'].unit == 'discrete'
+        assert by_name['FAN1_Status'].status == '0x0180'
+        assert by_name['Total_Power'].value == '320.0'
+        assert by_name['Total_Power'].unit == 'Watts'
+        assert by_name['Inlet_Temp'].value == '24.5'
+        assert by_name['Inlet_Temp'].unit == 'degrees C'
+        assert by_name['Inlet_Temp'].status == 'ok'
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_sensors_empty():
+    """缺文件（None）与空文件（0 字节）→ 返回空列表，绝不抛异常。"""
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        assert parse_sensors(None) == []
+        empty = os.path.join(tmp_dir, 'empty.ini')
+        with open(empty, 'w', encoding='utf-8') as f:
+            f.write('')
+        assert parse_sensors(empty) == []
+        # 不存在的路径同样不抛异常
+        assert parse_sensors(os.path.join(tmp_dir, 'missing.ini')) == []
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

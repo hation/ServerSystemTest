@@ -76,7 +76,7 @@ sudo bash install.sh
 装完 `stress` 后，用 `oneclick.sh` 一条命令跑完整个流程：
 
 ```bash
-sudo bash oneclick.sh                # 菜单：1 全测 / 2 只测硬盘 / 3 只测系统盘 / 4 只测 CPU / 5 只测内存 / 6 查看状态 / 7 生成复盘
+sudo bash oneclick.sh                # 菜单：1 全测 / 2 测 CPU+内存（排除硬盘） / 3 只测硬盘 / 4 只测系统盘 / 5 只测 CPU / 6 只测内存 / 7 查看状态 / 8 生成复盘
 sudo bash oneclick.sh all --timeout 10h
 sudo bash oneclick.sh hdd --timeout 8h
 sudo bash oneclick.sh all --no-hdd --timeout 10h   # 排除所有硬盘（数据盘+系统盘），仅测 CPU+内存（COMBO peer=0）；跳过自动挂载，与 --rebuild 互斥
@@ -87,7 +87,7 @@ sudo bash oneclick.sh all --no-hdd --timeout 10h   # 排除所有硬盘（数据
 - **全测任务构成（顺序即启动顺序）**：自动挂载（`disk-mount.sh mount --disks all --yes`）→ **COMBO**（CPU+内存组合任务：一个终端、一个结果目录，不再拆成 CPU、内存两个任务）→ **每块数据盘一个 `HDDxx` 任务**（独立终端、独立结果目录）→ **SYSDISK**（系统盘任务，`--sysdisk-only`，独立终端）；
 - **COMBO 只跑 CPU+内存**：oneclick 自动为 COMBO 传 `--peer-disks <数据盘数+1>`，让内存计划把同时在跑的各数据盘与系统盘计入页缓存预留（`cap_disk`），但 COMBO 内不启动任何 hdd 进程，每块盘只由自己的 `HDDxx` 任务压一次；
 - **数据盘默认复用（不清盘）**：自动挂载**默认复用已有文件系统**——有分区测首个分区（分区无文件系统时自动 `mkfs.ext4 -m 0` 该分区），无分区但整盘已有文件系统直接挂载，空盘才整盘格式化；`blkid` 探测失败（重试 5 次）的盘不格式化、直接跳过，其他盘继续（最终退出码 1）；
-- **`--rebuild` 会清空数据盘**：`sudo bash oneclick.sh all --rebuild` / `sudo bash oneclick.sh hdd --rebuild` 会卸载旧 `/mnt/HDD*`、清空该盘分区表、重建 1 个 GPT 分区并格式化；菜单选 `1` / `2` 时会先询问 `是否重新分区并格式化数据盘？(y/N)：`，**默认 N**（直接回车 = 复用）；未指定 `--rebuild` 时输出 `未指定 --rebuild，本次复用已有文件系统；如需重建请加 --rebuild`；`sysdisk` / `cpu` / `mem` 带 `--rebuild` 会被忽略并提示仅对 all/hdd 生效；
+- **`--rebuild` 会清空数据盘**：`sudo bash oneclick.sh all --rebuild` / `sudo bash oneclick.sh hdd --rebuild` 会卸载旧 `/mnt/HDD*`、清空该盘分区表、重建 1 个 GPT 分区并格式化；菜单选 `1` / `3` 时会先询问 `是否重新分区并格式化数据盘？(y/N)：`，**默认 N**（直接回车 = 复用）；未指定 `--rebuild` 时输出 `未指定 --rebuild，本次复用已有文件系统；如需重建请加 --rebuild`；`sysdisk` / `cpu` / `mem` 带 `--rebuild` 会被忽略并提示仅对 all/hdd 生效；
 - **`--dry-run` 预演挂载**：`bash disk-mount.sh mount --disks all --dry-run` 只打印执行计划、不写任何数据（也不写 `mount.log`），适合正式挂载前核对盘符与动作；
 - **每块数据盘一个窗口**，窗口标题为 `压测-HDDxx`；COMBO 窗口为 `压测-组合CPU+内存`，系统盘为 `压测-系统盘`（单资源模式另有 `压测-CPU` / `压测-内存`）；无图形环境（SSH、无 `DISPLAY`）自动降级为后台并行执行，输出写入批次目录的 `<任务>.out`；
 - **失败策略**：**COMBO 启动失败 → 中止本批次**，不再启动数据盘与系统盘，批次退出码 1（核心 CPU+内存负载未起来）；**数据盘 / SYSDISK 启动失败 → 记录到 `failed-tasks.txt` 后跳过**，继续启动其余任务，批次最终退出码 1，`summary.txt` 的"启动失败（跳过、未计入复盘）"列出失败任务；

@@ -69,12 +69,13 @@ usage() {
 
 菜单项:
   1) 全测（CPU+内存组合 + 每盘独立 + 系统盘）
-  2) 只测硬盘
-  3) 只测系统盘
-  4) 只测 CPU
-  5) 只测内存
-  6) 查看状态
-  7) 生成复盘
+  2) 测 CPU+内存（排除硬盘）
+  3) 只测硬盘（数据盘）
+  4) 只测系统盘
+  5) 只测 CPU
+  6) 只测内存
+  7) 查看状态
+  8) 生成复盘
   0) 退出
 
 选项:
@@ -703,18 +704,19 @@ show_menu() {
     cat <<EOF
 ==== 一键压测 ====
   1) 全测（CPU+内存组合 + 每盘独立 + 系统盘）
-  2) 只测硬盘（数据盘）
-  3) 只测系统盘
-  4) 只测 CPU
-  5) 只测内存
-  6) 查看状态
-  7) 生成复盘
+  2) 测 CPU+内存（排除硬盘）
+  3) 只测硬盘（数据盘）
+  4) 只测系统盘
+  5) 只测 CPU
+  6) 只测内存
+  7) 查看状态
+  8) 生成复盘
   0) 退出
 当前超时：$TIMEOUT（可用 --timeout 覆盖）
 EOF
 }
 
-# 菜单 1/2 启动前询问一次是否重建数据盘；默认 N（仅 y/Y 视为确认）
+# 菜单 1/3 启动前询问一次是否重建数据盘；默认 N（仅 y/Y 视为确认）
 ask_rebuild() {
     local ans=""
     printf '是否重新分区并格式化数据盘？(y/N)：'
@@ -733,22 +735,20 @@ menu_loop() {
     local choice
     while :; do
         show_menu
-        printf '请选择（0-7）：'
+        printf '请选择（0-8）：'
         if ! IFS= read -r choice; then
             echo
             exit 0
         fi
         case "$choice" in
             # CLI 已带 --rebuild 时不再询问，直接按重建语义执行
-            1) if [ "$REBUILD" = "0" ]; then ask_rebuild; fi; run_mode all ;;
-            2) if [ "$REBUILD" = "0" ]; then ask_rebuild; fi; run_mode hdd ;;
-            3) run_mode sysdisk ;;
-            4) run_mode cpu ;;
-            5) run_mode mem ;;
-            6) cmd_status ;;
-            7) cmd_review ;;
+            # 项 1/3（all/hdd）前显式复位 NO_HDD=0，防上一轮选 2（NO_HDD=1）串味
+            1) NO_HDD=0; if [ "$REBUILD" = "0" ]; then ask_rebuild; fi; run_mode all ;;
+            2) NO_HDD=1; REBUILD=0; run_mode all ;;
+            3) NO_HDD=0; if [ "$REBUILD" = "0" ]; then ask_rebuild; fi; run_mode hdd ;;
+            4) run_mode sysdisk ;; 5) run_mode cpu ;; 6) run_mode mem ;; 7) cmd_status ;; 8) cmd_review ;;
             0) exit 0 ;;
-            *) echo "无效选择：$choice（请输入 0-7）" ;;
+            *) echo "无效选择：$choice（请输入 0-8）" ;;
         esac
     done
 }

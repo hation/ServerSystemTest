@@ -130,6 +130,22 @@ def test_extract_traversal():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_cleanup_respects_keep():
+    """keep=True（对应 CLI --no-cleanup 保留调试）时 cleanup 应跳过删除。"""
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        sds_path = _build_sample_sds(tmp_dir)
+        result = extract_sds(sds_path, keep=True)
+        try:
+            assert result.keep is True
+            cleanup(result)
+            assert os.path.isdir(result.root_dir), 'keep=True 时 cleanup 不应删除临时目录'
+        finally:
+            shutil.rmtree(result.root_dir, ignore_errors=True)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_read_text_gbk():
     """GBK 编码的中文文本 → read_text_file 正确解码（UTF-8 失败回退 GBK）。"""
     tmp_dir = tempfile.mkdtemp()

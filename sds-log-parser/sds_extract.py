@@ -23,10 +23,12 @@ class ExtractionResult:
 
     root_dir: 临时目录（keep=True 时保留，调用方按需 cleanup）。
     files:    固定键集合到文件绝对路径的映射，解不到的文件为 None。
+    keep:     extract_sds 传入的 keep 标志；cleanup() 在 keep=True 时跳过删除。
     """
 
     root_dir: str
     files: dict = field(default_factory=dict)
+    keep: bool = False
 
 
 # 固定键集合 → 相对路径后缀（小写）匹配规则。
@@ -159,7 +161,7 @@ def extract_sds(sds_path: str, keep: bool = False) -> ExtractionResult:
         raise SDSNotTarError(f'不是合法的 tar 归档：{sds_path}') from e
     _extract_nested_events(root)
     files = _locate_files(root)
-    return ExtractionResult(root_dir=root, files=files)
+    return ExtractionResult(root_dir=root, files=files, keep=keep)
 
 
 def read_text_file(path: str) -> str:
@@ -176,9 +178,15 @@ def read_text_file(path: str) -> str:
 
 
 def cleanup(extract_result) -> None:
-    """删除解包产生的临时目录（keep=False 场景下调用）。"""
+    """删除解包产生的临时目录（keep=False 场景下调用）。
+
+    keep=True 时（对应 CLI --no-cleanup 保留调试）跳过删除。
+    """
     if extract_result is None:
         return
     root = getattr(extract_result, 'root_dir', None)
+    keep = getattr(extract_result, 'keep', False)
+    if keep:
+        return
     if root and os.path.isdir(root):
         shutil.rmtree(root, ignore_errors=True)

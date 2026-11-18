@@ -8,18 +8,22 @@ test_* 函数，追加后仍可整体运行（不依赖 pytest 等第三方库�
 """
 
 import io
+import json
 import os
 import shutil
 import sys
 import tarfile
 import tempfile
+import urllib.error
+from unittest import mock
 
 # 保证从任意工作目录运行时都能 import 到 sds-log-parser 下的模块
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from sds_ai import build_ai_payload, call_ai
 from sds_extract import SDSNotTarError, cleanup, extract_sds, read_text_file
 from sds_events import EventRecord, parse_event_csv, parse_sbe, parse_visible_log
-from sds_health import assess_health, build_suggestions
+from sds_health import ComponentHealth, assess_health, build_suggestions
 from sds_inventory import InventoryData, parse_inventory
 from sds_sensors import SensorReading, parse_sensors
 
@@ -659,6 +663,89 @@ def test_health_backplane_failed_match():
     health2 = assess_health(inv, [], [])
     bps2 = [c for c in health2 if c.category == '背板']
     assert bps2 and bps2[0].status == '正常', '不传 raid_bp_text 时背板应保持正常'
+
+
+def test_ai_prompt_contains_facts():
+    """build_ai_payload 输出含 机器型号、固件版本、组件名、事件原文 关键事实；sbe 来源标注尽力而为。"""
+    inv = InventoryData()
+    inv.machine = {
+        'product_name': 'H3C UniServer R4930 G5 H3',
+        'serial_number': '210235A566526AN0000P',
+        'product_part_number': '0235A566',
+        'baseboard': {},
+    }
+    inv.firmware = {'BIOS': '5.97 V500R001B01D097', 'HDM': '3.66 HDM V100R001B05D110', 'CPLD': 'V00D'}
+    health = [
+        ComponentHealth(
+            name='Disk_F23_Status', category='硬盘', status='异常',
+            evidence=['[2026-11-13 08:00:01] Major The disk is missing'],
+            suggestions=['重新安装该硬盘；若反复出现故障请更换硬盘。'],
+        ),
+        ComponentHealth(
+            name='PCIe_Card3_HBA', category='PCIe', status='异常',
+            evidence=['[2026-11-13 08:00:02] Critical Device Disabled: PCIe module information not obtained---Slot: 3'],
+            suggestions=['重新插拔 PCIe 卡并更换槽位验证，必要时更换该 PCIe 模块。'],
+        ),
+    ]
+    events = [
+        EventRecord('2026-11-13 08:00:01', 'Major', 'Disk_F23_Status', 'The disk is missing', '', 'csv'),
+        EventRecord('未知', '未知', 'PCIe_Card3_HBA', 'Device Disabled', '', 'sbe'),
+    ]
+    payload = build_ai_payload(inv, health, events)
+    assert 'H3C UniServer R4930 G5 H3' in payload, '应含机器型号'
+    assert '5.97 V500R001B01D097' in payload, '应含固件版本'
+    assert 'Disk_F23_Status' in payload, '应含组件名'
+    assert 'PCIe_Card3_HBA' in payload, '应含组件名'
+    assert 'The disk is missing' in payload, '应含事件原文'
+    assert 'Device Disabled: PCIe module information not obtained' in payload, '应含事件原文'
+    assert '来自尽力而为的 .sbe 解析' in payload, 'sbe 来源事件应标注尽力而为'
+
+
+def test_ai_prompt_has_task():
+    """build_ai_payload 输出含三段分析任务指令锚点词（异常链路推断/根因候选排序/排查步骤）。"""
+    payload = build_ai_payload(InventoryData(), [], [])
+    for token in ('异常链路推断', '根因候选排序', '排查步骤'):
+        assert token in payload, f'任务指令应含 {token}'
+    assert '①' in payload and '②' in payload and '③' in payload, '任务指令应为三点编号'
+
+
+def test_ai_downgrade_no_env():
+    """缺 SDS_AI_BASE_URL 环境变量 → call_ai 返回 None 且不发起 HTTP 请求。"""
+    with mock.patch.dict(os.environ, {}, clear=True):
+        with mock.patch('urllib.request.urlopen') as urlopen:
+            assert call_ai('任意 payload') is None
+            urlopen.assert_not_called()
+
+
+def test_ai_http_failure():
+    """urlopen 异常 / HTTP 非 200 / 无 content → None；200 且有 content → 返回该文本。"""
+    payload = '测试 payload'
+    # 1) 网络异常（URLError）→ None
+    with mock.patch('urllib.request.urlopen', side_effect=urllib.error.URLError('network down')):
+        assert call_ai(payload, 'http://localhost:11434/v1', 'fake-key', 'm') is None
+    # 2) HTTP 非 200 → None
+    resp500 = mock.Mock()
+    resp500.status = 500
+    resp500.read.return_value = b'{"error": "boom"}'
+    with mock.patch('urllib.request.urlopen', return_value=resp500):
+        assert call_ai(payload, 'http://localhost:11434/v1', 'fake-key', 'm') is None
+    # 3) 200 且有 content → 返回 content（reasoning_content 忽略）
+    resp_ok = mock.Mock()
+    resp_ok.status = 200
+    resp_ok.read.return_value = json.dumps({
+        'choices': [{'message': {
+            'content': '这是 AI 综合结论',
+            'reasoning_content': '内部推理不应出现在返回中',
+        }}],
+    }).encode('utf-8')
+    with mock.patch('urllib.request.urlopen', return_value=resp_ok):
+        assert call_ai(payload, 'http://localhost:11434/v1', 'fake-key', 'm') == '这是 AI 综合结论'
+    # 4) 200 但无 content → None
+    resp_empty = mock.Mock()
+    resp_empty.status = 200
+    resp_empty.read.return_value = json.dumps({'choices': [{'message': {}}]}).encode('utf-8')
+    with mock.patch('urllib.request.urlopen', return_value=resp_empty):
+        assert call_ai(payload, 'http://localhost:11434/v1', 'fake-key', 'm') is None
 
 
 # ---------- 运行器 ----------

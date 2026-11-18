@@ -11,6 +11,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -26,6 +27,34 @@ from sds_events import EventRecord, parse_event_csv, parse_sbe, parse_visible_lo
 from sds_health import ComponentHealth, assess_health, build_suggestions
 from sds_inventory import InventoryData, parse_inventory
 from sds_sensors import SensorReading, parse_sensors
+
+
+# ---------- 子进程调用 CLI（T7 集成用例用） ----------
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# 真实样例路径：可用 `python run_tests.py --sds <路径>` 注入覆盖
+_REAL_SDS_DEFAULT = (
+    r'c:\Users\ganxin01\.trae-cn\attachments'
+    r'\561c8ecb-f478-478c-a9b8-c0e9250fb527_035beacd-9c0e-42d3-93a4-39ccbe348f36_HDM210235A566526AN0000P_20261118.sds'
+)
+_REAL_SDS_PATH = None
+
+
+def _real_sds_path() -> str:
+    """返回真实样例路径（--sds 注入优先，缺省用固定默认路径）。"""
+    return _REAL_SDS_PATH or _REAL_SDS_DEFAULT
+
+
+def _run_cli(args_list: list) -> subprocess.CompletedProcess:
+    """以子进程调用 sds_parser.py（强制 UTF-8 输出），供 CLI 级用例使用。"""
+    env = dict(os.environ)
+    env['PYTHONIOENCODING'] = 'utf-8'
+    return subprocess.run(
+        [sys.executable, os.path.join(_REPO_ROOT, 'sds_parser.py'), *args_list],
+        capture_output=True, text=True, encoding='utf-8', errors='replace',
+        cwd=_REPO_ROOT, timeout=180,
+    )
 
 
 # ---------- 测试用例 ----------
@@ -748,9 +777,133 @@ def test_ai_http_failure():
         assert call_ai(payload, 'http://localhost:11434/v1', 'fake-key', 'm') is None
 
 
+def test_report_sections():
+    """构造最小数据 → render_report 输出含 4 个必选章节标题与附录；
+    ai_markdown=None 时无 ## 5 章节，非 None 时含。"""
+    from sds_report import render_report
+    inv = InventoryData()
+    inv.machine = {
+        'product_name': 'H3C UniServer R4930 G5 H3',
+        'serial_number': '210235A566526AN0000P',
+        'product_part_number': '0235A566',
+        'baseboard': {},
+    }
+    inv.firmware = {'BIOS': '5.97 V500R001B01D097', 'HDM': '3.66', 'CPLD': 'V00D'}
+    health = [
+        ComponentHealth(
+            name='Disk_F23_Status', category='硬盘', status='异常',
+            evidence=['[2026-11-13 08:00:01] Major The disk is missing'],
+            suggestions=['重新安装该硬盘；若反复出现故障请更换硬盘。'],
+        ),
+    ]
+    events = [
+        EventRecord('2026-11-13 08:00:01', 'Major', 'Disk_F23_Status',
+                    'The disk is missing', '', 'csv'),
+    ]
+    sensors = [SensorReading('Total_Power', '320.0', 'Watts', 'ok')]
+    visible = ['%# 2026-11-13 14:37:36.621 HOST [hdm] 1 [INFO]: HDM service started']
+    base = render_report(inv, sensors, health, events, visible, None, '2026-11-18 12:00:00')
+    for title in ('# 服务器体检报告', '## 1. 整机信息', '## 2. 硬件健康状态',
+                  '## 3. 异常详情', '## 4. 修复建议', '## 附录'):
+        assert title in base, f'报告应含章节 {title}'
+    assert '## 5. AI 综合分析' not in base, 'ai_markdown=None 时不应含 AI 章节'
+    assert 'H3C UniServer R4930 G5 H3' in base, '整机信息应含机器型号'
+    with_ai = render_report(inv, sensors, health, events, visible, '这是 AI 综合结论', '2026-11-18 12:00:00')
+    assert '## 5. AI 综合分析' in with_ai, 'ai_markdown 非 None 时应含 AI 章节'
+    assert '这是 AI 综合结论' in with_ai, 'AI 章节应含 AI 结论原文'
+
+
+def test_facts_pack_always_written():
+    """对真实样例运行 sds_parser.py（不加 --ai）→ 输入同目录生成 <basename>-ai-facts.md，
+    内容含 机器信息、异常组件（F23/HBA）、事件原文、任务指令锚点。"""
+    real = _real_sds_path()
+    assert os.path.isfile(real), f'真实样例缺失：{real}'
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        copy = os.path.join(tmp_dir, os.path.basename(real))
+        shutil.copyfile(real, copy)
+        proc = _run_cli([copy])
+        assert proc.returncode == 0, f'CLI 失败：{proc.stdout}\n{proc.stderr}'
+        facts = os.path.join(tmp_dir, os.path.splitext(os.path.basename(copy))[0] + '-ai-facts.md')
+        assert os.path.isfile(facts), f'材料包未生成：{facts}'
+        with open(facts, encoding='utf-8') as f:
+            text = f.read()
+        # 机器信息
+        assert '机器信息' in text and '产品型号' in text, '材料包应含机器信息'
+        # 异常组件（F23 / HBA）
+        assert 'F23' in text, '材料包应含 F23 组件'
+        assert 'HBA' in text, '材料包应含 HBA 组件'
+        # 事件原文
+        assert 'module information not obtained' in text, '材料包应含事件原文'
+        # 任务指令锚点
+        for token in ('异常链路推断', '根因候选排序', '排查步骤'):
+            assert token in text, f'任务指令应含 {token}'
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_cli_non_tar_friendly():
+    """普通文本文件传给 sds_parser.py → 退出码非 0、含"不是有效的"中文提示、无 Python 堆栈。"""
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        txt = os.path.join(tmp_dir, 'not_a_sds.sds')
+        with open(txt, 'w', encoding='utf-8') as f:
+            f.write('this is definitely not a tar archive at all 12345')
+        proc = _run_cli([txt])
+        out = (proc.stdout or '') + (proc.stderr or '')
+        assert proc.returncode != 0, f'非 tar 输入应非零退出：{out}'
+        assert '不是有效的' in out, f'应打印"不是有效的"中文提示：{out}'
+        assert 'Traceback' not in out, f'不应出现 Python 堆栈：{out}'
+        assert 'File "' not in out, f'不应出现 Python 堆栈（File 行）：{out}'
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_integration_real_sds():
+    """真实样例全链路：报告生成成功、含机器型号/F23/HBA 依据/电源异常条目、
+    修复建议含"更换"/"换槽"关键词，且同目录生成材料包。"""
+    real = _real_sds_path()
+    assert os.path.isfile(real), f'真实样例缺失：{real}'
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        copy = os.path.join(tmp_dir, os.path.basename(real))
+        shutil.copyfile(real, copy)
+        out = os.path.join(tmp_dir, 'report.md')
+        proc = _run_cli([copy, '-o', out])
+        assert proc.returncode == 0, f'CLI 失败：{proc.stdout}\n{proc.stderr}'
+        assert os.path.isfile(out), f'报告未生成：{out}'
+        with open(out, encoding='utf-8') as f:
+            text = f.read()
+        # 四章节 + 附录
+        for title in ('# 服务器体检报告', '## 1. 整机信息', '## 2. 硬件健康状态',
+                      '## 3. 异常详情', '## 4. 修复建议', '## 附录'):
+            assert title in text, f'报告应含章节 {title}'
+        # 验收锚点
+        assert 'H3C UniServer' in text, '整机信息应含 H3C UniServer'
+        assert 'F23' in text, '应含 F23 盘槽异常条目'
+        assert 'module information not obtained' in text, '应含 HBA 依据原文'
+        assert 'PSU1（电源）' in text, '应含电源组件条目'
+        assert '状态：异常' in text, '应含异常状态条目'
+        # 修复建议关键词
+        assert '更换' in text, '修复建议应含 更换'
+        assert '换槽' in text, '修复建议应含 换槽'
+        # 材料包同目录生成
+        facts = os.path.join(tmp_dir, os.path.splitext(os.path.basename(copy))[0] + '-ai-facts.md')
+        assert os.path.isfile(facts), f'材料包未生成：{facts}'
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 # ---------- 运行器 ----------
 
 def main() -> int:
+    # 支持 `--sds <真实样例路径>` 注入（供集成用例覆盖默认样例路径）
+    argv = sys.argv[1:]
+    global _REAL_SDS_PATH
+    if '--sds' in argv:
+        idx = argv.index('--sds')
+        if idx + 1 < len(argv):
+            _REAL_SDS_PATH = argv[idx + 1]
     test_funcs = sorted(
         (name, obj) for name, obj in globals().items()
         if name.startswith('test_') and callable(obj)

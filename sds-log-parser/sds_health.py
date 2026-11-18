@@ -13,7 +13,7 @@
 - 事件按 SensorName 前缀/关键词归因（Disk_/PCIe_/PSU/HDD_BP/CPU*_A0…）；
   sbe 来源的记录可能跨记录拼接/重复，按关键词归因即尽力而为
 
-build_suggestions 优先级：官方 Suggestion > 关键词映射 > 兜底文案。
+build_suggestions 优先级：官方 Suggestion 原文优先，关键词映射建议作为补充，兜底文案最后。
 运行时零第三方依赖，仅用 Python 3.12 标准库。
 """
 
@@ -192,24 +192,28 @@ _SUGGESTION_FALLBACK = '联系技术支持或结合现场情况进一步判断�
 def build_suggestions(events: list[EventRecord]) -> list[str]:
     """为事件列表生成修复建议（去重）。
 
-    优先级：CSV 官方 Suggestion 原文 > 事件关键词映射 > 兜底文案。
+    优先级：CSV 官方 Suggestion 原文优先，事件关键词映射建议作为补充
+    （spec「修复建议规则」的"按事件关键词映射补充"）；两者皆无 → 兜底文案。
     """
     result = []
     for ev in events:
         official = (ev.suggestion or '').strip()
+        matched = None
+        desc = (ev.desc or '').lower()
+        for keywords, suggestion in _SUGGESTION_RULES:
+            if any(k in desc for k in keywords):
+                matched = suggestion
+                break
+        texts = []
         if official:
-            text = official
-        else:
-            text = None
-            desc = (ev.desc or '').lower()
-            for keywords, suggestion in _SUGGESTION_RULES:
-                if any(k in desc for k in keywords):
-                    text = suggestion
-                    break
-            if text is None:
-                text = _SUGGESTION_FALLBACK
-        if text not in result:
-            result.append(text)
+            texts.append(official)
+        if matched and matched != official:
+            texts.append(matched)
+        if not texts:
+            texts.append(_SUGGESTION_FALLBACK)
+        for text in texts:
+            if text not in result:
+                result.append(text)
     return result
 
 

@@ -157,13 +157,18 @@ def extract_sds(sds_path: str, keep: bool = False) -> ExtractionResult:
     try:
         with tarfile.open(sds_path, 'r:*') as tar:
             _safe_extract(tar, root)
+        _extract_nested_events(root)
+        files = _locate_files(root)
+        return ExtractionResult(root_dir=root, files=files, keep=keep)
     except (tarfile.TarError, EOFError) as e:
         # 非 tar 归档：清理临时目录后抛出自定义异常
         shutil.rmtree(root, ignore_errors=True)
         raise SDSNotTarError(f'不是合法的 tar 归档：{sds_path}') from e
-    _extract_nested_events(root)
-    files = _locate_files(root)
-    return ExtractionResult(root_dir=root, files=files, keep=keep)
+    except Exception:
+        # 病态成员（如 a/.. 触发 OSError/PermissionError）等任意解包失败：
+        # 同样保证临时目录被清理后再向上抛（编排层 try/finally 兜底）
+        shutil.rmtree(root, ignore_errors=True)
+        raise
 
 
 def read_text_file(path: str) -> str:

@@ -18,6 +18,7 @@
 
 import csv
 import io
+import re
 from dataclasses import dataclass
 
 from sds_extract import read_text_file
@@ -81,6 +82,22 @@ def _get_column(row: list[str], col: dict, field: str) -> str:
     return value if isinstance(value, str) else ''
 
 
+_CSV_ROW_LEAK = re.compile(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},(?:Info|Minor|Major|Critical),0x')
+
+
+def _clean_suggestion(text: str) -> str:
+    """截断 Suggestion 列中内嵌的原始 CSV 行残渣。
+
+    HDM 导出的 Suggestion 列偶尔会在官方建议文本后拼接一条原始 CSV 行
+    （形如 '2026-11-15 06:29:07,Info,0x0,Button / Switch,Button,...'）。
+    该残渣始于时间戳+级别+0x 编号模式，从首个匹配处截断，保留官方文本。
+    """
+    m = _CSV_ROW_LEAK.search(text)
+    if m:
+        return text[: m.start()].strip()
+    return text
+
+
 def parse_event_csv(path: str | None) -> list[EventRecord]:
     """解析 user/test.csv 事件表，返回 EventRecord 列表（source='csv'）。
 
@@ -125,7 +142,7 @@ def parse_event_csv(path: str | None) -> list[EventRecord]:
                 severity=_get_column(row, col, 'severity').strip(),
                 sensor_name=_get_column(row, col, 'sensor_name').strip(),
                 desc=_get_column(row, col, 'desc').strip(),
-                suggestion=_get_column(row, col, 'suggestion').strip(),
+                suggestion=_clean_suggestion(_get_column(row, col, 'suggestion').strip()),
                 source='csv',
             )
         )

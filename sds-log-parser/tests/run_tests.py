@@ -920,6 +920,33 @@ def test_integration_real_sds():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_event_csv_suggestion_junk_cleaned():
+    """HDM 导出 CSV 的 Suggestion 列会在官方文本后拼接原始 CSV 行残渣
+    （形如 '2026-11-15 06:29:07,Info,0x0,Button / Switch,Button,...'）。
+    parse_event_csv 应截断该残渣，仅保留官方建议文本。"""
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        csv_path = os.path.join(tmp_dir, 'junk.csv')
+        # 含 \x00 空字节（模拟 HDM 导出），Suggestion 内嵌一条完整 CSV 行残渣
+        header = ('Record Time Stamp,Severity Level,Severity Level ID,SensorTypeStr,SensorName,'
+                  'Event Dir,Event Occurred Time,DescInfo,Explanation,Suggestion\n')
+        row = ('2026-11-15 06:24:40,Major,0x2,Drive Slot (Bay),Disk_F23_Status,Assertion event,'
+               '2026-11-15 06:24:39,"Drive Fault"," ",'
+               '"1. Log in to HDM and verify all drives are identified. If the drive cannot be '
+               'identified, re-install the drive. 2026-11-15 06:29:07,Info,0x0,Button / Switch,'
+               'Button,Assertion event,2026-11-15 06:29:07,Power Button pressed"\n')
+        with open(csv_path, 'wb') as f:
+            f.write(header.encode('utf-8').replace(b'\x00', b'') + row.encode('utf-8').replace(b'\x00', b''))
+        evs = parse_event_csv(csv_path)
+        assert len(evs) == 1
+        sug = evs[0].suggestion
+        assert 'Log in to HDM and verify all drives are identified' in sug, '应保留官方建议文本'
+        assert '2026-11-15 06:29:07' not in sug, '应截断内嵌的 CSV 行残渣'
+        assert ',Info,0x0,' not in sug, '应截断内嵌的 CSV 行残渣'
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 # ---------- 运行器 ----------
 
 def main() -> int:

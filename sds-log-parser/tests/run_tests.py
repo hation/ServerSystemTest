@@ -18,9 +18,10 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sds_extract import SDSNotTarError, cleanup, extract_sds, read_text_file
-from sds_inventory import parse_inventory
-from sds_sensors import parse_sensors
-from sds_events import parse_event_csv, parse_sbe, parse_visible_log
+from sds_events import EventRecord, parse_event_csv, parse_sbe, parse_visible_log
+from sds_health import assess_health, build_suggestions
+from sds_inventory import InventoryData, parse_inventory
+from sds_sensors import SensorReading, parse_sensors
 
 
 # ---------- 测试用例 ----------
@@ -578,6 +579,70 @@ def test_visible_log():
         assert parse_visible_log(blank) == []
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_health_disk_hba():
+    """事件含 PCIe_Card3_HBA 与 Disk_F23_Status → PCIe(HBA)/盘 F23 组件判异常，evidence 含关键词。"""
+    events = [
+        EventRecord('2026-11-13 08:00:01', 'Major', 'PCIe_Card3_HBA',
+                    'Device Disabled: PCIe module information not obtained---Slot: 3', '', 'csv'),
+        EventRecord('2026-11-13 08:01:00', 'Major', 'Disk_F23_Status', 'The disk is missing', '', 'csv'),
+        EventRecord('2026-11-13 08:02:00', 'Major', 'Disk_F23_Status', 'Drive Fault on slot F23', '', 'csv'),
+    ]
+    health = assess_health(InventoryData(), [], events)
+    pcie = [c for c in health if c.category == 'PCIe']
+    assert any(c.status == '异常' for c in pcie), 'PCIe(HBA) 组件应判异常'
+    assert any('module information not obtained' in e for c in pcie for e in c.evidence), \
+        'HBA evidence 应含 "module information not obtained"'
+    disks = [c for c in health if c.category == '硬盘']
+    assert any('F23' in c.name and c.status == '异常' for c in disks), '盘 F23 组件应判异常'
+
+
+def test_health_psu():
+    """PSU input lost 事件 → 电源组件判异常，修复建议含 AC 相关词。"""
+    events = [
+        EventRecord('2026-11-13 08:03:00', 'Critical', 'PSU1_Status',
+                    'Power Supply input lost (AC/DC)', '', 'csv'),
+    ]
+    health = assess_health(InventoryData(), [], events)
+    psus = [c for c in health if c.category == '电源']
+    assert any(c.status == '异常' for c in psus), '电源组件应判异常'
+    assert any('AC' in s for c in psus for s in c.suggestions), '电源修复建议应含 AC 相关词'
+
+
+def test_health_standby_no_false_positive():
+    """待机态（Total_Power=20W）+ 风扇 0 RPM → 风扇判正常；非待机 0 RPM → 判异常。"""
+    sensors = [
+        SensorReading('FAN1_Speed', '0', 'RPM', 'ok'),
+        SensorReading('Total_Power', '20.0', 'Watts', 'ok'),
+    ]
+    health = assess_health(InventoryData(), sensors, [])
+    fans = [c for c in health if c.category == '风扇']
+    assert fans, '待机态下仍应输出风扇组件'
+    assert all(c.status == '正常' for c in fans), '待机态风扇 0 RPM 不应误报异常'
+    # 非待机态（Total_Power=320W）0 RPM → 转速异常
+    sensors2 = [
+        SensorReading('FAN1_Speed', '0', 'RPM', 'ok'),
+        SensorReading('Total_Power', '320.0', 'Watts', 'ok'),
+    ]
+    health2 = assess_health(InventoryData(), sensors2, [])
+    fans2 = [c for c in health2 if c.category == '风扇']
+    assert any(c.status == '异常' for c in fans2), '非待机态风扇 0 RPM 应判异常'
+
+
+def test_suggestions():
+    """build_suggestions：关键词映射（重新安装/更换）与官方 Suggestion 优先、兜底文案。"""
+    ev_disk = EventRecord('t1', 'Major', 'Disk_F23_Status', 'The disk is missing', '', 'csv')
+    ev_psu = EventRecord('t2', 'Critical', 'PSU1_Status', 'Power Supply input lost (AC/DC)',
+                         '官方建议：请检查 AC 电源输入并联系厂商处理', 'csv')
+    suggs = build_suggestions([ev_disk, ev_psu])
+    assert any('重新安装' in s for s in suggs), '盘缺失建议应含 重新安装'
+    assert any('更换' in s for s in suggs), '盘缺失建议应含 更换'
+    assert any('官方建议' in s for s in suggs), '带官方 Suggestion 的事件应优先返回官方文本'
+    # 无匹配关键词 → 兜底文案
+    ev_other = EventRecord('t3', 'Info', 'Health', 'HDM reset ok', '', 'csv')
+    suggs2 = build_suggestions([ev_other])
+    assert suggs2 and '联系技术支持' in suggs2[0], '无匹配事件应返回兜底建议'
 
 
 # ---------- 运行器 ----------

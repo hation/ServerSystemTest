@@ -962,6 +962,14 @@ def test_summary_ai_conclusion():
     out4 = render_summary(inv, health, ai_markdown=long_ai)
     conclusion_line = [l for l in out4.split('### 核心结论')[1].splitlines() if l.startswith('- ')][0]
     assert len(conclusion_line) - 2 <= 120, f'AI 结论应截断 ≤120 字，实际 {len(conclusion_line) - 2}'
+    # 元数据行（对象/SN）不应被当作核心结论；应取含 "核心异常" 的结论行
+    ai2 = ('## 体检 AI 分析结论\n\n'
+           '**对象**：H3C UniServer R4930 G5 H3 / SN 210235A566526AN0000P\n'
+           '**核心异常**：PSU1/PSU2 电源输入异常、PCIe_Card3_HBA 未被识别、Disk_F23 掉盘/故障。\n'
+           'CPU、内存、风扇、背板均正常。')
+    out5 = render_summary(inv, health, ai_markdown=ai2)
+    assert 'PSU1/PSU2 电源输入异常' in out5, '核心结论应取"核心异常"行而非"对象"元数据行'
+    assert '对象：' not in out5.split('### 核心结论')[1].splitlines()[1], '元数据行不应作为核心结论'
 
 
 def test_summary_unknown_count():

@@ -177,23 +177,45 @@ def _render_ai(ai_markdown) -> str:
     return '## 5. AI 综合分析\n\n' + text
 
 
-def _ai_conclusion(ai_markdown) -> str:
-    """提取 AI 首要点句作为核心结论候选（供 render_summary 内部用）。
+# AI 结论行评分关键词（含"结论性"最强的行优先作核心结论）
+_AI_CONCLUSION_KEYWORDS = (
+    ('核心异常', 3), ('核心结论', 3), ('根因', 2), ('结论', 2),
+    ('异常', 1), ('故障', 1),
+)
+# 元数据行标记（对象/SN/型号/固件等，不作核心结论）
+_AI_METADATA_MARKERS = ('对象', '序列号', '产品型号', '产品部件号', '固件版本', 'SN')
 
-    规则：跳过空行与 Markdown 标题行，取首个列表项/正文句，
-    去掉行首 `#`/`*`/`-`/`+` 标记与行内 `**` 强调，strip 后截断 ≤120 字；
-    无可用内容（None/空/纯标记残留为空）返回空串，由调用方回退规则结论。
+
+def _ai_conclusion(ai_markdown) -> str:
+    """提取 AI 输出中最具"结论性"的一句作为核心结论候选。
+
+    规则：跳过空行与 Markdown 标题行；去掉行首 `#`/`*`/`-`/`+`/编号标记与
+    行内 `*` 强调；跳过元数据行（对象/SN/型号/固件）；按关键词评分取最高分行
+    （核心异常/核心结论 > 根因/结论 > 异常/故障 > 普通正文），strip 后截断
+    ≤120 字；无可用内容返回空串，由调用方回退规则结论。
     """
+    candidates = []
     for raw in str(ai_markdown or '').splitlines():
         line = raw.strip()
         if not line or line.startswith('#'):
             continue
-        text = re.sub(r'^[\s*\-+]+', '', line)
-        text = text.replace('**', '').strip()
+        text = re.sub(r'^[\s*\-+①②③④⑤]+', '', line)
+        text = re.sub(r'\*+', '', text).strip()
         if not text:
             continue
-        return text[:_CONCLUSION_LIMIT] if len(text) > _CONCLUSION_LIMIT else text
-    return ''
+        if any(m in text for m in _AI_METADATA_MARKERS):
+            continue
+        score = 0
+        for kw, s in _AI_CONCLUSION_KEYWORDS:
+            if kw in text:
+                score = s
+                break
+        candidates.append((score, text))
+    if not candidates:
+        return ''
+    best = max(candidates, key=lambda c: c[0])
+    text = best[1]
+    return text[:_CONCLUSION_LIMIT] if len(text) > _CONCLUSION_LIMIT else text
 
 
 def _rule_conclusion(health) -> str:

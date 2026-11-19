@@ -35,47 +35,45 @@ root_check() {
 
 # ---------- 系统盘识别（df / 的底层设备，任何分支硬跳过） ----------
 
-# 沿 lsblk 树向上解析：从 df / 的底层设备出发，逐层取父设备（pkname），
-# 直到解析到 TYPE=disk 的整盘为止。覆盖 LVM/mapper 布局：
+# 反向依赖链解析（lsblk -s）：从 df / 的底层设备出发，沿链收集所有 TYPE=disk
+# 的整盘名（-P 键值格式，避免空列错位）。覆盖 LVM/mapper 布局：
 #   /dev/mapper/vg00-lv_root（lvm）→ PV 分区 sda2（part）→ 整盘 sda（disk）
 # 可靠性标记 SYS_ID_OK（fail-closed）：
-#   df / 不是 /dev/* 设备（overlay、UUID= 等）、lsblk 不认识该设备（/dev/root）、
-#   pkname 输出多于 1 行（RAID/多 PV）、上溯超限、最终设备不是 TYPE=disk → 0。
+#   df / 不是 /dev/* 设备（overlay、UUID= 等）、链路上 0 个整盘（lsblk 不认识
+#   /dev/root 等）、>1 个整盘（RAID/多 PV）、兜底后最终设备不是 TYPE=disk → 0。
 #   SYS_ID_OK=0 时 SYS_BASE 仅供 list 展示，mount 流程不得执行任何写操作。
 SYS_BASE=""
 SYS_ID_OK=0
 
 sys_disk_base() {
-    local dev tgt type pks pk i base
+    local dev base disks n
     dev=$($DF_BIN / 2>/dev/null | awk 'NR==2{print $1}')
     [ -n "$dev" ] || return 1
     case "$dev" in
         /dev/*) ;;
         *) return 1 ;;
     esac
-    tgt="$dev"
-    i=0
-    while [ "$i" -lt 20 ]; do
-        type=$($LSBLK_BIN -no TYPE "$tgt" 2>/dev/null | head -1)
-        if [ "$type" = "disk" ]; then
-            base="${tgt#/dev/}"
-            [ -n "$base" ] || return 1
-            SYS_BASE="$base"
-            SYS_ID_OK=1
-            return 0
-        fi
-        [ -n "$type" ] || break   # lsblk 不认识该设备（/dev/root 等）
-        pks=$($LSBLK_BIN -no pkname "$tgt" 2>/dev/null)
-        pk=$(printf '%s\n' "$pks" | awk 'NF{print; exit}')
-        [ -n "$pk" ] || break
-        # 多行 pkname（RAID/多 PV）无法确定唯一物理盘 → 视为不可靠
-        [ "$(printf '%s\n' "$pks" | awk 'NF' | wc -l)" -eq 1 ] || return 1
-        case "$pk" in
-            /dev/*) tgt="$pk" ;;
-            *) tgt="/dev/$pk" ;;
-        esac
-        i=$((i + 1))
-    done
+    # lsblk -s 反转依赖链（叶→根），收集链路上所有 TYPE=disk 且 NAME 非空的整盘名
+    # （-P 键值输出，避免空列错位）。恰好 1 个整盘 → 可靠；0 个整盘（lsblk 不认识
+    # /dev/root 等）或 >1 个整盘（RAID/多 PV）→ 落入下方兜底，保持 fail-closed。
+    disks=$($LSBLK_BIN -s -P -o NAME,TYPE "$dev" 2>/dev/null | awk '
+        function v(line, key,   re, s) {
+            re = key "=\""
+            if (match(line, re)) {
+                s = substr(line, RSTART + length(re))
+                return substr(s, 1, index(s, "\"") - 1)
+            }
+            return ""
+        }
+        { if (v($0,"TYPE")=="disk" && v($0,"NAME")!="") print v($0,"NAME") }')
+    n=$(printf '%s\n' "$disks" | awk 'NF' | wc -l)
+    if [ "$n" -eq 1 ]; then
+        base=$(printf '%s\n' "$disks" | awk 'NF{print; exit}')
+        [ -n "$base" ] || return 1
+        SYS_BASE="$base"
+        SYS_ID_OK=1
+        return 0
+    fi
     # 兜底：正则去分区号（仅用于展示；是否可靠由 SYS_ID_OK 表示）
     base=$(echo "$dev" | sed -E 's#^/dev/(sd[a-z]+)[0-9]*$#\1#; s#^/dev/(nvme[0-9]+n[0-9]+)p[0-9]+$#\1#; s#^/dev/(vd[a-z]+)[0-9]*$#\1#; s#^/dev/(mmcblk[0-9]+)p[0-9]+$#\1#; s#^/dev/##')
     SYS_BASE="$base"

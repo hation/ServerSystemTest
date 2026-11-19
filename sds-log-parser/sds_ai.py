@@ -26,8 +26,9 @@ import urllib.request
 _TASK_INSTRUCTIONS = '请基于以上事实输出：① 异常链路推断 ② 根因候选排序 ③ 可执行的排查步骤'
 
 _DEFAULT_MODEL = 'deepseek-v4-flash'
-# 大 payload + 推理模型可能较慢：默认 300s，可用环境变量 SDS_AI_TIMEOUT 覆盖
-_REQUEST_TIMEOUT = 300
+# 大 payload + 推理模型可能很慢（实测 75KB payload 约 160s）：默认 600s，
+# 可用环境变量 SDS_AI_TIMEOUT 覆盖
+_REQUEST_TIMEOUT = 600
 
 
 def build_ai_payload(inv, health, events) -> str:

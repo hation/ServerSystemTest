@@ -814,8 +814,8 @@ def test_call_ai_timeout_config():
     with mock.patch.dict(os.environ, {'SDS_AI_BASE_URL': 'http://x/v1'}), \
             mock.patch('urllib.request.urlopen', return_value=resp_ok) as uo:
         call_ai(payload, api_key='k', model='m')
-        assert uo.call_args.kwargs.get('timeout') == 300, \
-            f'缺省超时应为 300s，实际 {uo.call_args.kwargs.get("timeout")}'
+        assert uo.call_args.kwargs.get('timeout') == 600, \
+            f'缺省超时应为 600s，实际 {uo.call_args.kwargs.get("timeout")}'
     with mock.patch.dict(os.environ, {
             'SDS_AI_BASE_URL': 'http://x/v1', 'SDS_AI_TIMEOUT': '150'}), \
             mock.patch('urllib.request.urlopen', return_value=resp_ok) as uo:

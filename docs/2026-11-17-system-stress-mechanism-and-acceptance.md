@@ -43,7 +43,7 @@ stress-test.sh review --dir <结果目录>  →  summary.txt / 结论 / 执行�
 
 运行中可用 `stress-test.sh snapshot <结果目录>` 手动补抓一次进程快照（只作展示，不作为一致性证据）。
 
-一键入口只做编排：`oneclick.sh` 的 `all` 计划为 `COMBO → HDD01..N → SYSDISK`，每条计划最终仍调用 `stress-test.sh start ...`（`oneclick.sh:283-305`、`oneclick.sh:600-628`）。
+一键入口只做编排：`oneclick.sh` 的 `all` 计划为 `COMBO → HDD01..N → SYSDISK`，每条计划最终仍调用 `stress-test.sh start ...`（`oneclick-lib-run.sh L153-175`、`L470-498`）。
 
 ---
 
@@ -68,9 +68,9 @@ CPU worker = max(1, round(L × 25 / 32))     # SMT 开启时等价 round(C × 1.
 
 为什么是 25/32：现场四组案例都是 2×32C + `--cpu 100`（SMT 开启，128 逻辑线程），即“每个逻辑线程 25/32 个 worker”（等价“每个物理核 1.5625 个 worker”）。把它固化为逻辑线程系数后，任何新机型都能按物理核 × 每核线程数直接缩放，不需要机型表。SMT 开启时它等价于逻辑线程的 78%，留出的 22% 是共享池；SMT 关闭时逻辑线程减半，worker 按逻辑线程 78.125% 推导（5380→25、7360→38、7380→50），不再是 1.56 倍超订。
 
-对应实现：`stress-test.sh:184-212`（`cpu_workers_auto`）、`stress-test.sh:786-815`（`cmd_start` 推导）。
+对应实现：`stress-lib-common.sh L97-120`（`cpu_workers_auto`）、`stress-lib-commands.sh L100-120`（`cmd_start` 推导）。
 
-**SMT 状态探测与分配（方案A）**：`smt_tpc`/`smt_status` 函数（`stress-test.sh:142-164` 的 `smt_tpc`、`166-182` 的 `smt_status`），探测优先级 `lscpu "Thread(s) per core"` → `/sys/devices/system/cpu/smt/active` → `/sys/devices/system/cpu/smt/control` → 未知，输出 开(每核2线程) / 关(每核1线程) / 不支持 / 未知。SMT 状态**参与 CPU worker 分配**：逻辑线程 = 物理核 × 每核线程数（tpc，未知默认按开 tpc=2），worker = `round(逻辑线程 × 25/32)`（`cpu_workers_auto` 整数实现 `w=$(( (logical*25+16)/32 ))`，见 `stress-test.sh:184-212`）；SMT 关闭（每核1线程）时逻辑线程减半，worker 相应减半：5380→25、7360→38、7380→50。探测结果同时用于：① 资源计划标注（run-config.txt 的 `smt=` 字段与 "SMT 状态:" 行）；② 机型交叉校验提示——实测线程 ≈ 标称一半时，若 SMT 关闭则提示 "SMT 关闭（每核1线程），逻辑线程减半属预期；CPU worker 将按逻辑线程 78.125% 推导"，SMT 开启/未知仍提示疑似单路 CPU。
+**SMT 状态探测与分配（方案A）**：`smt_tpc`/`smt_status` 函数（`stress-lib-common.sh L52-72` 的 `smt_tpc`、`L77-90` 的 `smt_status`），探测优先级 `lscpu "Thread(s) per core"` → `/sys/devices/system/cpu/smt/active` → `/sys/devices/system/cpu/smt/control` → 未知，输出 开(每核2线程) / 关(每核1线程) / 不支持 / 未知。SMT 状态**参与 CPU worker 分配**：逻辑线程 = 物理核 × 每核线程数（tpc，未知默认按开 tpc=2），worker = `round(逻辑线程 × 25/32)`（`cpu_workers_auto` 整数实现 `w=$(( (logical*25+16)/32 ))`，见 `stress-lib-common.sh L97-120`）；SMT 关闭（每核1线程）时逻辑线程减半，worker 相应减半：5380→25、7360→38、7380→50。探测结果同时用于：① 资源计划标注（run-config.txt 的 `smt=` 字段与 "SMT 状态:" 行）；② 机型交叉校验提示——实测线程 ≈ 标称一半时，若 SMT 关闭则提示 "SMT 关闭（每核1线程），逻辑线程减半属预期；CPU worker 将按逻辑线程 78.125% 推导"，SMT 开启/未知仍提示疑似单路 CPU。
 
 ### 2.2 内存：按内存条定标 + 三道上限
 
@@ -104,7 +104,7 @@ cap        = min(cap_module, cap_mem, cap_disk)
 | DIMM 根数探测失败 | 中止，给出手动 `--vm` 示例 |
 | 显式 `--vm-bytes` | 原样保留，只告警不裁剪 |
 
-`mem`/`combo` 固定追加 `--vm-keep`：内存常驻并反复重写，避免默认 malloc→free 循环造成的脉冲式压力。对应实现：`stress-test.sh:888-925`（三道上限）、`stress-test.sh:927-997`（单根推导/下调）、`stress-test.sh:1095-1102`（命令组装）。
+`mem`/`combo` 固定追加 `--vm-keep`：内存常驻并反复重写，避免默认 malloc→free 循环造成的脉冲式压力。对应实现：`stress-lib-commands.sh L193-230`（三道上限）、`L232-302`（单根推导/下调）、`L400-407`（命令组装）。
 
 ### 2.3 硬盘：一盘一流，页缓存单独预留
 
@@ -118,7 +118,7 @@ cap        = min(cap_module, cap_mem, cap_disk)
 1. hdd 进程数（D 个，各自独立终端/结果目录）；
 2. 内存的 `cap_disk`：`MemTotal − (D × 10G × 1.2 + 8G)`，为页缓存/脏页留空间。
 
-`--peer-disks N` 用于“COMBO 与独立盘任务并发”的编排：它只把 N 带入 `cap_disk`，**不启动任何 hdd 进程**；出现该参数时 COMBO 也不再自动扫描 `/mnt/HDD*`，避免二次压盘（`stress-test.sh:670-681`、`stress-test.sh:766-769`、`stress-test.sh:830-842`、`stress-test.sh:898-909`）。
+`--peer-disks N` 用于“COMBO 与独立盘任务并发”的编排：它只把 N 带入 `cap_disk`，**不启动任何 hdd 进程**；出现该参数时 COMBO 也不再自动扫描 `/mnt/HDD*`，避免二次压盘（`stress-lib-commands.sh L38-48`（校验）、`L139-142`（combo 不再自动扫描）、`L198-215`（盘流计数））。
 
 12 盘 + 512G 的例子：`cap_disk = 512 − (12×10×1.2 + 8) = 360G`，16 个 worker 时单 worker 自动降到 22G，总量 352G；不会把页缓存挤没。
 
@@ -244,7 +244,7 @@ stress-test.sh start combo
 
 ### 5.1 `monitor.csv`
 
-表头（`stress-test.sh:1937`）：
+表头（`stress-lib-monitor.sh L68`）：
 
 ```text
 时间,load1,cpu_usage%,mem_total,mem_used,mem_avail,swap_used,disk_read_MBps,disk_write_MBps
@@ -258,9 +258,9 @@ stress-test.sh start combo
 
 ### 5.2 错误与状态
 
-- dmesg 增量检测：按时间戳/行数游标只处理新行；I/O 关键字包括 `EXT4-fs error`、`I/O error`、`Buffer I/O error`、`blk_update_request`、`critical medium error`、ata/nvme 失败等（`stress-test.sh:2029-2074`）。
-- 设备归因：每个 hdd/combo 任务写 `devices.txt`；命中行只写入匹配的任务；无匹配信息写 `error-unattributed.log`，不静默丢弃（`stress-test.sh:396-414`、`stress-test.sh:2053-2066`）。
-- `status.txt`：`OK`（退出码 0）、`FAILED`（非 0）、`ABORTED`（OOM/退出码缺失）、`STOPPED`（手动停止），并记录 `oom=yes/no`（`stress-test.sh:1873-1887`）。
+- dmesg 增量检测：按时间戳/行数游标只处理新行；I/O 关键字包括 `EXT4-fs error`、`I/O error`、`Buffer I/O error`、`blk_update_request`、`critical medium error`、ata/nvme 失败等（`stress-lib-monitor.sh L89-134`）。
+- 设备归因：每个 hdd/combo 任务写 `devices.txt`；命中行只写入匹配的任务；无匹配信息写 `error-unattributed.log`，不静默丢弃（`stress-lib-devices.sh L32-51`、`stress-lib-monitor.sh L185-196`）。
+- `status.txt`：`OK`（退出码 0）、`FAILED`（非 0）、`ABORTED`（OOM/退出码缺失）、`STOPPED`（手动停止），并记录 `oom=yes/no`（`stress-lib-commands.sh L1178-1192`）。
 
 ### 5.3 `review` 结论优先级
 
@@ -272,11 +272,11 @@ stress-test.sh start combo
 | d | `status.txt` | `OK`→正常；`FAILED`→异常；`ABORTED`→按 reason；`STOPPED`→已手动停止 |
 | e | 无 `status.txt` | 旧目录兼容判定 |
 
-实现：`stress-test.sh:1386-1868`。`status=OK` 不会覆盖已命中的 I/O/OOM/错误。
+实现：`stress-lib-commands.sh L762-1244`（cmd_review）。`status=OK` 不会覆盖已命中的 I/O/OOM/错误。
 
 ### 5.4 `summary.txt` 包含什么
 
-结论、异常点（退出码、error.log 前 3 条、未归因 I/O 数）、运行状态、OOM、CPU 均值/峰值、内存峰值、磁盘读写峰值、采样空洞、覆盖边界。对应 `stress-test.sh:1789-1868`。
+结论、异常点（退出码、error.log 前 3 条、未归因 I/O 数）、运行状态、OOM、CPU 均值/峰值、内存峰值、磁盘读写峰值、采样空洞、覆盖边界。对应 `stress-lib-commands.sh L1094-1173`。
 
 ### 5.5 运行时证据链
 
@@ -401,18 +401,18 @@ hdd worker      = 每数据盘 1 个；系统盘单独 1 个
 
 | 机制 | 位置 |
 |---|---|
-| CPU 推导 | `stress-test.sh:184-212`、`786-815` |
-| 内存三道上限/单根推导 | `stress-test.sh:888-925`、`927-997` |
-| stress 参数组装 | `stress-test.sh:1095-1102` |
-| 设备归因 | `stress-test.sh:396-414`、`2053-2066` |
-| 运行时快照/实际参数 | `stress-test.sh:484-632` |
-| monitor 采样 | `stress-test.sh:1932-2074` |
-| dmesg 检测 | `stress-test.sh:2029-2074` |
-| status 判定 | `stress-test.sh:1873-1887` |
-| review/执行一致性 | `stress-test.sh:1386-1868` |
-| snapshot 子命令 | `stress-test.sh:2119-2135` |
-| oneclick all 计划 | `oneclick.sh:283-305` |
-| 失败策略 | `oneclick.sh:641-660` |
+| CPU 推导 | `stress-lib-common.sh L97-120`、`stress-lib-commands.sh L100-120` |
+| 内存三道上限/单根推导 | `stress-lib-commands.sh L193-230`、`L232-302` |
+| stress 参数组装 | `stress-lib-commands.sh L400-407` |
+| 设备归因 | `stress-lib-devices.sh L32-51`、`stress-lib-monitor.sh L185-196` |
+| 运行时快照/实际参数 | `stress-lib-snapshot.sh L4-217` |
+| monitor 采样 | `stress-lib-monitor.sh L63-246` |
+| dmesg 检测 | `stress-lib-monitor.sh L89-134` |
+| status 判定 | `stress-lib-commands.sh L1178-1192` |
+| review/执行一致性 | `stress-lib-commands.sh L762-1244`（cmd_review） |
+| snapshot 子命令 | `stress-lib-commands.sh L1248-1255`（cmd_snapshot） |
+| oneclick all 计划 | `oneclick-lib-run.sh L153-175` |
+| 失败策略 | `oneclick-lib-run.sh L511-530` |
 
 ### 9.3 术语
 

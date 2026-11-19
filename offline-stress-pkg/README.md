@@ -16,19 +16,33 @@ offline-stress-pkg/
 ├── README.md                      本说明文档
 ├── install.sh                     安装脚本（含 root 检查、SHA256 校验、已装同版本检测）
 ├── verify.sh                      验证脚本（检查安装版本 + 10 秒冒烟压测 + dmidecode 可用性）
-├── stress-test.sh                 压测主控脚本（CPU/内存/硬盘压测：start/status/stop/review/snapshot）
+├── stress-test.sh                 压测主控脚本入口（CPU/内存/硬盘压测：start/status/stop/review/snapshot）
+├── stress-lib-common.sh           stress 公共子模块（工具/CPU 探测/DIMM 推导/参数解析）
+├── stress-lib-devices.sh          stress 设备子模块（devices.txt 写入/设备名解析）
+├── stress-lib-snapshot.sh         stress 快照子模块（运行时证据快照/实际参数解析）
+├── stress-lib-monitor.sh          stress 监控子模块（monitor-loop/状态与结束落盘）
+├── stress-lib-commands.sh         stress 命令子模块（cmd_start/status/stop/review/snapshot 实现）
 ├── oneclick.sh                    一键压测入口（菜单/子命令：自动挂载+分窗+自动复盘）
-├── disk-mount.sh                  挂载辅助脚本（list/mount/umount，硬盘压测前挂载测试盘）
-├── mount-iso.sh                   U盘+yum源脚本（build/mount/status/umount，构建源并配置本地源）
-├── usb-eject.sh                   U盘安全弹出脚本（自动识别并卸载全部挂载点，--poweroff 可断电）
+├── oneclick-lib-basic.sh          oneclick 基础子模块（usage/环境快照/命令显示）
+├── oneclick-lib-run.sh            oneclick 运行子模块（precheck/计划/启动/等待/复盘）
+├── disk-mount.sh                  挂载辅助脚本入口（list/mount/umount，硬盘压测前挂载测试盘）
+├── disk-mount-lib-detect.sh       挂载探测子模块（系统盘识别/设备探测/状态判定）
+├── disk-mount-lib-plan.sh         挂载计划子模块（build_plan/挂载点编号/重建步骤）
+├── disk-mount-lib-commands.sh     挂载命令子模块（cmd_list/cmd_mount/cmd_umount 实现）
+├── mount-iso.sh                   U盘+yum源脚本入口（build/mount/status/umount，构建源并配置本地源）
+├── mount-iso-lib-usb.sh           U盘识别与挂载子模块（usb_disk/mount_usb）
+├── mount-iso-lib-repo.sh          yum 源构建子模块（createrepo/复制/写 repo 文件）
+├── mount-iso-lib-commands.sh      mount-iso 命令子模块（cmd_build/cmd_mount/cmd_status/cmd_umount 实现）
+├── usb-eject.sh                   U盘安全弹出脚本入口（自动识别并卸载全部挂载点，--poweroff 可断电）
+├── usb-eject-lib.sh               usb-eject 子模块（卸载/断电弹出/占用排查）
 ├── usb-mount-guide.md             U盘挂载操作说明（未挂载时先看这个，纯命令可直接复制）
-├── operation-manual.md                 压测操作手册（三类机型 CPU/内存/硬盘实操）
+├── operation-manual.md            压测操作手册（三类机型 CPU/内存/硬盘实操）
 └── rpms/
     ├── stress-1.0.4-24.el8.x86_64.rpm      stress RPM 安装包
     └── dmidecode-3.2-10.el8.x86_64.rpm     dmidecode RPM（自动探测内存条根数）
 ```
 
-拷贝时请**保持整个目录结构不变**，脚本会按相对路径 `rpms/` 定位 RPM 文件。
+拷贝时请**保持整个目录结构不变**：各入口脚本通过 `source` 加载同目录的 `*-lib-*.sh` 子模块，**整个目录（含全部 14 个 lib 子模块）必须整体拷贝**，缺失任一 lib 文件入口脚本会提示"缺少模块文件"并退出；脚本另按相对路径 `rpms/` 定位 RPM 文件。
 
 > `oneclick.sh` 每次运行会在批次目录 `/root/stress-test/oneclick-<时间>/` 下**自动生成**三个记录文件（命令清单 + 重放脚本 + 环境快照）（不属于离线包内容，随每次执行重建）：
 >

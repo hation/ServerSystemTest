@@ -124,13 +124,15 @@ def _run(args) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog='sds_parser',
-        description='解析 HDM 导出的 .sds 日志包并生成 Markdown 体检报告',
+        description='解析 HDM 导出的 .sds 日志包并生成 Markdown 体检报告。'
+                    'AI 解读优先级：当前会话 AI（默认产出材料包供会话解读）优先 → --ai 后端次选 → 离线规则结论兜底',
     )
     parser.add_argument('sds_path', metavar='SDS_PATH', help='HDM 导出的 .sds 日志包路径')
     parser.add_argument('-o', '--output', default=None, metavar='REPORT',
                         help='输出报告路径（缺省输出到输入同目录 <basename>-report.md）')
     parser.add_argument('--ai', action='store_true',
-                        help='启用 AI 综合分析（需配置 SDS_AI_BASE_URL 等环境变量，未配置则跳过）')
+                        help='启用后端 AI 综合分析（次选模式；需配置 SDS_AI_BASE_URL 等环境变量，'
+                             '未配置则跳过；优先使用默认产出的材料包走当前会话 AI）')
     parser.add_argument('--no-cleanup', action='store_true',
                         help='解包后保留临时目录（调试用）')
     parser.add_argument('--verbose', action='store_true',

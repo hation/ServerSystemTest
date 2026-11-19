@@ -863,6 +863,29 @@ def test_report_sections():
     assert '这是 AI 综合结论' in with_ai, 'AI 章节应含 AI 结论原文'
 
 
+def test_report_ai_hint_when_no_ai():
+    """无 AI 章节时报告应含 'AI 解读提示'（引导当前会话 AI 优先流程）；
+    有 AI 章节（--ai 后端）时不显示该提示。"""
+    from sds_report import render_report
+    inv = InventoryData()
+    inv.machine = {
+        'product_name': 'H3C UniServer R4930 G5 H3',
+        'serial_number': '210235A566526AN0000P',
+        'product_part_number': '0235A566',
+        'baseboard': {},
+    }
+    inv.firmware = {'BIOS': '5.97', 'HDM': '3.66', 'CPLD': 'V00D'}
+    health = [ComponentHealth(
+        name='Disk_F23_Status', category='硬盘', status='异常',
+        evidence=['[2026-11-13 08:00:01] Major The disk is missing'], suggestions=[],
+    )]
+    no_ai = render_report(inv, [], health, [], [], None, '2026-11-19 12:00:00')
+    assert '## AI 解读提示' in no_ai, '无 AI 章节时应显示当前会话 AI 引导'
+    assert '当前会话' in no_ai and '材料包' in no_ai, '提示应说明当前会话 AI 优先与材料包流程'
+    with_ai = render_report(inv, [], health, [], [], 'AI 结论', '2026-11-19 12:00:00')
+    assert '## AI 解读提示' not in with_ai, '有 AI 章节（--ai 后端）时不显示引导'
+
+
 def test_summary_sections():
     """render_summary 输出 `## 0. 分析汇总` 与三要点；整机概览含机型/序列号/固件版本；
     健康总览计数 正常 1 · 异常 1 · 提示 1；核心结论为规则结论（含 Disk_F23_Status）。"""

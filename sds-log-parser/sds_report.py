@@ -386,6 +386,23 @@ def _render_appendix(inv, sensors, health, events, visible_lines) -> str:
     return '\n'.join(lines)
 
 
+def _render_ai_hint() -> str:
+    """无 AI 章节时输出"AI 解读提示"：引导按优先级使用当前会话 AI（首选）、
+    `--ai` 后端（次选）、离线规则结论（兜底）。"""
+    lines = [
+        '---',
+        '',
+        '## AI 解读提示',
+        '',
+        '- 本报告未包含 AI 综合分析章节（解读优先级：**当前会话 AI 优先** → `--ai` 后端次选 → 离线规则结论兜底）。',
+        '- 如需 AI 综合分析：将随报告生成的 `<sds文件名>-ai-facts.md` 材料包内容交回当前会话 AI，'
+        '即可获得异常链路推断 / 根因候选排序 / 排查步骤。',
+        '- 或运行 `sds_parser <sds> --ai`（配置 SDS_AI_BASE_URL 等环境变量），由后端 AI 自动生成 AI 综合分析章节。',
+        '',
+    ]
+    return '\n'.join(lines)
+
+
 def render_report(inv, sensors, health, events, visible_lines,
                   ai_markdown: str | None = None, report_time: str | None = None) -> str:
     """渲染完整 Markdown 体检报告。
@@ -415,6 +432,8 @@ def render_report(inv, sensors, health, events, visible_lines,
     if ai_section:
         parts.append(ai_section)
         parts.append('')
+    else:
+        parts.append(_render_ai_hint())
     parts.append(_render_appendix(inv, sensors, health, events, visible_lines))
     return '\n'.join(parts).rstrip() + '\n'
 

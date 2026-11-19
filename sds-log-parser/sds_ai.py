@@ -26,7 +26,8 @@ import urllib.request
 _TASK_INSTRUCTIONS = '请基于以上事实输出：① 异常链路推断 ② 根因候选排序 ③ 可执行的排查步骤'
 
 _DEFAULT_MODEL = 'deepseek-v4-flash'
-_REQUEST_TIMEOUT = 60  # LLM 推理可能较慢，给足超时
+# 大 payload + 推理模型可能较慢：默认 300s，可用环境变量 SDS_AI_TIMEOUT 覆盖
+_REQUEST_TIMEOUT = 300
 
 
 def build_ai_payload(inv, health, events) -> str:
@@ -135,6 +136,11 @@ def call_ai(payload, base_url=None, api_key=None, model=None) -> str | None:
     if not base_url:
         return None  # 未配置后端：降级，绝不发起请求
 
+    try:
+        timeout = float(os.environ.get('SDS_AI_TIMEOUT') or _REQUEST_TIMEOUT)
+    except ValueError:
+        timeout = _REQUEST_TIMEOUT
+
     endpoint = base_url.rstrip('/') + '/chat/completions'
     body = json.dumps({
         'model': model,
@@ -148,7 +154,7 @@ def call_ai(payload, base_url=None, api_key=None, model=None) -> str | None:
     req = urllib.request.Request(endpoint, data=body, headers=headers, method='POST')
     resp = None
     try:
-        resp = urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT)
+        resp = urllib.request.urlopen(req, timeout=timeout)
         if getattr(resp, 'status', 200) != 200:
             return None
         data = json.loads(resp.read())

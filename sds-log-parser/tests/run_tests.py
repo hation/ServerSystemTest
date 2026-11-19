@@ -803,6 +803,27 @@ def test_ai_http_failure():
         assert call_ai(payload, 'http://localhost:11434/v1', 'fake-key', 'm') is None
 
 
+def test_call_ai_timeout_config():
+    """SDS_AI_TIMEOUT 环境变量生效：call_ai 传给 urlopen 的 timeout 缺省 300，
+    设 env 后取其值（推理模型大 payload 可能超过旧的 60s 上限）。"""
+    payload = 'x'
+    resp_ok = mock.Mock()
+    resp_ok.status = 200
+    resp_ok.read.return_value = json.dumps(
+        {'choices': [{'message': {'content': 'ok'}}]}).encode('utf-8')
+    with mock.patch.dict(os.environ, {'SDS_AI_BASE_URL': 'http://x/v1'}), \
+            mock.patch('urllib.request.urlopen', return_value=resp_ok) as uo:
+        call_ai(payload, api_key='k', model='m')
+        assert uo.call_args.kwargs.get('timeout') == 300, \
+            f'缺省超时应为 300s，实际 {uo.call_args.kwargs.get("timeout")}'
+    with mock.patch.dict(os.environ, {
+            'SDS_AI_BASE_URL': 'http://x/v1', 'SDS_AI_TIMEOUT': '150'}), \
+            mock.patch('urllib.request.urlopen', return_value=resp_ok) as uo:
+        call_ai(payload, api_key='k', model='m')
+        assert uo.call_args.kwargs.get('timeout') == 150, \
+            f'SDS_AI_TIMEOUT 应覆盖超时，实际 {uo.call_args.kwargs.get("timeout")}'
+
+
 def test_report_sections():
     """构造最小数据 → render_report 输出含 5 个必选章节标题（0-4）与附录，
     `## 0. 分析汇总` 位于 `## 1. 整机信息` 之前；

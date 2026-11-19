@@ -970,6 +970,14 @@ def test_summary_ai_conclusion():
     out5 = render_summary(inv, health, ai_markdown=ai2)
     assert 'PSU1/PSU2 电源输入异常' in out5, '核心结论应取"核心异常"行而非"对象"元数据行'
     assert '对象：' not in out5.split('### 核心结论')[1].splitlines()[1], '元数据行不应作为核心结论'
+    # Markdown 表格行（根因候选表头）不应被当作核心结论 → 无结论性正文时回退规则结论
+    ai3 = ('### ② 根因候选排序\n\n'
+           '| 排序 | 根因候选 | 关键依据 |\n'
+           '|---|---|---|\n'
+           '| 1 | 外部供电异常 | PSU input lost |\n')
+    out6 = render_summary(inv, health, ai_markdown=ai3)
+    assert 'Disk_F23_Status' in out6, 'AI 输出仅含表格时应回退规则结论'
+    assert '| 排序 |' not in out6.split('### 核心结论')[1].splitlines()[1], '表格行不应作为核心结论'
 
 
 def test_summary_unknown_count():

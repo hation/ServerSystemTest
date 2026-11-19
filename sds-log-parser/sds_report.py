@@ -197,7 +197,7 @@ def _ai_conclusion(ai_markdown) -> str:
     candidates = []
     for raw in str(ai_markdown or '').splitlines():
         line = raw.strip()
-        if not line or line.startswith('#'):
+        if not line or line.startswith('#') or line.startswith('|'):
             continue
         text = re.sub(r'^[\s*\-+①②③④⑤]+', '', line)
         text = re.sub(r'\*+', '', text).strip()

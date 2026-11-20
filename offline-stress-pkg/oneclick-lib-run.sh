@@ -140,7 +140,7 @@ write_plan() {
     local mode="$1" plan="$BATCH/plan.txt" dirs d id rc
     : > "$plan"
     case "$mode" in
-        all|hdd)
+        all|hdd|full)
             if [ "$NO_HDD" -eq 1 ]; then
                 # --no-hdd：排除所有硬盘，跳过自动挂载（MOUNT_RC 保持 0，批次退出码不被挂载结果影响）
                 MOUNT_RC=0
@@ -179,6 +179,51 @@ write_plan() {
                 done <<< "$dirs"
             fi
             printf 'COMBO|combo|--peer-disks|%s\n' "$((hdd_count + 1))" >> "$plan"
+            if [ "$hdd_count" -eq 0 ]; then
+                echo "未发现数据盘，跳过数据盘任务（COMBO peer=1 + 系统盘）"
+            else
+                while IFS= read -r d; do
+                    [ -n "$d" ] || continue
+                    case "$d" in *'|'*) die "目录名含 | 不受支持：$d" ;; esac
+                    id="${d##*/}"
+                    printf '%s|hdd|--dirs|%s\n' "$id" "$d" >> "$plan"
+                done <<< "$dirs"
+            fi
+            printf 'SYSDISK|hdd|--sysdisk-only\n' >> "$plan"
+            ;;
+        full)
+            # 整机压测：结构与 all 相同（全盘挂载 + COMBO 先启动 + 每盘 HDDxx + SYSDISK），
+            # COMBO 按"朋友规则"推导中高强度参数（CPU≈round(逻辑线程×70%)、VM=DIMM 根数、
+            # vm-bytes=脚本单根推导公式 单条容量−max(单条/8,6G)）；显式 FULL_* 优先，未设置项由推导补齐
+            # （推导值作为显式参数写入 COMBO 计划，--vm-bytes 只告警不裁剪）
+            local _f_cpu="$FULL_CPU" _f_vm="$FULL_VM" _f_vb="$FULL_VMBYTES"
+            if [ -z "$_f_cpu" ] || [ -z "$_f_vm" ] || [ -z "$_f_vb" ]; then
+                if full_params_friend; then
+                    # 推导成功：仅补齐未显式设置的项，显式设置的值保留
+                    [ -n "$_f_cpu" ] && FULL_CPU="$_f_cpu"
+                    [ -n "$_f_vm" ] && FULL_VM="$_f_vm"
+                    [ -n "$_f_vb" ] && FULL_VMBYTES="$_f_vb"
+                else
+                    echo "警告：full 参数按朋友规则推导失败（硬件探测不可用），COMBO 的 CPU/内存参数回退脚本自动推导"
+                fi
+            fi
+            dirs=$(collect_hdd_dirs)
+            # 先计数再写计划：计划顺序即启动顺序（COMBO 先启动），N = 数据盘数 + 1（固定含系统盘）
+            local hdd_count=0
+            if [ -n "$dirs" ]; then
+                while IFS= read -r d; do
+                    [ -n "$d" ] || continue
+                    case "$d" in *'|'*) die "目录名含 | 不受支持：$d" ;; esac
+                    hdd_count=$((hdd_count + 1))
+                done <<< "$dirs"
+            fi
+            # COMBO 计划：始终带 --peer-disks；--cpu/--vm/--vm-bytes 为朋友推导值或显式值
+            # （正常路径下均非空、总是写入；推导失败时保留空值过滤，避免空参数破坏 plan 分隔）
+            local combo_args="--peer-disks|$((hdd_count + 1))"
+            [ -n "$FULL_CPU" ] && combo_args="$combo_args|--cpu|$FULL_CPU"
+            [ -n "$FULL_VM" ] && combo_args="$combo_args|--vm|$FULL_VM"
+            [ -n "$FULL_VMBYTES" ] && combo_args="$combo_args|--vm-bytes|$FULL_VMBYTES"
+            printf 'COMBO|combo|%s\n' "$combo_args" >> "$plan"
             if [ "$hdd_count" -eq 0 ]; then
                 echo "未发现数据盘，跳过数据盘任务（COMBO peer=1 + 系统盘）"
             else
@@ -455,9 +500,9 @@ cmd_review() {
 run_mode() {
     local mode="$1" stamp k=0 id type n=0 started="" review_rc=0 line f
     local -a extras=() fields=()
-    # 重建开关口径：仅 all/hdd 生效；其他模式带 --rebuild 时提示并忽略（在 write_plan 之前复位）
+    # 重建开关口径：仅 all/hdd/full 生效；其他模式带 --rebuild 时提示并忽略（在 write_plan 之前复位）
     case "$mode" in
-        all|hdd)
+        all|hdd|full)
             if [ "$REBUILD" = "1" ]; then
                 echo "本次将重新分区并格式化数据盘（--rebuild）"
             else
@@ -466,7 +511,7 @@ run_mode() {
             ;;
         *)
             if [ "$REBUILD" = "1" ]; then
-                echo "提示：--rebuild 仅对 all/hdd 生效，本次忽略"
+                echo "提示：--rebuild 仅对 all/hdd/full 生效，本次忽略"
                 REBUILD=0
             fi
             ;;

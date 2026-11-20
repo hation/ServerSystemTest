@@ -2,7 +2,7 @@
 
 ## 1. 背景与适用环境
 
-- 当前包版本：v1.0.0（打包时按语义化递增：修复/小改动补丁号+1，新增功能次版本号+1，破坏性变更主版本号+1）
+- 当前包版本：v1.1.2（打包时按语义化递增：修复/小改动补丁号+1，新增功能次版本号+1，破坏性变更主版本号+1）
 - 本包用于在**无网络**的服务器上离线安装 Linux 压测工具 `stress`（1.0.4）。
 
 - 适用系统：Kylin V10 SP3 2403 **x86_64**
@@ -88,21 +88,67 @@ sudo bash install.sh
 
 ### 4.1 一键压测（推荐）
 
-装完 `stress` 后，用 `oneclick.sh` 一条命令跑完整个流程：
+装完 `stress` 后，用 `oneclick.sh` 一条命令跑完整个流程。
+
+**引导菜单**（直接运行 `oneclick.sh` 进入；当前超时默认 10h，可用 `--timeout` 覆盖）：
+
+```text
+==== 一键压测 ====
+  1) 求稳强度压测（CPU+内存组合 + 每盘独立 + 系统盘；参数自动推导，保守）
+  2) 中高强度整机压测（同上任务构成；参数按朋友规则推导，FULL_* 显式设置可覆盖）
+  3) 测 CPU+内存（排除硬盘）
+  4) 只测硬盘（数据盘）
+  5) 只测系统盘
+  6) 只测 CPU
+  7) 只测内存
+  8) 查看状态
+  9) 生成复盘
+  0) 退出
+当前超时：10h（可用 --timeout 覆盖）
+```
+
+菜单项对应子命令（CLI 等价，均可 `--timeout` 指定时长）：
+
+| 菜单项 | 子命令等价 | 说明 |
+|---|---|---|
+| 1 求稳强度压测 | `all` | 全测：自动挂载 + CPU+内存组合 + 每盘 HDDxx + 系统盘；参数按本机实测自动推导（保守） |
+| 2 中高强度整机压测 | `full` / `--high` | 任务构成同上；参数默认按朋友规则推导（CPU≈逻辑线程×70%、VM=DIMM 根数、vm-bytes=脚本单根推导不裁剪），`FULL_*` 显式设置可覆盖 |
+| 3 测 CPU+内存（排除硬盘） | `all --no-hdd` | 仅 CPU+内存，跳过自动挂载；与 `--rebuild` 互斥 |
+| 4 只测硬盘（数据盘） | `hdd` | 每块数据盘独立 HDDxx 任务 |
+| 5 只测系统盘 | `sysdisk` | 根文件系统压测（`/stresstest-hdd`，不分区不格式化） |
+| 6 只测 CPU | `cpu` | 仅 CPU 压测 |
+| 7 只测内存 | `mem` | 仅内存压测（固定 `--vm-keep`） |
+| 8 查看状态 | `status` | 查看最近批次任务状态 |
+| 9 生成复盘 | `review` | 重新生成最近批次汇总复盘 |
+| 0 退出 | — | — |
 
 ```bash
-sudo bash oneclick.sh                # 菜单：1 全测 / 2 测 CPU+内存（排除硬盘） / 3 只测硬盘 / 4 只测系统盘 / 5 只测 CPU / 6 只测内存 / 7 查看状态 / 8 生成复盘
+sudo bash oneclick.sh                # 进入引导菜单（见上）
 sudo bash oneclick.sh all --timeout 10h
 sudo bash oneclick.sh hdd --timeout 8h
 sudo bash oneclick.sh all --no-hdd --timeout 10h   # 排除所有硬盘（数据盘+系统盘），仅测 CPU+内存（COMBO peer=0）；跳过自动挂载，与 --rebuild 互斥
+sudo bash oneclick.sh full --timeout 10h           # 中高强度整机压测：全盘挂载 + COMBO 高强度参数 + 每盘 HDDxx + 系统盘
+sudo bash oneclick.sh --high --timeout 10h         # 一键中高强度整机压测（等价 full，不弹菜单）
+sudo bash oneclick.sh all --high                   # 等价 full（中高强度整机压测）
 ```
 
 要点：
 
 - **全测任务构成（顺序即启动顺序）**：自动挂载（`disk-mount.sh mount --disks all --yes`）→ **COMBO**（CPU+内存组合任务：一个终端、一个结果目录，不再拆成 CPU、内存两个任务）→ **每块数据盘一个 `HDDxx` 任务**（独立终端、独立结果目录）→ **SYSDISK**（系统盘任务，`--sysdisk-only`，独立终端）；
+- **`full` 中高强度整机压测**：编排结构与 `all` 完全一致（自动挂载 → COMBO 先启动 → 每盘 HDDxx → SYSDISK），COMBO 参数默认按**朋友规则**推导中高强度值（CPU≈`round(逻辑线程×70%)`、VM=DIMM 根数、vm-bytes=脚本单根推导公式 单条容量−`max(单条/8,6G)`，如 32G 条→26G、64G 条→56G），推导值作为**显式参数**写入 COMBO 计划、`--vm-bytes` 只告警不裁剪；`FULL_*` 显式设置可覆盖（显式优先，未设置项仍由推导补齐）：
+  - 默认参数：按朋友规则推导——未设置 `FULL_CPU`/`FULL_VM`/`FULL_VMBYTES` 时由脚本按本机实测推导（如 64 逻辑线程/12×32G → `--cpu 45 --vm 12 --vm-bytes 26G`）；显式设置任一项时该项固定为所给值，其余项继续按推导补齐；
+  - 换机器可用环境变量覆盖：`FULL_CPU` / `FULL_VM` / `FULL_VMBYTES`（如 `FULL_VMBYTES=32G sudo bash oneclick.sh full --timeout 10h`）；**未设置时按朋友规则推导**，无需手动调参；
+  - **求稳 vs 中高一句话**：`all`（求稳）= 脚本按本机实测自动推导参数（保守，受三道上限约束自动下调）；`full` / `--high`（中高）= 按朋友规则推导 CPU≈70% + 内存脚本单根推导（如 5380 → 45/12/26G=312G），推导值显式下发、不裁剪（强度优先，靠页缓存兜底），**大内存 + 多盘并发下注意观察是否抖动 / OOM**；`--rebuild` 对 full 生效（同 all 口径），`--no-hdd` 仅 all 模式支持（full 带 `--no-hdd` 会报错）；
+- **`--high` 一键中高**：`sudo bash oneclick.sh --high --timeout 10h` 无模式直接启动中高强度整机压测（等价 `full`，不弹菜单）；`sudo bash oneclick.sh all --high` 亦等价 `full`。与 `--no-hdd` **互斥**（中高强度必含硬盘，同时给出报错）；`cpu`/`mem`/`hdd`/`sysdisk` 带 `--high` 时提示"仅对整机（all/full）生效，本次忽略"；参数覆盖口径同 `full`（`FULL_CPU` / `FULL_VM` / `FULL_VMBYTES`）。
 - **COMBO 只跑 CPU+内存**：oneclick 自动为 COMBO 传 `--peer-disks <数据盘数+1>`，让内存计划把同时在跑的各数据盘与系统盘计入页缓存预留（`cap_disk`），但 COMBO 内不启动任何 hdd 进程，每块盘只由自己的 `HDDxx` 任务压一次；
+- **硬盘数量影响压测（N = 数据盘数，含 1 路系统盘）**：盘数越多，内存分配上限越低、页缓存余量越紧，是内存参数的关键变量：
+  - **公式**：`cap_disk(N) = MemTotal − ((N+1)×12 + 8) G`（`hdd-bytes` 默认 10G 时，12 = 每盘 10G×1.2 页缓存预留 + 8G 系统）；
+  - **`all`（求稳，自动响应）**：单 worker 从 26G 按 `min(模块×88%, MemTotal×92%, cap_disk(N))` 逐 GiB 下调——N=4→25G（300G/78%）、N=7→22G（264G/69%）、**N=14→15G（180G/48%）**、N=20→9G（108G/28%）。盘越多内存压得越低，**N≥14 时内存已明显测不到位**；
+  - **`full`（中高，默认按朋友规则推导不裁剪；FULL_* 显式设置时固定不裁剪）**：默认按朋友规则推导（CPU≈逻辑线程×70%、vm-bytes=脚本单根推导），推导值显式下发、**不受三道上限裁剪**（`--vm-bytes` 只告警）；显式设置 `FULL_VMBYTES`（如 288G）时固定不裁剪——页缓存可回收余量 ≈ MemTotal−288−系统 ≈ 78G；写盘页缓存峰值 = N×10G，**N≥8 时需求超余量**（持续刷盘回写、IO 波动，需监控 `free -h` / `sar -r` / `dmesg | grep -i oom`），N 更大建议降 `FULL_VMBYTES`；
+  - **CPU**：N 越大 IO 线程需求越大，显式设置 `FULL_CPU` 时（如 45 ≈ 逻辑线程 70%，14 盘口径）20+ 盘建议评估降到 40；
+  - **调参**：`FULL_VMBYTES ≈ (MemTotal − 系统 − N×12) / VM`（保守预留 1.2 倍盘流），`all` 无需手动（自动重算）。完整推导见 `docs/硬盘数量对压测方案的影响-20261120.md`；
 - **数据盘默认复用（不清盘）**：自动挂载**默认复用已有文件系统**——有分区测首个分区（分区无文件系统时自动 `mkfs.ext4 -m 0` 该分区），无分区但整盘已有文件系统直接挂载，空盘才整盘格式化；`blkid` 探测失败（重试 5 次）的盘不格式化、直接跳过，其他盘继续（最终退出码 1）；
-- **`--rebuild` 会清空数据盘**：`sudo bash oneclick.sh all --rebuild` / `sudo bash oneclick.sh hdd --rebuild` 会卸载旧 `/mnt/HDD*`、清空该盘分区表、重建 1 个 GPT 分区并格式化；菜单选 `1` / `3` 时会先询问 `是否重新分区并格式化数据盘？(y/N)：`，**默认 N**（直接回车 = 复用）；未指定 `--rebuild` 时输出 `未指定 --rebuild，本次复用已有文件系统；如需重建请加 --rebuild`；`sysdisk` / `cpu` / `mem` 带 `--rebuild` 会被忽略并提示仅对 all/hdd 生效；
+- **`--rebuild` 会清空数据盘**：`sudo bash oneclick.sh all --rebuild` / `sudo bash oneclick.sh hdd --rebuild` / `sudo bash oneclick.sh full --rebuild` 会卸载旧 `/mnt/HDD*`、清空该盘分区表、重建 1 个 GPT 分区并格式化；菜单选 `1`（求稳）/ `2`（中高）/ `4`（只测硬盘）时会先询问 `是否重新分区并格式化数据盘？(y/N)：`，**默认 N**（直接回车 = 复用）；未指定 `--rebuild` 时输出 `未指定 --rebuild，本次复用已有文件系统；如需重建请加 --rebuild`；`sysdisk` / `cpu` / `mem` 带 `--rebuild` 会被忽略并提示仅对 all/hdd/full 生效（full 与 all 同口径，`--rebuild` 生效）；
 - **`--dry-run` 预演挂载**：`bash disk-mount.sh mount --disks all --dry-run` 只打印执行计划、不写任何数据（也不写 `mount.log`），适合正式挂载前核对盘符与动作；
 - **每块数据盘一个窗口**，窗口标题为 `压测-HDDxx`；COMBO 窗口为 `压测-组合CPU+内存`，系统盘为 `压测-系统盘`（单资源模式另有 `压测-CPU` / `压测-内存`）；无图形环境（SSH、无 `DISPLAY`）自动降级为后台并行执行，输出写入批次目录的 `<任务>.out`；
 - **失败策略**：**COMBO 启动失败 → 中止本批次**，不再启动数据盘与系统盘，批次退出码 1（核心 CPU+内存负载未起来）；**数据盘 / SYSDISK 启动失败 → 记录到 `failed-tasks.txt` 后跳过**，继续启动其余任务，批次最终退出码 1，`summary.txt` 的"启动失败（跳过、未计入复盘）"列出失败任务；

@@ -9,10 +9,12 @@
 # 硬约束：
 #   - POSIX/ash 兼容（initramfs 运行时只有 busybox ash；禁止 [[ ]]、数组、${var:0:3}
 #     等 bash 专属语法），LF 行尾，中文注释。
+#   - 屏幕与日志的全部用户可见行必须纯 ASCII（无 CJK）——IPMI 虚拟 KVM（VGA→Linux
+#     vt console）无中文字体，中文必然乱码；中文仅保留在代码注释。
 #   - 读 stdin 写 stdout；大写 YES 严格匹配才执行；非法输入忽略（1,2,x → 忽略 x）；
 #     排除列表为空 = 默认全选；无盘可清（仅 usb+光驱）→ 提示"仅发现启动介质"并退出；
-#     0 退出（打印"可断电/重启"提示）；清除后回到菜单（列表刷新）。
-#   - 设备白名单/umount/wipefs/验证全部由 lib.sh/wipe.sh 保证，本脚本不重复实现。
+#     0 退出（打印可断电/重启提示）；清除后回到菜单（列表刷新）。
+#   - 设备白名单/umount/wipefs/partprobe/验证全部由 lib.sh/wipe.sh 保证，本脚本不重复实现。
 
 . "$(dirname "$0")/lib.sh"
 
@@ -27,24 +29,24 @@ LOG_FILE=""
 if [ "$DW_LOG_MEDIA" = "usb" ]; then
     mkdir -p "$LOG_DIR" 2>/dev/null || :
     LOG_FILE="$LOG_DIR/diskwipe-$(date +%Y%m%d-%H%M%S).log"
-    # 文件头：版本 / 会话开始 / 介质状态
+    # 文件头：版本 / 会话开始 / 介质状态（日志行同为英文 ASCII，与屏幕一致）
     dw_log "=============================================="
-    dw_log "  diskwipe-iso 清理日志"
-    dw_log "  版本：$(dw_version)"
-    dw_log "  会话开始：$(date '+%Y-%m-%d %H:%M:%S')"
-    dw_log "  日志介质：usb（$LOG_DIR）"
+    dw_log "  diskwipe-iso cleanup log"
+    dw_log "  version: $(dw_version)"
+    dw_log "  session start: $(date '+%Y-%m-%d %H:%M:%S')"
+    dw_log "  log media: usb ($LOG_DIR)"
     dw_log "=============================================="
 else
-    echo "未找到可写日志介质，本次日志仅屏幕显示。"
+    echo "No writable log media found; log will be screen-only."
 fi
 
 # 会话收尾（0 退出路径）：写文件尾（会话结束时间）；有日志介质则打印日志路径并尽力
 # 卸载 /diskwipe-log（卸载失败仅提示，不阻断退出）
 dw_log_finish() {
-    dw_log "== 会话结束 [$(date '+%Y-%m-%d %H:%M:%S')] =="
+    dw_log "== session end [$(date '+%Y-%m-%d %H:%M:%S')] =="
     if [ "$DW_LOG_MEDIA" = "usb" ]; then
-        echo "清理日志已保存：$LOG_FILE"
-        "$UMOUNT_BIN" /diskwipe-log >/dev/null 2>&1 || echo "提示：卸载日志介质失败，可稍后手动卸载"
+        echo "Cleanup log saved: $LOG_FILE"
+        "$UMOUNT_BIN" /diskwipe-log >/dev/null 2>&1 || echo "WARN: failed to unmount log media (you may unmount it manually later)"
     fi
 }
 
@@ -86,12 +88,13 @@ disk_display_fields() {
     '
 }
 
-# 类型标注文本（dw_is_system_disk 返回：0=数据盘 1=系统盘 2=未知；仅提示不影响可勾选）
+# 类型标注（dw_is_system_disk 返回：0=数据盘 1=系统盘 2=未知；显示 DATA/SYS/UNK，
+# 仅提示不影响可勾选）
 disk_type_label() {
     case "$1" in
-    0) echo "数据盘" ;;
-    1) echo "系统盘" ;;
-    *) echo "未知" ;;
+    0) echo "DATA" ;;
+    1) echo "SYS" ;;
+    *) echo "UNK" ;;
     esac
 }
 
@@ -100,16 +103,16 @@ while :; do
     ml="$(dw_enum_disks)"
     if [ -z "$ml" ]; then
         echo
-        dw_log "仅发现启动介质（未发现可清除的硬盘；启动 U 盘/光驱已自动排除）"
-        dw_log "可安全断电或重启退出。"
+        dw_log "Only boot media found (no wipable disks; boot USB/optical drive auto-excluded)"
+        dw_log "You may power off or reboot safely."
         dw_log_finish
         exit 0
     fi
 
     echo "=============================================="
-    dw_log "  硬盘清理工具 $(dw_version)  清除分区并恢复为未初始化"
+    dw_log "  DiskWipe Tool $(dw_version) - Reset disks to uninitialized"
     echo "=============================================="
-    echo "  编号  设备      容量    型号/状态              类型"
+    echo "  #     Device  Size  Model/Status  Type"
     echo "  ---------------------------------------------------"
     # 列盘（编号从 1 起；类型经 dw_is_system_disk 标注）
     mi=0
@@ -135,15 +138,16 @@ while :; do
 $ml
 EOF
     echo "  ---------------------------------------------------"
-    echo "  默认已全部选中；输入要【排除】的编号（可多选如 1,2；直接回车=全部）"
+    echo "  Default: all selected. Enter exclusions (e.g. 1,2; empty = all)"
+    echo "  0 = exit (power off or reboot after done)"
     printf '> '
-    IFS= read -r mex || { echo; dw_log "输入结束，已退出（可断电/重启）。"; dw_log_finish; exit 0; }
+    IFS= read -r mex || { echo; dw_log "Input ended, exiting (you may power off or reboot)."; dw_log_finish; exit 0; }
 
     # 0 = 退出（打印可断电/重启提示，写文件尾并卸载日志介质）
     case "$mex" in
     0)
         echo
-        echo "已退出。清除完成后可断电或重启。"
+        echo "Exited. You may power off or reboot after done."
         dw_log_finish
         exit 0
         ;;
@@ -167,7 +171,7 @@ EOF
     IFS="$mifs_old"
     # 排除记录（落日志；无排除则默认全选，不记录）
     if [ -n "$mexcl" ]; then
-        dw_log "已排除编号：$mexcl"
+        dw_log "Excluded: $mexcl"
     fi
 
     # 构造选中盘列表（排除列表为空 = 默认全选）
@@ -188,13 +192,13 @@ EOF
 $ml
 EOF
     if [ -z "$msel" ]; then
-        dw_log "未选择任何硬盘，请重新选择。"
+        dw_log "No disks selected, please choose again."
         continue
     fi
 
     # 二次确认清单（逐盘列出将清除的盘；同时落日志作为本轮的盘清单）
     echo
-    dw_log "将清除以下 $mcnt 块硬盘，清除后它们将恢复为【未初始化】："
+    dw_log "Will wipe the following $mcnt disks (irreversible!). Type YES to confirm:"
     mi=0
     while IFS= read -r mline; do
         [ -n "$mline" ] || continue
@@ -219,16 +223,15 @@ EOF
     done <<EOF
 $ml
 EOF
-    echo "此操作不可恢复！输入大写 YES 确认："
     printf '> '
-    IFS= read -r myn || { echo; dw_log "已取消（未输入 YES）。"; continue; }
+    IFS= read -r myn || { echo; dw_log "Cancelled (YES not entered)."; continue; }
     if [ "$myn" = "YES" ]; then
         echo
-        dw_log "开始清除（umount → wipefs -a → wipefs -n 验证）..."
-        # 每盘结果（✓/✗）经 stdout 由 tee 同时落到屏幕与日志文件
+        dw_log "Wiping: umount -> wipefs -a -> partprobe -> wipefs -n verify..."
+        # 每盘结果（OK/FAIL）经 stdout 由 tee 同时落到屏幕与日志文件
         "$WIPE_SH" $msel 2>&1 | tee -a "${LOG_FILE:-/dev/null}"
         echo
         continue
     fi
-    dw_log "已取消（未执行清除）。"
+    dw_log "Cancelled (nothing wiped)."
 done

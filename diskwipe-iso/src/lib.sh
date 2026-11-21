@@ -4,18 +4,20 @@
 # 硬约束：
 #   - POSIX/ash 兼容（initramfs 运行时只有 busybox ash；禁止 [[ ]]、数组、${var:0:3} 等
 #     bash 专属语法），LF 行尾，中文注释。
-#   - 设备白名单：仅 sd[a-z] / nvme[0-9]n[0-9] / vd[a-z] / mmcblk[0-9]；排除 TRAN=usb
-#     （启动 U 盘）与 sr* / loop* / ram*（光驱/循环/内存盘）。
-#   - 接缝变量：LSBLK_BIN / BLKID_BIN / WIPEFS_BIN / UMOUNT_BIN（默认系统命令，
-#     测试经 PATH 假件注入，绝不触碰真实块设备）。
+#   - 设备白名单：sd[a-z]/sd[a-z][a-z] / nvme[0-9]*n[0-9]* / vd[a-z] /
+#     mmcblk[0-9]*；排除 TRAN=usb（启动 U 盘）与 sr* / loop* / ram*（光驱/循环/内存盘）。
+#   - 接缝变量：LSBLK_BIN / BLKID_BIN / WIPEFS_BIN / UMOUNT_BIN / PARTPROBE_BIN
+#     （默认系统命令，测试经 PATH 假件注入，绝不触碰真实块设备）。
 #
 # 接口（后续任务依赖的签名）：
 #   dw_dev_ok <dev>            0=合法白名单设备 / 1=拒绝（支持带或不带 /dev/ 前缀）
 #   dw_enum_disks              无参；stdout 每行「设备 容量 型号 TRAN 挂载点」，
 #                             挂载点为该盘子树挂载点逗号拼接；仅 TYPE=disk + 白名单 + 非 usb
 #   dw_disk_mountpoints <dev>  stdout 每行一个该盘子树挂载点（无挂载输出空）
-#   dw_is_system_disk <dev>    echo 0=数据盘 / 1=系统盘 / 2=未知（OS 迹象判定）
-#   dw_wipe_disk <dev>         0=已恢复未初始化 / 非0=失败（umount 全部→wipefs -a→wipefs -n 验证）
+#   dw_is_system_disk <dev>    echo 0=数据盘 / 1=系统盘 / 2=未知（OS 迹象判定；
+#                             menu 映射显示 DATA/SYS/UNK）
+#   dw_wipe_disk <dev>         0=OK（umount 全部→wipefs -a→partprobe→wipefs -n 验证）/
+#                             非0=失败（输出 FAIL 行 + 英文 reason）
 #   dw_version                 echo 版本号（读 /diskwipe.version，缺失回退 unknown）
 #   dw_log <msg>               echo "$msg" | tee -a "${LOG_FILE:-/dev/null}"（屏幕+文件双写）
 #   dw_mount_log_media         探测并挂载 U 盘可写分区到 /diskwipe-log（跳过 VTOYEFI）；
@@ -26,6 +28,7 @@ LSBLK_BIN="${LSBLK_BIN:-lsblk}"
 BLKID_BIN="${BLKID_BIN:-blkid}"
 WIPEFS_BIN="${WIPEFS_BIN:-wipefs}"
 UMOUNT_BIN="${UMOUNT_BIN:-umount}"
+PARTPROBE_BIN="${PARTPROBE_BIN:-partprobe}"
 # 版本文件路径（构建期拷入 rootfs；测试可覆盖指向临时文件）
 DW_VERSION_FILE="${DW_VERSION_FILE:-/diskwipe.version}"
 # 日志介质写测试探测文件路径（默认挂在挂载点下；测试可覆盖指向临时目录）
@@ -38,7 +41,7 @@ dw_dev_ok() {
     /dev/*) ddev="${ddev#/dev/}" ;;
     esac
     case "$ddev" in
-    sd[a-z]|nvme[0-9]n[0-9]|vd[a-z]|mmcblk[0-9]) return 0 ;;
+    sd[a-z]|sd[a-z][a-z]|nvme[0-9]*n[0-9]*|vd[a-z]|mmcblk[0-9]*) return 0 ;;
     *) return 1 ;;
     esac
 }
@@ -54,7 +57,7 @@ dw_enum_disks() {
         $3 == "disk" {
             # 白名单 + 双保险排除 sr*/loop*/ram*
             if ($1 ~ /^(sr|loop|ram)[0-9]/) next
-            if (!($1 ~ /^sd[a-z]$/ || $1 ~ /^nvme[0-9]n[0-9]$/ || $1 ~ /^vd[a-z]$/ || $1 ~ /^mmcblk[0-9]$/)) next
+            if (!($1 ~ /^sd[a-z]$/ || $1 ~ /^sd[a-z][a-z]$/ || $1 ~ /^nvme[0-9][0-9]*n[0-9][0-9]*$/ || $1 ~ /^vd[a-z]$/ || $1 ~ /^mmcblk[0-9][0-9]*$/)) next
             name=$1; size=$2
             mps=""; t=NF
             if ($NF ~ /^\//) { mps=$NF; t=NF-1 }
@@ -68,7 +71,7 @@ dw_enum_disks() {
             if (tran == "usb") next          # 排除启动 U 盘
             model=""
             for (i=4; i<mend; i++) { if (model != "") model = model " "; model = model $i }
-            if (model == "") model = "未知型号"
+            if (model == "") model = "unknown"
             accmp(name, mps)
             names[++nd]=name; sizes[nd]=size; models[nd]=model; trans[nd]=tran
         }
@@ -109,7 +112,7 @@ dw_disk_mountpoints() {
             dmp=$mpstart
             for (j=mpstart+1; j<=NF; j++) dmp=dmp " " $j
             # 去掉尾部 PKNAME（恒为末列、设备名形态；整盘挂载行无 PKNAME 则保留全文）
-            if ($NF ~ /^(sd[a-z][0-9]*|nvme[0-9]+n[0-9]+p?[0-9]*|vd[a-z][0-9]*|mmcblk[0-9]+p?[0-9]*|dm-[0-9]+|md[0-9]+|loop[0-9]+|sr[0-9]+)$/) {
+            if ($NF ~ /^(sd[a-z][0-9]*|sd[a-z][a-z][0-9]*|nvme[0-9]+n[0-9]+p?[0-9]*|vd[a-z][0-9]*|mmcblk[0-9]+p?[0-9]*|dm-[0-9]+|md[0-9]+|loop[0-9]+|sr[0-9]+)$/) {
                 sub(/ [^ ]+$/, "", dmp)
             }
             print dmp
@@ -122,7 +125,7 @@ dw_disk_mountpoints() {
 #   - MBR 活动分区：lsblk PARTFLAGS == 0x80（MBR 引导标志；GPT 无此概念）
 #   - Windows 系统分区：ntfs
 #   - blkid 探测不到任何类型 → 2 未知；无 OS 迹象且全部类型已知 → 0 数据盘。
-# 仅提示用，不影响可勾选。
+# 返回值 0/1/2 由 menu.sh 映射显示为 DATA/SYS/UNK（仅提示用，不影响可勾选）。
 dw_is_system_disk() {
     ddev="$1"
     case "$ddev" in /dev/*) ddev="${ddev#/dev/}" ;; esac
@@ -159,14 +162,18 @@ dw_is_system_disk() {
     echo 0
 }
 
-# 单盘清除：umount 全部子树挂载点 → wipefs -a 整盘 → wipefs -n 验证（输出空=未初始化）。
-# 任一失败该盘标失败（不误报成功）；成功/失败分别打印一行结果。
+# 单盘清除：umount 全部子树挂载点 → wipefs -a 整盘 → partprobe 刷新内核分区视图
+# （wipefs -a 成功后立即执行，无论后续验证结果；失败仅警告）→ wipefs -n 验证（输出空=
+# 未初始化）。任一失败该盘标失败（不误报成功）；每盘打印一行结果：
+#   OK /dev/<dev> reset to uninitialized
+#   FAIL /dev/<dev>: <english reason>（umount failed: <mp> / wipefs -a failed /
+#                                     wipefs -n failed / signatures remain / not whitelisted）
 # 注意：POSIX 无 local，函数内部变量统一 dw_ 前缀，避免覆盖调用方同名变量。
 dw_wipe_disk() {
     ddev="$1"
     case "$ddev" in /dev/*) ddev="${ddev#/dev/}" ;; esac
     if ! dw_dev_ok "$ddev"; then
-        echo "✗ 非白名单设备：/dev/$ddev"
+        echo "FAIL /dev/$ddev: not whitelisted"
         return 1
     fi
     # 1) 卸载该盘全部子树挂载点（失败即中止该盘，不 wipefs）
@@ -176,7 +183,7 @@ dw_wipe_disk() {
     while IFS= read -r dmp; do
         [ -n "$dmp" ] || continue
         if ! "$UMOUNT_BIN" "$dmp" >/dev/null 2>&1; then
-            echo "✗ 卸载失败：/dev/$ddev（挂载点 $dmp）"
+            echo "FAIL /dev/$ddev: umount failed: $dmp"
             return 1
         fi
     done <<EOF
@@ -184,19 +191,23 @@ $dwmps
 EOF
     # 2) wipefs -a 整盘（清分区表 + 盘内全部 fs/raid/PV 签名）
     if ! "$WIPEFS_BIN" -a "/dev/$ddev" >/dev/null 2>&1; then
-        echo "✗ wipefs -a 失败：/dev/$ddev"
+        echo "FAIL /dev/$ddev: wipefs -a failed"
         return 1
     fi
+    # 2.5) partprobe 刷新内核分区视图：wipefs -a 成功后立即执行（无论后续验证结果），
+    #     消除"未重启看旧分区视图"的误导路径；失败仅警告、不影响该盘结论
+    "$PARTPROBE_BIN" "/dev/$ddev" >/dev/null 2>&1 \
+        || echo "WARN: partprobe failed (kernel partition view may be stale; effective after reboot)"
     # 3) wipefs -n 验证：命令成功且输出为空 = 未初始化；命令失败与签名残留分开提示
     if ! dsigs=$("$WIPEFS_BIN" -n "/dev/$ddev" 2>/dev/null); then
-        echo "✗ wipefs -n 验证失败：/dev/$ddev"
+        echo "FAIL /dev/$ddev: wipefs -n failed"
         return 1
     fi
     if [ -n "$dsigs" ]; then
-        echo "✗ 仍有签名残留：/dev/$ddev"
+        echo "FAIL /dev/$ddev: signatures remain"
         return 1
     fi
-    echo "✓ 已恢复未初始化：/dev/$ddev"
+    echo "OK /dev/$ddev reset to uninitialized"
     return 0
 }
 

@@ -2,9 +2,10 @@
 # diskwipe-iso 离线测试共享库 —— 假件注入骨架 + 断言 + 运行包装
 # 运行环境：本机 Git Bash（bash）；全部测试在 mktemp 临时目录进行。
 # 安全约束（用户强要求，测试绝不触碰本机真实块设备）：
-#   假 lsblk/blkid/wipefs/umount 全部经接缝变量（LSBLK_BIN/BLKID_BIN/WIPEFS_BIN/UMOUNT_BIN）
-#   注入；wipefs 假件只把调用参数记录到 $ROOT/cmds.txt、绝不执行真实 wipefs；脚本操作的
-#   "设备"全部来自假件输出的名字，不存在真实 /dev 设备。
+#   假 lsblk/blkid/wipefs/umount/partprobe 全部经接缝变量
+#   （LSBLK_BIN/BLKID_BIN/WIPEFS_BIN/UMOUNT_BIN/PARTPROBE_BIN）注入；wipefs/partprobe
+#   假件只把调用参数记录到 $ROOT/cmds.txt、绝不执行真实命令；脚本操作的"设备"全部
+#   来自假件输出的名字，不存在真实 /dev 设备。
 #
 # 用例写法：
 #   set -u; . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -198,6 +199,17 @@ while IFS= read -r f; do
     [ "$f" = "$mp" ] && exit 1
 done < "$ROOT/umount.failmp"
 exit 0'
+    # 假 partprobe：记录调用到 cmds.txt；$ROOT/partprobe.fail 命中设备名（不带 /dev/）时
+    # 返回 1（模拟 partprobe 失败）
+    fake_bin partprobe '#!/bin/sh
+[ -n "$ROOT" ] || exit 0
+dev="${1#/dev/}"
+printf "partprobe %s\n" "$1" >> "$ROOT/cmds.txt"
+[ -f "$ROOT/partprobe.fail" ] || exit 0
+while IFS= read -r f; do
+    [ "$f" = "$dev" ] && exit 1
+done < "$ROOT/partprobe.fail"
+exit 0'
     # 假 mount：记录调用到 cmds.txt（日志介质挂载/卸载测试用）；$ROOT/mount.fail
     # 逐行命中挂载点（末参数）时返回 1（模拟挂载失败）
     fake_bin mount '#!/bin/sh
@@ -243,6 +255,7 @@ run_dw() {
     BLKID_BIN=blkid \
     WIPEFS_BIN=wipefs \
     UMOUNT_BIN=umount \
+    PARTPROBE_BIN=partprobe \
     bash -c ". \"$LIB_SH\"; $func \"\$@\"" _ "$@" > "$outf" 2>&1
     LAST_RC=$?
     return 0
@@ -257,6 +270,7 @@ run_wipe() {
     BLKID_BIN=blkid \
     WIPEFS_BIN=wipefs \
     UMOUNT_BIN=umount \
+    PARTPROBE_BIN=partprobe \
     bash "$WIPE_SH" "$@" > "$outf" 2>&1 < /dev/null
     LAST_RC=$?
     return 0

@@ -5,10 +5,10 @@
 # 运行：bash diskwipe-iso/tests/run-all.sh（或单独 bash diskwipe-iso/tests/t2_menu.sh）
 # 交互契约（必须满足）：读 stdin 写 stdout；大写 YES 严格匹配才执行；
 #      非法输入忽略（1,2,x → 忽略 x）；排除列表为空 = 默认全选；
-#      0 退出（打印"可断电/重启"提示）；无盘可清（仅 usb+光驱）→ 提示"仅发现启动介质"并退出；
+#      0 退出（打印 power off/reboot 提示）；无盘可清（仅 usb+光驱）→ 提示仅发现启动介质并退出；
 #      清除后回到菜单（列表刷新）。
 # 用例：
-#   M1  两盘 sda/sdb + sdc(usb)：列表含 sda/sdb 不含 sdc；sda 标"系统盘"、sdb 标"数据盘"
+#   M1  两盘 sda/sdb + sdc(usb)：列表含 sda/sdb 不含 sdc；sda 标 SYS、sdb 标 DATA
 #   M2  回车（默认全选）→ YES：调用 wipe.sh 且含 sda sdb；输出确认清单
 #   M3  输入 1 排除 → YES：只调用 wipe.sh sdb
 #   M4  输入 YES 以外的值（y/no/空）：不执行清除、回到菜单；无 wipe.sh 调用
@@ -31,6 +31,7 @@ run_menu() {
     local input="$1" outf="$2"
     printf '%s\n' "$input" | PATH="$FAKE_BIN:$PATH" \
         LSBLK_BIN=lsblk BLKID_BIN=blkid WIPEFS_BIN=wipefs UMOUNT_BIN=umount \
+        PARTPROBE_BIN=partprobe \
         bash "$MENU_SH" > "$outf" 2>&1
     LAST_RC=${PIPESTATUS[1]}
     return 0
@@ -79,9 +80,9 @@ setup_case
 std_table
 run_menu '0' "$OUTF"
 check_rc 0 '输入 0 应正常退出 0'
-check_line_both '/dev/sda' '系统盘' 'sda 应标注"系统盘"'
-check_line_both '/dev/sdb' '数据盘' 'sdb 应标注"数据盘"'
-check_out '/dev/sda  894G   HGST 7K6000 (SATA)  系统盘' 'sda 行格式（编号/设备/容量/型号/类型）正确'
+check_line_both '/dev/sda' 'SYS' 'sda 应标注 SYS（系统盘）'
+check_line_both '/dev/sdb' 'DATA' 'sdb 应标注 DATA（数据盘）'
+check_out '/dev/sda  894G   HGST 7K6000 (SATA)  SYS' 'sda 行格式（编号/设备/容量/型号/类型）正确'
 check_not_out 'sdc' 'usb 盘 sdc 不得出现在列表中'
 check_not_out 'sr0' '不得出现光驱'
 cleanup_case
@@ -92,14 +93,15 @@ setup_case
 std_table
 run_menu $'\nYES\n0\n' "$OUTF"
 check_rc 0 '结束后应退出 0'
-check_out '将清除以下 2 块硬盘' '默认全选应输出 2 盘确认清单'
+check_out 'Will wipe the following 2 disks' '默认全选应输出 2 盘确认清单'
 check_cmds 'umount /boot/efi' '应先卸载 sda1 挂载点'
 check_cmds 'wipefs -a /dev/sda' '应调用 wipe.sh 清除 sda'
 check_cmds 'wipefs -a /dev/sdb' '应调用 wipe.sh 清除 sdb'
+check_cmds 'partprobe /dev/sda' 'sda 清除后应 partprobe'
 check_cmds 'wipefs -n /dev/sda' '应验证 sda'
-check_out '✓ 已恢复未初始化：/dev/sda' 'sda 应显示清除成功'
-check_out '✓ 已恢复未初始化：/dev/sdb' 'sdb 应显示清除成功'
-check_out '可断电' '0 退出应打印可断电/重启提示'
+check_out 'OK /dev/sda reset to uninitialized' 'sda 应显示清除成功'
+check_out 'OK /dev/sdb reset to uninitialized' 'sdb 应显示清除成功'
+check_out 'power off' '0 退出应打印可断电/重启提示'
 cleanup_case
 
 # ---------- M3：排除编号 1 后只清 sdb ----------
@@ -108,11 +110,12 @@ setup_case
 std_table
 run_menu $'1\nYES\n0\n' "$OUTF"
 check_rc 0 '应正常退出 0'
-check_out '将清除以下 1 块硬盘' '排除后确认清单应为 1 盘'
+check_out 'Will wipe the following 1 disks' '排除后确认清单应为 1 盘'
 check_cmds 'wipefs -a /dev/sdb' '应清除 sdb'
+check_cmds 'partprobe /dev/sdb' 'sdb 清除后应 partprobe'
 check_not_cmds 'wipefs -a /dev/sda' '不得清除被排除的 sda'
 check_not_cmds 'umount' '被排除盘的挂载点不得卸载'
-check_out '✓ 已恢复未初始化：/dev/sdb' 'sdb 应显示清除成功'
+check_out 'OK /dev/sdb reset to uninitialized' 'sdb 应显示清除成功'
 cleanup_case
 
 # ---------- M4：非 YES 输入不执行清除 ----------
@@ -122,8 +125,8 @@ for ans in y no ''; do
     std_table
     run_menu $'\n'"$ans"$'\n0\n' "$OUTF"
     check_rc 0 '非 YES 应回到菜单并 0 退出'
-    check_out '已取消' '非 YES 应提示已取消'
-    check_count '硬盘清理工具' 2 '非 YES 应回到菜单再次列出'
+    check_out 'Cancelled' '非 YES 应提示已取消'
+    check_count 'DiskWipe Tool' 2 '非 YES 应回到菜单再次列出'
     check_no_cmds '非 YES 不得执行任何清除命令'
     cleanup_case
 done
@@ -140,7 +143,7 @@ sdd 1T disk WDC WD1002FAEX sata
 EOF
 run_menu $'1,2,x\nYES\n0\n' "$OUTF"
 check_rc 0 '应正常退出 0'
-check_out '将清除以下 1 块硬盘' '忽略 x、排除 1 和 2 后应只清 1 盘'
+check_out 'Will wipe the following 1 disks' '忽略 x、排除 1 和 2 后应只清 1 盘'
 check_cmds 'wipefs -a /dev/sdd' '应清除 sdd'
 check_not_cmds 'wipefs -a /dev/sda' 'sda 不得被清除'
 check_not_cmds 'wipefs -a /dev/sdb' 'sdb 不得被清除'
@@ -155,7 +158,7 @@ sdb 894G disk Samsung PM983 nvme
 EOF
 run_menu $'1,2\n0\n' "$OUTF"
 check_rc 0 '应正常退出 0'
-check_out '未选择任何硬盘' '全排应提示重新选择'
+check_out 'No disks selected' '全排应提示重新选择'
 check_no_cmds '全排不得执行清除'
 cleanup_case
 
@@ -169,7 +172,7 @@ sr0 1024M rom
 EOF
 run_menu '0' "$OUTF"
 check_rc 0 '应退出 0'
-check_out '仅发现启动介质' '应提示仅发现启动介质'
+check_out 'Only boot media found' '应提示仅发现启动介质'
 check_no_cmds '不得执行任何清除命令'
 cleanup_case
 
@@ -245,10 +248,10 @@ run_menu $'\nYES\n0\n' "$OUTF"
 check_rc 0 '应正常退出 0'
 check_cmds 'wipefs -a /dev/sda' '首轮应清除 sda'
 check_cmds 'wipefs -a /dev/sdb' '首轮应清除 sdb'
-check_count '硬盘清理工具' 2 '清除后应回到菜单再次列出（两轮菜单）'
-check_count '系统盘' 1 '仅首轮 sda 标系统盘'
-check_count '数据盘' 3 '首轮 sdb + 次轮 sda/sdb 均标数据盘（盘已清状态刷新）'
-check_out '可断电' '0 退出应打印可断电/重启提示'
+check_count 'DiskWipe Tool' 2 '清除后应回到菜单再次列出（两轮菜单）'
+check_count 'SYS' 1 '仅首轮 sda 标 SYS'
+check_count 'DATA' 3 '首轮 sdb + 次轮 sda/sdb 均标 DATA（盘已清状态刷新）'
+check_out 'power off' '0 退出应打印可断电/重启提示'
 cleanup_case
 
 # ---------- M8：输入 0 退出 ----------
@@ -257,7 +260,7 @@ setup_case
 std_table
 run_menu '0' "$OUTF"
 check_rc 0 '应退出 0'
-check_out '可断电' '应打印可断电/重启提示'
+check_out 'power off' '应打印可断电/重启提示'
 check_no_cmds '0 退出不得执行清除'
 cleanup_case
 
@@ -270,7 +273,7 @@ sda 894G disk HGST 7K6000  /mnt/data
 EOF
 run_menu '0' "$OUTF"
 check_rc 0 '应正常退出 0'
-check_out '/dev/sda  894G   HGST 7K6000  数据盘' 'TRAN 为空时型号应完整显示（HGST 7K6000 不截断）'
+check_out '/dev/sda  894G   HGST 7K6000  DATA' 'TRAN 为空时型号应完整显示（HGST 7K6000 不截断）'
 check_not_out '(7K6000)' '不得把型号末词 7K6000 误作 TRAN 显示'
 check_not_out '7K6000 (7K6000)' '不得出现 TRAN 占位误判'
 check_no_cmds '仅列盘不得执行清除'

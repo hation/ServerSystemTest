@@ -7,7 +7,7 @@
 #   2) 组装 rootfs/：静态 busybox + 全部 applet 链接、util-linux 动态 wipefs/lsblk
 #      （ldd 收集 .so 依赖按原路径布局拷入）、白名单驱动模块目录 + zstd 解压
 #      （.ko.zst → .ko，busybox 无 zstd 解压）+ depmod、
-#      src 四脚本（init 强制 chmod +x——内核要求 /init 可执行）
+#      src 四脚本（init 强制 chmod +x——内核要求 /init 可执行）+ VERSION → /diskwipe.version
 #   3) cpio 打包 initrd.img（gzip）
 #   4) 写 boot/grub/grub.cfg（linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8
 #      + initrd /boot/initrd.img），放置 vmlinuz/initrd.img 到 rootfs/boot/
@@ -143,6 +143,11 @@ dw_assemble_rootfs() {
         chmod +x "$rootfs/$f" || { dw_fail "chmod +x $rootfs/$f 失败"; return 1; }
     done
     echo "     src 四脚本已拷入并 chmod +x（/init 执行位满足内核要求）"
+
+    # 2.5 版本文件：VERSION → rootfs /diskwipe.version。menu 横幅与日志文件头经 lib.sh
+    #    dw_version 读取（缺失回退 unknown），消除硬编码漂移；幂等（每次覆盖同内容）
+    cp "$proj/VERSION" "$rootfs/diskwipe.version" || { dw_fail "拷贝 VERSION → /diskwipe.version 失败"; return 1; }
+    echo "     VERSION → /diskwipe.version（$(tr -d ' \r\n' < "$proj/VERSION")）"
 }
 
 # ---------- 3) cpio 打包 initrd.img ----------
@@ -229,6 +234,12 @@ dw_verify_iso() {
         || { dw_fail "解包 initrd.img 失败"; return 1; }
     [ -x "$build_dir/initrdx/init" ] || { dw_fail "initrd 内 /init 无执行位（内核要求可执行）"; return 1; }
     echo "     校验通过：initrd 内 /init 具执行位"
+    # 6.3b 版本文件：initrd 内 /diskwipe.version 必须存在且整行等于 VERSION（menu 横幅/日志头来源）
+    dwver="$(tr -d ' \r\n' < "$proj/VERSION")"
+    if ! grep -qx "$dwver" "$build_dir/initrdx/diskwipe.version" 2>/dev/null; then
+        dw_fail "initrd 内 /diskwipe.version 缺失或内容错误（应整行含 $dwver）"; return 1
+    fi
+    echo "     校验通过：initrd 内 /diskwipe.version = $dwver"
 
     # 6.4 src 四脚本 dash -n 语法检查（WSL dash）
     for f in init menu.sh wipe.sh lib.sh; do

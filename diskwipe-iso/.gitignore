@@ -1,0 +1,2 @@
+# diskwipe-iso 构建产物（iso 体积大且可由 build.sh 再生，不入库）
+output/

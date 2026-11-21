@@ -5,7 +5,7 @@ set -u
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RC=0
 
-for t in t1_wipe t2_menu; do
+for t in t1_wipe t2_menu t3_init; do
     echo
     echo "========== 运行 tests/${t}.sh =========="
     if bash "$TEST_DIR/$t.sh"; then

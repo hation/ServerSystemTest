@@ -1,0 +1,51 @@
+#!/bin/sh
+# diskwipe-iso initramfs 启动脚本（PID 1 入口）：
+#   挂载 /proc /sys /dev → busybox modprobe 白名单磁盘驱动 → mdev -s 扫描设备
+#   → sleep 2 等待设备稳定 → exec menu.sh（交互菜单）。
+# 任一步失败（挂载/模块加载/mdev）打印错误并停留在救援 shell（不 exec menu.sh），
+# 便于现场诊断（与设计 §6.3 一致）。
+#
+# 硬约束：
+#   - POSIX/ash 兼容（initramfs 运行时只有 busybox ash；禁止 [[ ]]、数组、${var:0:3} 等
+#     bash 专属语法），LF 行尾，中文注释。
+#   - 只做启动编排；交互/清除逻辑由 menu.sh/wipe.sh/lib.sh 保证。
+#   - 模块白名单覆盖主流服务器磁盘控制器（AHCI/NVMe/LSI/板载 RAID/虚拟化/USB3 等），
+#     依赖模块由 busybox modprobe 按 modules.dep 自动带入。
+#   - 测试经 INIT_PATH 接缝变量注入假件（mount/modprobe/mdev 只记录调用，不真挂载）。
+
+# PATH 兜底：内核 exec PID 1 时不保证 PATH，显式设置；测试可用 INIT_PATH 覆盖注入假件
+export PATH="${INIT_PATH:-/bin:/sbin:/usr/bin:/usr/sbin}"
+
+# 磁盘驱动模块白名单（按此字符串逐模块加载）
+DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod"
+
+# 启动失败：打印错误并停留在救援 shell（不 exec menu.sh，便于现场诊断）
+init_rescue() {
+    echo "✗ $1"
+    echo "已停留在救援 shell（可输入命令排查；exit 可退出）..."
+    exec sh
+    # exec 失败（极端情况）时以非 0 终止，避免带病继续启动
+    exit 1
+}
+
+# 1) 挂载基础文件系统（busybox mount；/dev 用 devtmpfs，mdev 再补设备节点）
+mount -t proc proc /proc || init_rescue "挂载 /proc 失败"
+echo "已挂载 /proc"
+mount -t sysfs sysfs /sys || init_rescue "挂载 /sys 失败"
+echo "已挂载 /sys"
+mount -t devtmpfs devtmpfs /dev || init_rescue "挂载 /dev 失败"
+echo "已挂载 /dev"
+
+# 2) 逐模块加载磁盘驱动白名单（任一失败立即停止并进入救援 shell）
+for im in $DRIVE_MODULES; do
+    modprobe "$im" || init_rescue "加载内核模块 $im 失败"
+done
+echo "磁盘驱动模块加载完成"
+
+# 3) mdev -s 扫描并创建设备节点
+mdev -s || init_rescue "mdev -s 扫描设备失败"
+echo "设备节点扫描完成"
+
+# 4) 等待设备稳定后进入交互菜单（exec 替换自身，menu.sh 读 stdin 写 /dev/console）
+sleep 2
+exec "$(dirname "$0")/menu.sh"

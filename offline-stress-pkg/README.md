@@ -23,13 +23,13 @@ offline-stress-pkg/
 ├── stress-lib-snapshot.sh         stress 快照子模块（运行时证据快照/实际参数解析）
 ├── stress-lib-monitor.sh          stress 监控子模块（monitor-loop/状态与结束落盘）
 ├── stress-lib-commands.sh         stress 命令子模块（cmd_start/status/stop/review/snapshot 实现）
-├── oneclick.sh                    一键压测入口（菜单/子命令：自动挂载+分窗+自动复盘）
+├── oneclick.sh                    一键压测入口（菜单/子命令：自动挂载+分窗+自动复盘+自动清理）
 ├── oneclick-lib-basic.sh          oneclick 基础子模块（usage/环境快照/命令显示）
-├── oneclick-lib-run.sh            oneclick 运行子模块（precheck/计划/启动/等待/复盘）
-├── disk-mount.sh                  挂载辅助脚本入口（list/mount/umount，硬盘压测前挂载测试盘）
+├── oneclick-lib-run.sh            oneclick 运行子模块（precheck/计划/启动/等待/复盘/自动清理）
+├── disk-mount.sh                  挂载辅助脚本入口（list/mount/umount/clean，硬盘压测前挂载测试盘、压测后清空数据盘）
 ├── disk-mount-lib-detect.sh       挂载探测子模块（系统盘识别/设备探测/状态判定）
 ├── disk-mount-lib-plan.sh         挂载计划子模块（build_plan/挂载点编号/重建步骤）
-├── disk-mount-lib-commands.sh     挂载命令子模块（cmd_list/cmd_mount/cmd_umount 实现）
+├── disk-mount-lib-commands.sh     挂载命令子模块（cmd_list/cmd_mount/cmd_umount/cmd_clean 实现）
 ├── mount-iso.sh                   U盘+yum源脚本入口（build/mount/status/umount，构建源并配置本地源）
 ├── mount-iso-lib-usb.sh           U盘识别与挂载子模块（usb_disk/mount_usb）
 ├── mount-iso-lib-repo.sh          yum 源构建子模块（createrepo/复制/写 repo 文件）
@@ -51,7 +51,7 @@ offline-stress-pkg/
 > |---|---|
 > | `commands.txt` | 本次实际执行过的命令逐条记录（可直接复制重跑；复盘命令自动去重） |
 > | `commands.sh` | 可重放的启动脚本（含 shebang、批次路径、重放警告；只含挂载与各任务启动命令，不含复盘；权限 0644；**执行它会重新发起一轮压测**） |
-> | `env.txt` | 本次执行环境快照（`BATCH`/`MODE`/`START_TIME`/`TIMEOUT`/`STRESS_TEST_ROOT`/`STRESS_TEST_SH`/`DISK_MOUNT_SH`/`TERM_KIND`/`POLL_INTERVAL`/`READY_TIMEOUT`/`SHOW_CMD`） |
+> | `env.txt` | 本次执行环境快照（`BATCH`/`MODE`/`START_TIME`/`TIMEOUT`/`STRESS_TEST_ROOT`/`STRESS_TEST_SH`/`DISK_MOUNT_SH`/`TERM_KIND`/`POLL_INTERVAL`/`READY_TIMEOUT`/`REBUILD`/`SHOW_CMD`/`CLEANUP`） |
 
 ## 3. U 盘拷贝步骤
 
@@ -103,6 +103,7 @@ sudo bash install.sh
   7) 只测内存
   8) 查看状态
   9) 生成复盘
+  10) 清空数据盘（全部非系统盘、非U盘；卸载并 wipefs 整盘，需 y 确认）
   0) 退出
 当前超时：10h（可用 --timeout 覆盖）
 ```
@@ -120,6 +121,7 @@ sudo bash install.sh
 | 7 只测内存 | `mem` | 仅内存压测（固定 `--vm-keep`） |
 | 8 查看状态 | `status` | 查看最近批次任务状态 |
 | 9 生成复盘 | `review` | 重新生成最近批次汇总复盘 |
+| 10 清空数据盘 | `clean` | 卸载并 wipefs 清空全部非系统盘、非U盘（交互 y/N 确认；不进批次） |
 | 0 退出 | — | — |
 
 ```bash
@@ -130,6 +132,7 @@ sudo bash oneclick.sh all --no-hdd --timeout 10h   # 排除所有硬盘（数据
 sudo bash oneclick.sh full --timeout 10h           # 中高强度整机压测：全盘挂载 + COMBO 高强度参数 + 每盘 HDDxx + 系统盘
 sudo bash oneclick.sh --high --timeout 10h         # 一键中高强度整机压测（等价 full，不弹菜单）
 sudo bash oneclick.sh all --high                   # 等价 full（中高强度整机压测）
+sudo bash oneclick.sh clean                        # 清空全部非系统盘、非U盘（交互 y/N 确认；不进批次）
 ```
 
 要点：
@@ -153,6 +156,7 @@ sudo bash oneclick.sh all --high                   # 等价 full（中高强度�
 - **每块数据盘一个窗口**，窗口标题为 `压测-HDDxx`；COMBO 窗口为 `压测-组合CPU+内存`，系统盘为 `压测-系统盘`（单资源模式另有 `压测-CPU` / `压测-内存`）；无图形环境（SSH、无 `DISPLAY`）自动降级为后台并行执行，输出写入批次目录的 `<任务>.out`；
 - **失败策略**：**COMBO 启动失败 → 中止本批次**，不再启动数据盘与系统盘，批次退出码 1（核心 CPU+内存负载未起来）；**数据盘 / SYSDISK 启动失败 → 记录到 `failed-tasks.txt` 后跳过**，继续启动其余任务，批次最终退出码 1，`summary.txt` 的"启动失败（跳过、未计入复盘）"列出失败任务；
 - **自动复盘**：全部结束后自动逐个 `review` 并生成汇总 `summary.txt`，位置为 `/root/stress-test/oneclick-<时间>/summary.txt`（存在异常结论、任务启动失败，或自动挂载阶段存在跳过/失败盘时，批次退出码 1；summary 会标注 `自动挂载: 存在跳过/失败盘（退出码 N…）` 与"启动失败（跳过、未计入复盘）"清单）；
+- **自动清理数据盘**：all/full/hdd 批次复盘后**默认自动清空本批数据盘**（范围 = 批次目录 `cleanup-devices.txt` 记录的本批盘整盘名），`--no-cleanup` 关闭；盘已不存在、或盘上出现非 `/mnt/HDD*` 挂载点（业务数据）时自动跳过并在 summary 标注，不整批失败；清理失败只标注并提示手动命令，**不改变复盘结论与批次退出码**（详见 4.3 压测后清理）；
 - **命令可见性**：每个任务启动前主终端打印 `[<时间>] 任务 HDD01 将执行：` 与其后的 `  $ bash <包绝对路径>/stress-test.sh start hdd --timeout 10h --dirs /mnt/HDD01`；自动挂载前打印 `  $ bash <包绝对路径>/disk-mount.sh mount --disks all --yes`；复盘前打印 `  $ bash <包绝对路径>/stress-test.sh review --dir <结果目录>`。窗口内首屏也有同样的启动命令 banner（`==== HDD01 启动命令 ====` / `  $ …` / `======================`）；
 - **命令落盘**：上述命令写入批次目录的 `commands.txt`（逐条可复制）与 `commands.sh`（可重放启动）；同目录另生成 `env.txt`（环境快照），用途见第 2 节；启动失败时始终单独打印“该任务压测命令（可直接复制重跑）：”；
 - **`--quiet` 静默**：`sudo bash oneclick.sh all --quiet`（或 `ONECLICK_SHOW_CMD=0 sudo -E bash oneclick.sh all`）关闭终端命令打印，三个命令文件照常生成；
@@ -180,7 +184,26 @@ sudo bash oneclick.sh all --high                   # 等价 full（中高强度�
 - **`--dry-run`**：`bash disk-mount.sh mount --disks all --dry-run`（等价 `DRY_RUN=1`）只打印计划、末尾输出 `（DRY RUN，未执行）`、不写 `mount.log`，退出码与真实执行一致；
 - **系统盘永不参与**：`df /` 识别到的系统盘在任何模式都不分区 / 不格式化 / 不挂载；系统盘识别不可靠（如 `df /` 为 `/dev/root`）时，非 dry-run 直接中止、不执行任何写操作。
 
-### 4.3 结果判定要点
+### 4.3 压测后清理
+
+压测结束、结果已拷回后，可一键清空数据盘（恢复到空白状态，便于下次直接重建或交接）。
+
+**一键全测自动清理**：`oneclick` 的 `all` / `full` / `hdd` 批次**默认开启**——复盘结束后自动清空**本批数据盘**（范围 = 批次目录 `cleanup-devices.txt` 中记录的本批数据盘整盘名）；不需要时加 `--no-cleanup` 关闭（`sudo bash oneclick.sh all --no-cleanup`）。清理结果追加进批次 `summary.txt`（`数据盘清理: ...`）；盘已不存在、或盘上出现非 `/mnt/HDD*` 挂载点（业务数据）时自动跳过并在 summary 标注，不整批失败；清理失败只标注并提示手动命令，**不改变复盘结论与批次退出码**。菜单项 **10「清空数据盘」** 等价手动 `bash oneclick.sh clean`（交互 y/N 确认，不进批次）。
+
+**手动清空（disk-mount.sh clean）**：
+
+```bash
+sudo bash disk-mount.sh clean                        # 清空全部非系统盘、非U盘（逐盘打印计划后 y 确认）
+sudo bash disk-mount.sh clean --disks sdb,sdc        # 只清指定盘（分区自动归一为整盘）
+sudo bash disk-mount.sh clean --disks sdb,sdc --yes  # 跳过 y 确认（供脚本化调用）
+sudo bash disk-mount.sh clean --dry-run              # 只打印执行计划，不执行任何写操作
+```
+
+- **语义**：逐盘 `umount` 全部子树挂载点（含业务挂载点盘，计划中醒目标注、需自行确认）→ `wipefs -a <整盘>` 清空文件系统/分区表签名 → `partprobe` 刷新，盘回到**空白状态**（无分区、无签名）；只清理、**不重建分区表**（重建用 `mount --rebuild`）；
+- **不影响 SMART 数据**：`wipefs` 只清块设备上的签名，**不读写 SMART 属性**——清理后盘的**通电时间、通电次数**等统计保持不变；
+- **安全**：**系统盘与 U 盘永不清理**——默认范围只含非系统盘、非U盘；`--disks` 显式指定系统盘/U 盘/不存在的盘直接拒绝退出（退出码 1）；系统盘识别不可靠时非 dry-run 中止、零写操作；空白盘自动跳过；执行前必打印计划并要求 `y` 确认。
+
+### 4.4 结果判定要点
 
 `stress-test.sh review` 生成 `summary.txt`，首行按以下**优先级**给出 `结论:`（后者不覆盖前者）：
 

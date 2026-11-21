@@ -20,6 +20,11 @@
 #                                                        首个 / 开头字段起至行尾原文；
 #                                                        PKNAME 由名字推导：nvme0n1p1 去
 #                                                        p+数字、sda1 去尾部数字）
+#   -o NAME,TYPE,TRAN,LABEL                            → 输出「名字 类型 TRAN 卷标」四列
+#                                                        （TRAN 按表格约定从右往左定位：末字段
+#                                                         为挂载点则跳过，其前字段属已知 TRAN
+#                                                         集合才视为 TRAN；卷标取 lsblk.labels，
+#                                                         "设备 卷标"可含空格，无条目为空）
 #   -no PARTFLAGS <dev>                                → 按 lsblk.flags（"设备 标志"，
 #                                                        真实格式如 MBR 活动=0x80）
 #   -no PARTTYPENAME <dev>                             → 按 lsblk.ptname（"设备 类型名"，
@@ -90,6 +95,23 @@ case "$1" in
             }
             if (name==d || pk==d) printf "%s %s %s %s\n", name, type, mps, pk
         }'"'"' "$ROOT/lsblk.table"
+        ;;
+    NAME,TYPE,TRAN,LABEL)
+        [ -f "$ROOT/lsblk.table" ] || exit 0
+        [ -f "$ROOT/lsblk.labels" ] || : > "$ROOT/lsblk.labels"
+        # 输出「名字 类型 TRAN 卷标」；卷标取 lsblk.labels（"设备 卷标"，可含空格）
+        # 注意：用 FILENAME==ARGV[1] 区分文件而非 NR==FNR——labels 文件可能为空，
+        #       NR==FNR 在首文件为空时会与第二个文件记录同步而失效
+        awk '"'"'FILENAME == ARGV[1] { if (NF >= 2) { lab[$1]=$2; for (i=3; i<=NF; i++) lab[$1]=lab[$1] " " $i } next }
+            FNR==1 { next }
+            {
+                name=$1; type=$3
+                tran=""; t=NF
+                if ($NF ~ /^\//) t=NF-1
+                if (t > 3 && $t ~ /^(sata|sas|nvme|usb|spi|ata|scsi|virtio|pcie)$/) tran=$t
+                lv=(name in lab) ? lab[name] : ""
+                print name, type, tran, lv
+            }'"'"' "$ROOT/lsblk.labels" "$ROOT/lsblk.table"
         ;;
     esac
     ;;
@@ -164,11 +186,28 @@ while IFS= read -r f; do
     [ "$f" = "$mp" ] && exit 1
 done < "$ROOT/umount.failmp"
 exit 0'
+    # 假 mount：记录调用到 cmds.txt（日志介质挂载/卸载测试用）；$ROOT/mount.fail
+    # 逐行命中挂载点（末参数）时返回 1（模拟挂载失败）
+    fake_bin mount '#!/bin/sh
+[ -n "$ROOT" ] || exit 0
+printf "mount %s\n" "$*" >> "$ROOT/cmds.txt"
+[ -f "$ROOT/mount.fail" ] || exit 0
+mp=""
+for a in "$@"; do mp="$a"; done
+while IFS= read -r f; do
+    [ "$f" = "$mp" ] && exit 1
+done < "$ROOT/mount.fail"
+exit 0'
 }
 
 # 追加 blk.type 条目：add_blk_type <分区> <类型>（ESP→vfat、Windows→ntfs、Linux→ext4）
 add_blk_type() {
     printf '%s %s\n' "$1" "$2" >> "$ROOT/blk.type"
+}
+
+# 追加分区卷标条目：add_label <分区> <卷标>（可含空格；写入 lsblk.labels）
+add_label() {
+    printf '%s %s\n' "$1" "$2" >> "$ROOT/lsblk.labels"
 }
 
 # 追加分区类型名条目：add_ptname <分区> <类型名>（真实格式，如 GPT ESP="EFI System"）
@@ -231,6 +270,16 @@ check_not_out() {
         _pass "$desc"
     else
         _fail "$desc（输出不应包含：$bad）"
+    fi
+}
+
+# 断言文件含指定文本：check_file <文件> <文本> <描述>
+check_file() {
+    local f="$1" want="$2" desc="$3"
+    if [ -f "$f" ] && grep -Fq -- "$want" "$f"; then
+        _pass "$desc"
+    else
+        _fail "$desc（文件未包含：$want）"
     fi
 }
 

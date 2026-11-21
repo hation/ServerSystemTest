@@ -16,12 +16,20 @@
 #   dw_disk_mountpoints <dev>  stdout 每行一个该盘子树挂载点（无挂载输出空）
 #   dw_is_system_disk <dev>    echo 0=数据盘 / 1=系统盘 / 2=未知（OS 迹象判定）
 #   dw_wipe_disk <dev>         0=已恢复未初始化 / 非0=失败（umount 全部→wipefs -a→wipefs -n 验证）
+#   dw_version                 echo 版本号（读 /diskwipe.version，缺失回退 unknown）
+#   dw_log <msg>               echo "$msg" | tee -a "${LOG_FILE:-/dev/null}"（屏幕+文件双写）
+#   dw_mount_log_media         探测并挂载 U 盘可写分区到 /diskwipe-log（跳过 VTOYEFI）；
+#                             导出 DW_LOG_MEDIA=usb|none（失败仅提示，不阻断）
 
 # ---------- 接缝变量（默认系统命令，测试可覆盖） ----------
 LSBLK_BIN="${LSBLK_BIN:-lsblk}"
 BLKID_BIN="${BLKID_BIN:-blkid}"
 WIPEFS_BIN="${WIPEFS_BIN:-wipefs}"
 UMOUNT_BIN="${UMOUNT_BIN:-umount}"
+# 版本文件路径（构建期拷入 rootfs；测试可覆盖指向临时文件）
+DW_VERSION_FILE="${DW_VERSION_FILE:-/diskwipe.version}"
+# 日志介质写测试探测文件路径（默认挂在挂载点下；测试可覆盖指向临时目录）
+DW_LOG_PROBE="${DW_LOG_PROBE:-/diskwipe-log/.dwlogtest}"
 
 # 设备名白名单校验（代码层护栏，从源头杜绝误操作）
 dw_dev_ok() {
@@ -189,5 +197,73 @@ EOF
         return 1
     fi
     echo "✓ 已恢复未初始化：/dev/$ddev"
+    return 0
+}
+
+# ---------- 日志功能（清理日志持久化落盘） ----------
+
+# 版本号：echo 到 stdout。读构建期拷入 rootfs 的 /diskwipe.version；缺失/为空回退 unknown。
+# 测试经 DW_VERSION_FILE 接缝覆盖（默认 /diskwipe.version）。
+dw_version() {
+    if [ -s "$DW_VERSION_FILE" ]; then
+        cat "$DW_VERSION_FILE"
+    else
+        echo "unknown"
+    fi
+}
+
+# 日志双写：屏幕 + 追加到日志文件（LOG_FILE 未设置/为空 → tee 到 /dev/null，仅屏幕）。
+# tee 写失败仅提示、不阻断调用方（清理逻辑不因日志失败受影响）。
+dw_log() {
+    echo "$1" | tee -a "${LOG_FILE:-/dev/null}"
+}
+
+# 探测并挂载日志介质（U 盘可写分区）：
+#   - 枚举 TRAN=usb 的 TYPE=part 分区（父盘即 U 盘；lsblk -o NAME,TYPE,TRAN,LABEL）
+#   - 过滤可写文件系统（blkid TYPE ∈ vfat|exfat|ntfs）
+#   - 跳过卷标 VTOYEFI（Ventoy 32MB 启动分区，优先数据区）
+#   - 逐个 mount 到 /diskwipe-log + 1 字节写测试（探测文件写入并删除）验证可写
+#   - 首个成功 → DW_LOG_MEDIA=usb；全败/无候选 → DW_LOG_MEDIA=none（均 export）
+# 挂载失败静默降级（提示在 menu.sh）；写测试路径经 DW_LOG_PROBE 可覆盖。
+# 只挂载一个可写分区（按上述优先级首个成功者），不挂多个；绝不参与清除（U 盘仍被
+# dw_enum_disks 排除，见设计 §4.1）。
+dw_mount_log_media() {
+    DW_LOG_MEDIA=none
+    export DW_LOG_MEDIA
+    # 1) 枚举 U 盘可写分区候选「分区名|卷标」（跳过 VTOYEFI；卷标可含空格，取第 4 字段起）
+    dwcands="$("$LSBLK_BIN" -o NAME,TYPE,TRAN,LABEL 2>/dev/null | awk '
+        NR==1 { next }
+        $2 == "part" && $3 == "usb" {
+            dwlab=""
+            if (NF >= 4) { dwlab=$4; for (dwi=5; dwi<=NF; dwi++) dwlab=dwlab " " $dwi }
+            if (dwlab == "VTOYEFI") next
+            print $1 "|" dwlab
+        }
+    ')"
+    [ -n "$dwcands" ] || return 0
+    # 挂载点不存在则创建（失败不阻断：mount 会失败，由循环降级 none）
+    mkdir -p /diskwipe-log 2>/dev/null || :
+    # 2) 逐候选：可写文件系统过滤 → mount → 写测试；失败卸载换下一个（POSIX 无 local，
+    #    函数内部变量统一 dw_ 前缀）
+    while IFS='|' read -r dwpart dwlab; do
+        [ -n "$dwpart" ] || continue
+        dwtype="$("$BLKID_BIN" -s TYPE -o value "/dev/$dwpart" 2>/dev/null)"
+        case "$dwtype" in
+        vfat|exfat|ntfs) ;;
+        *) continue ;;
+        esac
+        if ! mount "/dev/$dwpart" /diskwipe-log >/dev/null 2>&1; then
+            continue
+        fi
+        if printf 'x' > "$DW_LOG_PROBE" 2>/dev/null \
+           && rm -f "$DW_LOG_PROBE" 2>/dev/null; then
+            DW_LOG_MEDIA=usb
+            export DW_LOG_MEDIA
+            return 0
+        fi
+        "$UMOUNT_BIN" /diskwipe-log >/dev/null 2>&1
+    done <<EOF
+$dwcands
+EOF
     return 0
 }

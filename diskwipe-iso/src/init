@@ -16,6 +16,9 @@
 # PATH 兜底：内核 exec PID 1 时不保证 PATH，显式设置；测试可用 INIT_PATH 覆盖注入假件
 export PATH="${INIT_PATH:-/bin:/sbin:/usr/bin:/usr/sbin}"
 
+# 加载共享库（dw_mount_log_media 等；接缝变量 LSBLK_BIN/BLKID_BIN/UMOUNT_BIN 随 PATH 解析）
+. "$(dirname "$0")/lib.sh"
+
 # 磁盘驱动模块白名单（按此字符串逐模块加载）
 DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod"
 
@@ -46,6 +49,10 @@ echo "磁盘驱动模块加载完成"
 mdev -s || init_rescue "mdev -s 扫描设备失败"
 echo "设备节点扫描完成"
 
-# 4) 等待设备稳定后进入交互菜单（exec 替换自身，menu.sh 读 stdin 写 /dev/console）
+# 4) 等待设备稳定后探测并挂载日志介质（U 盘可写分区；无介质/全败 → DW_LOG_MEDIA=none，
+#    仅提示不阻断清理；挂载失败静默降级，提示在 menu 里给）
 sleep 2
+dw_mount_log_media
+
+# 5) 进入交互菜单（exec 替换自身，menu.sh 读 stdin 写 /dev/console）
 exec "$(dirname "$0")/menu.sh"

@@ -1,6 +1,10 @@
 #!/bin/sh
 # diskwipe-iso 交互菜单：列盘（编号/设备/容量/型号/类型）→ 默认全选、输入编号排除、
 # 回车=全部 → 打印将清除清单 → 输入大写 YES 才执行（调 wipe.sh）→ 循环；0 退出。
+# 清理日志（持久化落盘）：DW_LOG_MEDIA=usb 时生成 /diskwipe-log/diskwipe-<时间戳>.log
+#   （一次启动会话一份，多轮清理追加；文件头=版本/会话开始/介质状态），关键行经
+#   dw_log 落日志，wipe.sh 每盘结果经 tee 双写；0 退出写文件尾并尽力 umount。
+#   DW_LOG_MEDIA=none 时仅屏幕提示，不阻断清理。
 #
 # 硬约束：
 #   - POSIX/ash 兼容（initramfs 运行时只有 busybox ash；禁止 [[ ]]、数组、${var:0:3}
@@ -13,6 +17,36 @@
 . "$(dirname "$0")/lib.sh"
 
 WIPE_SH="$(dirname "$0")/wipe.sh"
+
+# ---- 日志初始化（一次启动会话一份文件，会话内多轮清理追加；无介质仅屏幕不阻断）----
+# init 已探测并导出 DW_LOG_MEDIA（usb/none）；直接运行 menu.sh 时默认 none。
+# LOG_DIR 可经环境覆盖（生产固定 /diskwipe-log，测试指向临时目录）。
+DW_LOG_MEDIA="${DW_LOG_MEDIA:-none}"
+LOG_DIR="${LOG_DIR:-/diskwipe-log}"
+LOG_FILE=""
+if [ "$DW_LOG_MEDIA" = "usb" ]; then
+    mkdir -p "$LOG_DIR" 2>/dev/null || :
+    LOG_FILE="$LOG_DIR/diskwipe-$(date +%Y%m%d-%H%M%S).log"
+    # 文件头：版本 / 会话开始 / 介质状态
+    dw_log "=============================================="
+    dw_log "  diskwipe-iso 清理日志"
+    dw_log "  版本：$(dw_version)"
+    dw_log "  会话开始：$(date '+%Y-%m-%d %H:%M:%S')"
+    dw_log "  日志介质：usb（$LOG_DIR）"
+    dw_log "=============================================="
+else
+    echo "未找到可写日志介质，本次日志仅屏幕显示。"
+fi
+
+# 会话收尾（0 退出路径）：写文件尾（会话结束时间）；有日志介质则打印日志路径并尽力
+# 卸载 /diskwipe-log（卸载失败仅提示，不阻断退出）
+dw_log_finish() {
+    dw_log "== 会话结束 [$(date '+%Y-%m-%d %H:%M:%S')] =="
+    if [ "$DW_LOG_MEDIA" = "usb" ]; then
+        echo "清理日志已保存：$LOG_FILE"
+        "$UMOUNT_BIN" /diskwipe-log >/dev/null 2>&1 || echo "提示：卸载日志介质失败，可稍后手动卸载"
+    fi
+}
 
 # 从 dw_enum_disks 输出行提取展示字段，输出 "设备|容量|型号|TRAN大写"（| 分隔）。
 # 行格式：设备 容量 型号[可含空格] TRAN[可空] 挂载点[可含空格]。
@@ -66,13 +100,14 @@ while :; do
     ml="$(dw_enum_disks)"
     if [ -z "$ml" ]; then
         echo
-        echo "仅发现启动介质（未发现可清除的硬盘；启动 U 盘/光驱已自动排除）"
-        echo "可安全断电或重启退出。"
+        dw_log "仅发现启动介质（未发现可清除的硬盘；启动 U 盘/光驱已自动排除）"
+        dw_log "可安全断电或重启退出。"
+        dw_log_finish
         exit 0
     fi
 
     echo "=============================================="
-    echo "  硬盘清理工具 v1.0  清除分区并恢复为未初始化"
+    dw_log "  硬盘清理工具 $(dw_version)  清除分区并恢复为未初始化"
     echo "=============================================="
     echo "  编号  设备      容量    型号/状态              类型"
     echo "  ---------------------------------------------------"
@@ -102,13 +137,14 @@ EOF
     echo "  ---------------------------------------------------"
     echo "  默认已全部选中；输入要【排除】的编号（可多选如 1,2；直接回车=全部）"
     printf '> '
-    IFS= read -r mex || { echo; echo "输入结束，已退出（可断电/重启）。"; exit 0; }
+    IFS= read -r mex || { echo; dw_log "输入结束，已退出（可断电/重启）。"; dw_log_finish; exit 0; }
 
-    # 0 = 退出（打印可断电/重启提示）
+    # 0 = 退出（打印可断电/重启提示，写文件尾并卸载日志介质）
     case "$mex" in
     0)
         echo
         echo "已退出。清除完成后可断电或重启。"
+        dw_log_finish
         exit 0
         ;;
     esac
@@ -129,6 +165,10 @@ EOF
         esac
     done
     IFS="$mifs_old"
+    # 排除记录（落日志；无排除则默认全选，不记录）
+    if [ -n "$mexcl" ]; then
+        dw_log "已排除编号：$mexcl"
+    fi
 
     # 构造选中盘列表（排除列表为空 = 默认全选）
     msel=""
@@ -148,13 +188,13 @@ EOF
 $ml
 EOF
     if [ -z "$msel" ]; then
-        echo "未选择任何硬盘，请重新选择。"
+        dw_log "未选择任何硬盘，请重新选择。"
         continue
     fi
 
-    # 二次确认清单（逐盘列出将清除的盘）
+    # 二次确认清单（逐盘列出将清除的盘；同时落日志作为本轮的盘清单）
     echo
-    echo "将清除以下 $mcnt 块硬盘，清除后它们将恢复为【未初始化】："
+    dw_log "将清除以下 $mcnt 块硬盘，清除后它们将恢复为【未初始化】："
     mi=0
     while IFS= read -r mline; do
         [ -n "$mline" ] || continue
@@ -175,19 +215,20 @@ EOF
         else
             mshow="$mmodel"
         fi
-        printf '  /dev/%s  %s  %s\n' "$mdev" "$msize" "$mshow"
+        dw_log "  /dev/$mdev  $msize  $mshow"
     done <<EOF
 $ml
 EOF
     echo "此操作不可恢复！输入大写 YES 确认："
     printf '> '
-    IFS= read -r myn || { echo; echo "已取消（未输入 YES）。"; continue; }
+    IFS= read -r myn || { echo; dw_log "已取消（未输入 YES）。"; continue; }
     if [ "$myn" = "YES" ]; then
         echo
-        echo "开始清除（umount → wipefs -a → wipefs -n 验证）..."
-        "$WIPE_SH" $msel
+        dw_log "开始清除（umount → wipefs -a → wipefs -n 验证）..."
+        # 每盘结果（✓/✗）经 stdout 由 tee 同时落到屏幕与日志文件
+        "$WIPE_SH" $msel 2>&1 | tee -a "${LOG_FILE:-/dev/null}"
         echo
         continue
     fi
-    echo "已取消（未执行清除）。"
+    dw_log "已取消（未执行清除）。"
 done

@@ -30,6 +30,14 @@ setup_stub() {
     setup_tmp
     mkdir -p "$ROOT/stub"
     cp "$INIT_SH" "$ROOT/stub/init"
+    # init 现在会 source 同目录 lib.sh（dw_mount_log_media 等），必须一并拷入 stub
+    cp "$LIB_SH" "$ROOT/stub/lib.sh"
+    # 空 lsblk/blkid 假件：init 的 dw_mount_log_media 需要 lsblk/blkid 枚举日志介质；
+    # stub 环境无 U 盘 → 返回空，走 DW_LOG_MEDIA=none 分支（防真实 lsblk 触碰本机设备）
+    fake_bin lsblk '#!/bin/sh
+exit 0'
+    fake_bin blkid '#!/bin/sh
+exit 2'
     # 假 mount：记录调用到 cmds.txt；$ROOT/mount.fail 命中挂载点（末参数）时返回 1
     fake_bin mount '#!/bin/sh
 [ -n "$ROOT" ] || exit 0

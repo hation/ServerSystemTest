@@ -170,7 +170,7 @@ sudo bash oneclick.sh clean            # 清空全部非系统盘、非U盘（�
 
 ## 3. 硬盘压测完整流程
 
-流程：`list` → `mount` → `start hdd` → 完成后 `umount`。
+流程：`list` → `mount` → `start hdd` → 完成后清理（自动或手动，见 3.4）。
 
 ### 3.1 查看块设备与系统盘
 

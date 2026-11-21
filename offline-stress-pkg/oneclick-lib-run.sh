@@ -175,7 +175,7 @@ record_cleanup_devices() {
 
 # 批次结束自动清理数据盘：只在 all/full/hdd 且非 --no-hdd、CLEANUP=1、cleanup-devices.txt 非空时执行。
 # 清理时点预检：盘已不存在 / 出现非 /mnt/HDD* 挂载点 → 跳过该盘并在 summary 标注，不整批失败；
-# 剩余盘经 show_run 展示并落 commands.txt，执行 disk-mount.sh clean --disks <列表> --yes；
+# 剩余盘经 show_once_argv 展示并落 commands.txt（不写 commands.sh 重放脚本），执行 disk-mount.sh clean --disks <列表> --yes；
 # 结果追加进 summary.txt；清理失败只标注并提示手动命令，不改变 review 结论与批次退出码
 # （清理粒度/退出码由 disk-mount.sh clean 自身保证）。
 run_auto_clean() {
@@ -238,7 +238,8 @@ run_auto_clean() {
         list="${list:+$list,}$d"
     done
     echo "数据盘清理: 自动清理 ${#keep[@]} 块：$list" >> "$BATCH/summary.txt"
-    show_run bash "$DM" clean --disks "$list" --yes
+    # 只落 commands.txt（show_once_argv 去重），不进 commands.sh：重放脚本会先挂载再立即 clean，破坏重放轮次
+    show_once_argv bash "$DM" clean --disks "$list" --yes
     MOUNT_LOG="$BATCH/clean.mount.log" bash "$DM" clean --disks "$list" --yes 2>&1 | tee "$BATCH/clean.log"
     rc=${PIPESTATUS[0]}
     if [ "$rc" -eq 0 ]; then
@@ -626,6 +627,10 @@ run_mode() {
     local -a extras=() fields=()
     # clean：直接交给 disk-mount.sh clean（交互 y/N 确认；不进批次、不依赖压测环境）
     if [ "$mode" = "clean" ]; then
+        if [ "$REBUILD" = "1" ]; then
+            echo "提示：--rebuild 仅对 all/hdd/full 生效，本次忽略"
+            REBUILD=0
+        fi
         exec bash "$DM" clean
     fi
     # 重建开关口径：仅 all/hdd/full 生效；其他模式带 --rebuild 时提示并忽略（在 write_plan 之前复位）

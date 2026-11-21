@@ -277,7 +277,11 @@ cmd_clean() {
                 echo "盘不存在或不是块设备：$item"
                 exit 1
             fi
-            chosen+=("$item")
+            # 分区与整盘同列时归一后去重（--disks sdb,sdb1 → 只清 sdb 一次，避免二次 umount 失败误报）
+            case " ${chosen[*]} " in
+                *" $item "*) ;;
+                *) chosen+=("$item") ;;
+            esac
         done
         [ "${#chosen[@]}" -gt 0 ] || { echo "--disks 未指定任何有效盘"; exit 1; }
     else

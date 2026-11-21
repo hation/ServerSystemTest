@@ -13,7 +13,7 @@
 #   MOUNT_LOG          挂载日志路径（默认 /root/stress-test/mount.log）
 #   LSBLK_BIN          块设备查询命令（默认 lsblk，测试可用伪造输出）
 #   BLKID_BIN          文件系统探测命令（默认 blkid，测试可用伪造输出）
-#   PARTED_BIN/PARTPROBE_BIN/UDEVADM_BIN/MKFS_BIN/MOUNT_BIN/UMOUNT_BIN/DF_BIN
+#   PARTED_BIN/PARTPROBE_BIN/UDEVADM_BIN/MKFS_BIN/MOUNT_BIN/UMOUNT_BIN/DF_BIN/WIPEFS_BIN
 #                      写操作与 df 命令接缝（默认同名系统命令）
 # 退出码：0=全部成功（含取消/无需操作）；1=用法/前置错误、含系统盘、存在跳过或失败盘
 # 说明：全程不 set -e；系统盘（df / 所在盘）任何分支硬跳过；每步操作写 mount.log。

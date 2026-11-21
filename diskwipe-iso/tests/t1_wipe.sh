@@ -14,6 +14,9 @@
 #   W8  wipefs -n 仍有残留：该盘失败（残留）、退出非 0
 #   W9  逐盘独立：sda 失败 + sdb 成功；汇总输出失败盘清单
 #   W10 类型判定失败（blkid 无输出）→ "未知"，不影响可清除
+#   W11 wipefs -n 命令失败 → 单独提示验证失败，退出非 0
+#   W12 挂载点含空格 → 整行卸载不拆词
+#   W13 无参数 → 打印用法提示并退出 1
 set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 trap 'rc=$?; cleanup_case; exit "$rc"' EXIT
@@ -22,7 +25,7 @@ echo "==== T1 核心逻辑（枚举/标注/清除）测试 ===="
 
 setup_case() { setup_tmp; install_fakes; }
 
-# ---------- W1：枚举过滤 + 类型标注 ----------
+# ---------- W1：枚举过滤 + 类型标注（真实探测格式） ----------
 CASE="W1 枚举过滤与类型标注"
 setup_case
 cat > "$ROOT/lsblk.table" <<'EOF'
@@ -37,9 +40,23 @@ sdd 200G disk
 sdd1 200G part /data
 nvme0n1 894G disk Samsung PM983 nvme
 nvme0n1p1 894G part Samsung PM983 nvme /nvme
+sde 500G disk
+sde1 500G part /boot
+sdf 1T disk
+sdf1 1T part
+sdg 300G disk
+sdg1 300G part
 EOF
+# GPT ESP：PARTTYPENAME="EFI System"（真实格式，非文本标志）
 add_blk_type sda1 vfat
-add_flag sda1 esp
+add_ptname sda1 "EFI System"
+# MBR Linux 根：ext4 + 活动标志 0x80（真实格式）
+add_blk_type sde1 ext4
+add_flag sde1 0x80
+# Windows 系统分区：ntfs
+add_blk_type sdf1 ntfs
+# 数据盘：ext4 无活动标志
+add_blk_type sdg1 ext4
 run_dw "$OUTF" dw_enum_disks
 check_rc 0 '枚举应退出 0'
 check_out 'sda 894G HGST 7K6000 sata /boot/efi,/home' 'sda 在列且挂载点逗号拼接'
@@ -52,9 +69,15 @@ check_not_out 'sdd1' '分区 sdd1 不得出现'
 check_not_out 'nvme0n1p1' '分区 nvme0n1p1 不得出现'
 run_dw "$OUTF" dw_is_system_disk sda
 check_rc 0 'sda 类型判定应退出 0'
-check_out '1' 'sda（vfat+esp）应为系统盘'
+check_out '1' 'sda（GPT vfat + PARTTYPENAME=EFI System）应为系统盘'
 run_dw "$OUTF" dw_is_system_disk sdb
 check_out '0' 'sdb（无分区）应为数据盘'
+run_dw "$OUTF" dw_is_system_disk sde
+check_out '1' 'sde（MBR ext4 + PARTFLAGS=0x80）应为系统盘'
+run_dw "$OUTF" dw_is_system_disk sdf
+check_out '1' 'sdf（ntfs）应为系统盘'
+run_dw "$OUTF" dw_is_system_disk sdg
+check_out '0' 'sdg（ext4 无 0x80 标志）应为数据盘'
 cleanup_case
 
 # ---------- W2：白名单外设备拒绝 ----------
@@ -212,6 +235,48 @@ run_wipe "$OUTF" sda
 check_rc 0 '类型未知不影响可清除'
 check_cmds 'wipefs -a /dev/sda' '仍应整盘清除'
 check_out '✓ 已恢复未初始化：/dev/sda' '应清除成功'
+cleanup_case
+
+# ---------- W11：wipefs -n 命令失败 ----------
+CASE="W11 wipefs -n 验证失败"
+setup_case
+cat > "$ROOT/lsblk.table" <<'EOF'
+NAME SIZE TYPE MODEL TRAN MOUNTPOINT
+sda 894G disk HGST 7K6000 sata
+sda1 512M part HGST 7K6000 sata /mnt
+EOF
+printf 'sda\n' > "$ROOT/wipefs.nfail"
+run_wipe "$OUTF" sda
+check_rc 1 'wipefs -n 失败应退出非 0'
+check_cmds 'umount /mnt' '应先卸载'
+check_cmds 'wipefs -a /dev/sda' '应整盘 wipefs -a'
+check_cmds 'wipefs -n /dev/sda' '应执行验证'
+check_out '✗ wipefs -n 验证失败：/dev/sda' '应输出验证失败原因'
+check_not_out '✗ 仍有签名残留' '命令失败不应误报为残留'
+check_not_out '已恢复未初始化' '不得误报成功'
+cleanup_case
+
+# ---------- W12：挂载点含空格 ----------
+CASE="W12 挂载点含空格"
+setup_case
+cat > "$ROOT/lsblk.table" <<'EOF'
+NAME SIZE TYPE MODEL TRAN MOUNTPOINT
+sda 894G disk HGST 7K6000 sata
+sda1 512M part HGST 7K6000 sata /mnt/my data
+EOF
+run_wipe "$OUTF" sda
+check_rc 0 '含空格挂载点清除应退出 0'
+check_cmds 'umount /mnt/my data' '应整行卸载含空格挂载点（不拆词）'
+check_cmds 'wipefs -a /dev/sda' '应整盘 wipefs -a'
+check_out '✓ 已恢复未初始化：/dev/sda' '应清除成功'
+cleanup_case
+
+# ---------- W13：无参数用法提示 ----------
+CASE="W13 无参数用法提示"
+setup_case
+run_wipe "$OUTF"
+check_rc 1 '无参数应退出 1'
+check_out '用法：wipe.sh' '应打印用法提示'
 cleanup_case
 
 finish

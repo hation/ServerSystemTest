@@ -79,25 +79,35 @@ dw_enum_disks() {
     '
 }
 
-# 输出该盘子树全部挂载点（盘自身 + 其分区），每行一个；无挂载输出空
+# 输出该盘子树全部挂载点（盘自身 + 其分区），每行一个；无挂载输出空。
+# 挂载点可能含空格：PKNAME 恒为末列，取中间字段原文；整盘挂载（无 PKNAME 列）取第 3 列。
 dw_disk_mountpoints() {
     ddev="$1"
     case "$ddev" in /dev/*) ddev="${ddev#/dev/}" ;; esac
     [ -n "$ddev" ] || return 0
     "$LSBLK_BIN" -o NAME,TYPE,MOUNTPOINT,PKNAME "/dev/$ddev" 2>/dev/null | awk '
         NR==1 { next }
-        { if ($3 != "") print $3 }
+        NF == 3 && $3 ~ /^\// { print $3; next }   # 整盘挂载（末列即挂载点）
+        NF >= 4 {
+            dmp=""
+            for (i=3; i<NF; i++) { if (dmp != "") dmp = dmp " "; dmp = dmp $i }
+            if (dmp != "") print dmp
+        }
     '
 }
 
-# OS 迹象判定：任一分区满足 → 1 系统盘；有分区但 blkid 探测不到类型 → 2 未知；
-# 无 OS 迹象且全部类型已知 → 0 数据盘。仅提示用，不影响可勾选。
+# OS 迹象判定（真实可命中的探测口径）：
+#   - GPT ESP：lsblk PARTTYPENAME 含 "EFI System"（MBR 0xef EFI 分区名同样含 "EFI"，一并命中）
+#   - MBR 活动分区：lsblk PARTFLAGS == 0x80（MBR 引导标志；GPT 无此概念）
+#   - Windows 系统分区：ntfs
+#   - blkid 探测不到任何类型 → 2 未知；无 OS 迹象且全部类型已知 → 0 数据盘。
+# 仅提示用，不影响可勾选。
 dw_is_system_disk() {
     ddev="$1"
     case "$ddev" in /dev/*) ddev="${ddev#/dev/}" ;; esac
     dparts=$("$LSBLK_BIN" -o NAME,TYPE,MOUNTPOINT,PKNAME "/dev/$ddev" 2>/dev/null | awk -v d="$ddev" '
         NR==1 { next }
-        $4 == d && $2 == "part" { print $1 }
+        $2 == "part" && $NF == d { print $1 }   # PKNAME 恒为末列（挂载点含空格也不移位）
     ')
     [ -n "$dparts" ] || { echo 0; return 0; }   # 无分区 → 数据盘
     dunknown=0
@@ -105,16 +115,22 @@ dw_is_system_disk() {
         dfstype=$("$BLKID_BIN" -s TYPE -o value "/dev/$dpart" 2>/dev/null)
         dbrc=$?
         if [ -z "$dfstype" ] || [ "$dbrc" -ne 0 ]; then dunknown=1; continue; fi
-        dflags=$("$LSBLK_BIN" -no PARTFLAGS "/dev/$dpart" 2>/dev/null)
         case "$dfstype" in
         vfat)
-            case "$dflags" in *boot*|*esp*|*BOOT*|*ESP*) echo 1; return 0 ;; esac
+            dptname=$("$LSBLK_BIN" -no PARTTYPENAME "/dev/$dpart" 2>/dev/null)
+            dflags=$("$LSBLK_BIN" -no PARTFLAGS "/dev/$dpart" 2>/dev/null)
+            # GPT ESP（PARTTYPENAME="EFI System"）/ MBR EFI 分区（0xef 名含 EFI）；
+            # 部分 MBR ESP 另置 0x80 活动标志，一并命中
+            if printf '%s\n' "$dptname" | grep -qi 'EFI'; then echo 1; return 0; fi
+            case "$dflags" in *0x80*) echo 1; return 0 ;; esac
             ;;
         ntfs)
             echo 1; return 0
             ;;
         ext4|xfs|btrfs)
-            case "$dflags" in *boot*|*BOOT*) echo 1; return 0 ;; esac
+            dflags=$("$LSBLK_BIN" -no PARTFLAGS "/dev/$dpart" 2>/dev/null)
+            # MBR 活动分区标志 0x80（GPT 根分区无引导标志，按设计 §8 口径不判系统）
+            case "$dflags" in *0x80*) echo 1; return 0 ;; esac
             ;;
         esac
     done
@@ -133,22 +149,32 @@ dw_wipe_disk() {
         return 1
     fi
     # 1) 卸载该盘全部子树挂载点（失败即中止该盘，不 wipefs）
-    for dmp in $(dw_disk_mountpoints "$ddev"); do
+    #    逐行读取（IFS= read -r）避免挂载点含空格被拆词；heredoc 而非管道，
+    #    避免 return 在管道子 shell 中失效
+    dwmps=$(dw_disk_mountpoints "$ddev")
+    while IFS= read -r dmp; do
+        [ -n "$dmp" ] || continue
         if ! "$UMOUNT_BIN" "$dmp" >/dev/null 2>&1; then
             echo "✗ 卸载失败：/dev/$ddev（挂载点 $dmp）"
             return 1
         fi
-    done
+    done <<EOF
+$dwmps
+EOF
     # 2) wipefs -a 整盘（清分区表 + 盘内全部 fs/raid/PV 签名）
     if ! "$WIPEFS_BIN" -a "/dev/$ddev" >/dev/null 2>&1; then
         echo "✗ wipefs -a 失败：/dev/$ddev"
         return 1
     fi
-    # 3) wipefs -n 验证：命令成功且输出为空 = 未初始化；仍输出签名或命令失败 → 残留失败
-    if dsigs=$("$WIPEFS_BIN" -n "/dev/$ddev" 2>/dev/null) && [ -z "$dsigs" ]; then
-        echo "✓ 已恢复未初始化：/dev/$ddev"
-        return 0
+    # 3) wipefs -n 验证：命令成功且输出为空 = 未初始化；命令失败与签名残留分开提示
+    if ! dsigs=$("$WIPEFS_BIN" -n "/dev/$ddev" 2>/dev/null); then
+        echo "✗ wipefs -n 验证失败：/dev/$ddev"
+        return 1
     fi
-    echo "✗ 仍有签名残留：/dev/$ddev"
-    return 1
+    if [ -n "$dsigs" ]; then
+        echo "✗ 仍有签名残留：/dev/$ddev"
+        return 1
+    fi
+    echo "✓ 已恢复未初始化：/dev/$ddev"
+    return 0
 }

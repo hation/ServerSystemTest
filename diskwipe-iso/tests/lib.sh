@@ -13,11 +13,16 @@
 #
 # 假 lsblk 表约定（lsblk.table，src/lib.sh 的解析同此约定）：
 #   列序 NAME SIZE TYPE MODEL TRAN MOUNTPOINT（空格分隔；MODEL 可含空格；
-#   为空的列（TRAN/挂载点/MODEL）直接省略；挂载点一律以 / 开头）。
+#   为空的列（TRAN/挂载点/MODEL）直接省略；挂载点一律以 / 开头、可含空格）。
 #   -o NAME,SIZE,TYPE,MODEL,TRAN,MOUNTPOINT            → 原样输出整表
-#   -o NAME,TYPE,MOUNTPOINT,PKNAME <dev>               → 输出该盘及子树行（PKNAME 由
-#                                                        名字推导：去尾部数字）
-#   -no PARTFLAGS <dev>                                → 按 lsblk.flags（"设备 标志"）返回
+#   -o NAME,TYPE,MOUNTPOINT,PKNAME <dev>               → 输出该盘及子树行（挂载点取
+#                                                        首个 / 开头字段起至行尾原文；
+#                                                        PKNAME 由名字推导：nvme0n1p1 去
+#                                                        p+数字、sda1 去尾部数字）
+#   -no PARTFLAGS <dev>                                → 按 lsblk.flags（"设备 标志"，
+#                                                        真实格式如 MBR 活动=0x80）
+#   -no PARTTYPENAME <dev>                             → 按 lsblk.ptname（"设备 类型名"，
+#                                                        真实格式如 GPT ESP="EFI System"）
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TEST_DIR/../.." && pwd)"
@@ -69,8 +74,11 @@ case "$1" in
         dev="${3#/dev/}"
         [ -f "$ROOT/lsblk.table" ] || exit 0
         awk -v d="$dev" '"'"'NR==1{next}{
-            name=$1; type=$3; mps=""
-            if ($NF ~ /^\//) mps=$NF
+            name=$1; type=$3
+            mps=""
+            for (i=4; i<=NF; i++) {
+                if ($i ~ /^\//) { mps=$i; for (j=i+1; j<=NF; j++) mps=mps " " $j; break }
+            }
             pk=""
             if (name != d) {
                 pk=name
@@ -88,6 +96,11 @@ case "$1" in
         dev="${3#/dev/}"
         [ -f "$ROOT/lsblk.flags" ] || exit 0
         awk -v d="$dev" '"'"'$1==d { print $2 }'"'"' "$ROOT/lsblk.flags"
+        ;;
+    PARTTYPENAME)
+        dev="${3#/dev/}"
+        [ -f "$ROOT/lsblk.ptname" ] || exit 0
+        awk -v d="$dev" '"'"'$1==d { $1=""; sub(/^ /, ""); print }'"'"' "$ROOT/lsblk.ptname"
         ;;
     esac
     ;;
@@ -129,6 +142,11 @@ a)
     ;;
 n)
     printf "wipefs -n %s\n" "$dev" >> "$ROOT/cmds.txt"
+    if [ -f "$ROOT/wipefs.nfail" ]; then
+        while IFS= read -r f; do
+            [ "$f" = "$devname" ] && exit 1
+        done < "$ROOT/wipefs.nfail"
+    fi
     [ -f "$ROOT/wipefs.sigs" ] && cat "$ROOT/wipefs.sigs"
     ;;
 esac
@@ -150,7 +168,12 @@ add_blk_type() {
     printf '%s %s\n' "$1" "$2" >> "$ROOT/blk.type"
 }
 
-# 追加分区标志条目：add_flag <分区> <标志>（如 esp / boot / 0x80）
+# 追加分区类型名条目：add_ptname <分区> <类型名>（真实格式，如 GPT ESP="EFI System"）
+add_ptname() {
+    printf '%s %s\n' "$1" "$2" >> "$ROOT/lsblk.ptname"
+}
+
+# 追加分区标志条目：add_flag <分区> <标志>（真实格式，如 MBR 活动=0x80）
 add_flag() {
     printf '%s %s\n' "$1" "$2" >> "$ROOT/lsblk.flags"
 }

@@ -22,12 +22,17 @@
 - 启动介质保护：启动 U 盘（`TRAN=usb`）与光驱（`sr*`）**硬排除**，绝不误清；设备名有代码层白名单校验（仅 `sd[a-z]` / `nvme[0-9]n[0-9]` / `vd[a-z]` / `mmcblk[0-9]`，排除 `loop*` / `ram*`）。
 - 不自动关机：清完后由现场手动断电/重启（屏幕提示）。
 
+> **白名单限制**：`nvme[0-9]n[0-9]` 与 `mmcblk[0-9]` 仅匹配单个数字（即 nvme0n1~nvme9n1、mmcblk0~mmcblk9），`sd` 仅到 `sdz`（不含 sdaa 等）；超出范围的盘（如 nvme10n1、mmcblk10、sdaa）**不会列出，也绝不会被清除**——现场如遇此类盘请先调整盘位/名称使其落入白名单。
+>
+> **注意**：启动介质保护仅针对 `TRAN=usb` 的 U 盘与 `sr*` 光驱；**若直接从硬盘启动本 iso，该硬盘不会被排除，会正常出现在可清列表**（属设计口径，勿在装有系统/数据的硬盘上启动后回车清盘）。
+
 ## 2. 目录结构
 
 ```
 diskwipe-iso/
 ├── README.md            本说明
 ├── VERSION              版本号（当前 1.0.0，iso 文件名含版本）
+├── .gitignore           忽略构建产物 output/（不入库）
 ├── build.sh             Windows 一键构建入口（经 WSL Ubuntu 执行）
 ├── build-lib.sh         构建函数库（apt 依赖→组装 initramfs→cpio→grub.cfg→grub-mkrescue→isoinfo 校验）
 ├── src/
@@ -36,7 +41,7 @@ diskwipe-iso/
 │   ├── wipe.sh          清除入口（逐盘 umount→wipefs -a→wipefs -n 验证）
 │   └── lib.sh           共享库（盘枚举/白名单/挂载点/类型标注/单盘清除）
 ├── output/              构建产物 diskwipe-v<版本>.iso（git 忽略，可随时由 build.sh 再生成）
-└── tests/               离线测试（t1 核心逻辑 / t2 菜单 / t3 initramfs，共 167 项用例）
+└── tests/               离线测试（t1 核心逻辑 / t2 菜单 / t3 initramfs，共 176 项用例）
 ```
 
 ## 3. 构建（Windows 本机一键）
@@ -56,7 +61,7 @@ bash diskwipe-iso/build.sh
 **构建流程**（全部在 WSL 虚拟盘文件系统 + `output/` 内产出 iso **文件**，绝不写任何真实块设备）：
 
 1. apt 安装构建依赖（`busybox-static xorriso mtools grub-pc-bin grub-efi-amd64-bin linux-image-generic`，另补装 `genisoimage` 提供 isoinfo）；
-2. 组装 initramfs rootfs：静态 busybox + 全部 applet；util-linux 动态 `wipefs`/`lsblk`（`ldd` 收集 .so 依赖按原路径布局拷入，chroot 实测可运行）；磁盘驱动白名单模块目录 + `depmod` 生成 `modules.dep`；`src/` 四个脚本（`init` 强制 `chmod +x`，内核要求 /init 可执行）；
+2. 组装 initramfs rootfs：静态 busybox + 全部 applet；util-linux 动态 `wipefs`/`lsblk`（`ldd` 收集 .so 依赖按原路径布局拷入，chroot 实测可运行）；磁盘驱动白名单模块目录 + **zstd 解压**（`.ko.zst` → `.ko`，busybox 无 zstd 解压能力）后 `depmod` 生成 `modules.dep`；`src/` 四个脚本（`init` 强制 `chmod +x`，内核要求 /init 可执行）；
 3. cpio 打包 initrd.img（gzip）；
 4. 写 `boot/grub/grub.cfg`（内核参数 `console=tty0 console=ttyS0,115200n8`），放置 vmlinuz/initrd.img 到 rootfs/boot/；
 5. `grub-mkrescue` 生成 **BIOS + UEFI 双引导** iso（兼容主流服务器；现场 Secure Boot 不开，无需签名）；
@@ -102,7 +107,7 @@ lsblk            # 目标盘名下无分区行
 lsblk -f         # 目标盘无文件系统列（FSTYPE 为空）
 ```
 
-**控制台三态可用**：显示器直连、IPMI 虚拟 KVM、串口 SOL（内核已带 `console=tty0 console=ttyS0,115200n8`，菜单读 `/dev/console`）。
+**控制台三态可用**：显示器直连、IPMI 虚拟 KVM、串口 SOL（内核已带 `console=tty0 console=ttyS0,115200n8`，菜单读写经 `/dev/console` 继承的标准输入输出）。
 
 ## 6. 交互说明
 
@@ -149,7 +154,7 @@ lsblk -f         # 目标盘无文件系统列（FSTYPE 为空）
 
 ## 8. 测试
 
-**运行全部测试**（本机 Git Bash；共 167 项用例，任一失败整体退出非 0）：
+**运行全部测试**（本机 Git Bash；共 176 项用例，任一失败整体退出非 0）：
 
 ```bash
 bash diskwipe-iso/tests/run-all.sh
@@ -159,7 +164,7 @@ bash diskwipe-iso/tests/run-all.sh
   ```bash
   "C:\Program Files\Git\bin\bash.exe" diskwipe-iso/tests/run-all.sh
   ```
-- 三个测试组：`t1_wipe`（核心逻辑：枚举/类型标注/umount→wipefs→验证/逐盘独立，75 项）、`t2_menu`（交互：默认全选/排除/YES/0 退出/循环刷新/仅启动介质，54 项）、`t3_init`（initramfs 启动编排：挂载→模块白名单→mdev→exec menu.sh，失败进救援 shell，38 项）。
+- 三个测试组：`t1_wipe`（核心逻辑：枚举/类型标注/umount→wipefs→验证/逐盘独立/整盘含空格挂载点，79 项）、`t2_menu`（交互：默认全选/排除/YES/0 退出/循环刷新/仅启动介质/TRAN 空型号显示，59 项）、`t3_init`（initramfs 启动编排：挂载→模块白名单→mdev→exec menu.sh，失败进救援 shell，38 项）。
 - **测试安全**：全部用例在临时目录以**假件注入**运行（`LSBLK_BIN`/`BLKID_BIN`/`WIPEFS_BIN`/`UMOUNT_BIN` 接缝变量指向假命令），wipefs 假件只把调用参数记入 `cmds.txt`、绝不执行真实 wipefs，**绝不触碰本机真实块设备**。
 
 **语法校验**（initramfs 运行时只有 busybox ash，脚本必须保持 POSIX/ash 兼容）：

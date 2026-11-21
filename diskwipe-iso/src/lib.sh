@@ -50,10 +50,16 @@ dw_enum_disks() {
             name=$1; size=$2
             mps=""; t=NF
             if ($NF ~ /^\//) { mps=$NF; t=NF-1 }
-            tran=""; if (t > 3) tran=$t
+            # TRAN 为空时挂载点前一字段实为型号末词——仅当该字段属于已知 TRAN 集合
+            # （sata/sas/nvme/usb/spi/ata/scsi/virtio/pcie）才视为 TRAN，否则并入型号
+            tran=""; mend=t
+            if (t > 3) {
+                if ($t ~ /^(sata|sas|nvme|usb|spi|ata|scsi|virtio|pcie)$/) tran=$t
+                else mend=t+1   # 该字段属型号（TRAN 为空），型号区间延伸到它（含）
+            }
             if (tran == "usb") next          # 排除启动 U 盘
             model=""
-            for (i=4; i<t; i++) { if (model != "") model = model " "; model = model $i }
+            for (i=4; i<mend; i++) { if (model != "") model = model " "; model = model $i }
             if (model == "") model = "未知型号"
             accmp(name, mps)
             names[++nd]=name; sizes[nd]=size; models[nd]=model; trans[nd]=tran
@@ -80,18 +86,25 @@ dw_enum_disks() {
 }
 
 # 输出该盘子树全部挂载点（盘自身 + 其分区），每行一个；无挂载输出空。
-# 挂载点可能含空格：PKNAME 恒为末列，取中间字段原文；整盘挂载（无 PKNAME 列）取第 3 列。
+# 挂载点可能含空格：取「首个 / 开头字段起至行尾」，再按末字段是否为设备名（PKNAME）
+# 形态决定去留——分区行 PKNAME 恒为末列去掉；整盘挂载行无 PKNAME 保留全文（不拆词）。
 dw_disk_mountpoints() {
     ddev="$1"
     case "$ddev" in /dev/*) ddev="${ddev#/dev/}" ;; esac
     [ -n "$ddev" ] || return 0
     "$LSBLK_BIN" -o NAME,TYPE,MOUNTPOINT,PKNAME "/dev/$ddev" 2>/dev/null | awk '
         NR==1 { next }
-        NF == 3 && $3 ~ /^\// { print $3; next }   # 整盘挂载（末列即挂载点）
-        NF >= 4 {
-            dmp=""
-            for (i=3; i<NF; i++) { if (dmp != "") dmp = dmp " "; dmp = dmp $i }
-            if (dmp != "") print dmp
+        {
+            mpstart=0
+            for (i=3; i<=NF; i++) if ($i ~ /^\//) { mpstart=i; break }
+            if (mpstart == 0) next
+            dmp=$mpstart
+            for (j=mpstart+1; j<=NF; j++) dmp=dmp " " $j
+            # 去掉尾部 PKNAME（恒为末列、设备名形态；整盘挂载行无 PKNAME 则保留全文）
+            if ($NF ~ /^(sd[a-z][0-9]*|nvme[0-9]+n[0-9]+p?[0-9]*|vd[a-z][0-9]*|mmcblk[0-9]+p?[0-9]*|dm-[0-9]+|md[0-9]+|loop[0-9]+|sr[0-9]+)$/) {
+                sub(/ [^ ]+$/, "", dmp)
+            }
+            print dmp
         }
     '
 }

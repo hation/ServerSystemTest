@@ -16,6 +16,7 @@
 #   M6  无盘可清（仅 usb+光驱）：提示"仅发现启动介质"、退出、无 wipe.sh 调用
 #   M7  清除后循环：再次列出（盘已清后状态刷新：sda 由系统盘变为数据盘）
 #   M8  输入 0 退出：打印"可断电/重启"提示、退出 0
+#   M9  TRAN 为空 + 型号含空格：型号完整显示、末词不误作 TRAN
 set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 trap 'rc=$?; cleanup_case; exit "$rc"' EXIT
@@ -202,7 +203,9 @@ case "$1" in
     NAME,TYPE,MOUNTPOINT,PKNAME)
         dev="${3#/dev/}"
         [ -f "$ROOT/lsblk.table" ] || exit 0
-        awk -v d="$dev" -v w="$wiped" 'NR==1{next}{
+        # 真实 lsblk 恒有表头（lib.sh 的 NR==1 跳过），此处同样先输出表头
+        awk -v d="$dev" -v w="$wiped" 'BEGIN { print "NAME TYPE MOUNTPOINT PKNAME" }
+            NR==1{next}{
             name=$1; type=$3
             mps=""
             for (i=4; i<=NF; i++) {
@@ -256,6 +259,21 @@ run_menu '0' "$OUTF"
 check_rc 0 '应退出 0'
 check_out '可断电' '应打印可断电/重启提示'
 check_no_cmds '0 退出不得执行清除'
+cleanup_case
+
+# ---------- M9：TRAN 为空 + 型号含空格（末词不得误作 TRAN） ----------
+CASE="M9 TRAN 空型号含空格显示正确"
+setup_case
+cat > "$ROOT/lsblk.table" <<'EOF'
+NAME SIZE TYPE MODEL TRAN MOUNTPOINT
+sda 894G disk HGST 7K6000  /mnt/data
+EOF
+run_menu '0' "$OUTF"
+check_rc 0 '应正常退出 0'
+check_out '/dev/sda  894G   HGST 7K6000  数据盘' 'TRAN 为空时型号应完整显示（HGST 7K6000 不截断）'
+check_not_out '(7K6000)' '不得把型号末词 7K6000 误作 TRAN 显示'
+check_not_out '7K6000 (7K6000)' '不得出现 TRAN 占位误判'
+check_no_cmds '仅列盘不得执行清除'
 cleanup_case
 
 finish

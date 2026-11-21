@@ -5,7 +5,8 @@
 # 流程（与设计 §10 一致）：
 #   1) apt 安装构建依赖（幂等：已装自动跳过）
 #   2) 组装 rootfs/：静态 busybox + 全部 applet 链接、util-linux 动态 wipefs/lsblk
-#      （ldd 收集 .so 依赖按原路径布局拷入）、白名单驱动模块目录 + depmod、
+#      （ldd 收集 .so 依赖按原路径布局拷入）、白名单驱动模块目录 + zstd 解压
+#      （.ko.zst → .ko，busybox 无 zstd 解压）+ depmod、
 #      src 四脚本（init 强制 chmod +x——内核要求 /init 可执行）
 #   3) cpio 打包 initrd.img（gzip）
 #   4) 写 boot/grub/grub.cfg（linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8
@@ -21,8 +22,10 @@
 # 模块白名单（与 src/init 的 DRIVE_MODULES 一致，见设计 §6.2）
 DW_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod"
 # apt 构建依赖（幂等：已装自动跳过；grub-mkrescue 双引导需要 grub-pc-bin(BIOS) +
-# grub-efi-amd64-bin(UEFI)，mtools 提供 mformat 生成 EFI 镜像）
-DW_APT_PKGS="busybox-static xorriso mtools grub-pc-bin grub-efi-amd64-bin linux-image-generic"
+# grub-efi-amd64-bin(UEFI)，mtools 提供 mformat 生成 EFI 镜像；
+# zstd：Ubuntu 24.04 generic 内核 CONFIG_MODULE_COMPRESS_ZSTD，模块全部 .ko.zst 压缩，
+# busybox 静态版无 zstd 解压能力 → 构建期统一解压为 .ko，见 dw_assemble_rootfs 2.3 步）
+DW_APT_PKGS="busybox-static xorriso mtools grub-pc-bin grub-efi-amd64-bin linux-image-generic zstd"
 
 dw_fail() {
     echo "✗ $*" >&2
@@ -120,6 +123,15 @@ dw_assemble_rootfs() {
             cp "/lib/modules/$kver/$mf" "$rootfs/lib/modules/$kver/$mf" || { dw_fail "拷贝 $mf 失败"; return 1; }
         fi
     done
+    # Ubuntu 24.04 generic 内核 CONFIG_MODULE_COMPRESS_ZSTD：模块文件为 .ko.zst；
+    # busybox 静态版无 zstd 解压能力（modprobe 加载 .ko.zst 必失败）→ 构建期统一
+    # 解压为 .ko。模块经 $DW_SUDO 拷入属主为 root，解压同样走 $DW_SUDO。
+    nzst=$(find "$rootfs/lib/modules" -name '*.ko.zst' 2>/dev/null | wc -l)
+    if [ "$nzst" -gt 0 ]; then
+        $DW_SUDO find "$rootfs/lib/modules" -name '*.ko.zst' -exec zstd -d --rm {} + \
+            || { dw_fail "解压 .ko.zst 内核模块失败（zstd 未安装？）"; return 1; }
+        echo "     已把 $nzst 个 .ko.zst 模块解压为 .ko（busybox 无 zstd 解压能力）"
+    fi
     depmod -b "$rootfs" "$kver" || { dw_fail "depmod 生成模块依赖失败"; return 1; }
     echo "     模块目录已拷入并生成 modules.dep：$(du -sh "$rootfs/lib/modules/$kver" | awk '{print $1}')"
 
@@ -223,6 +235,14 @@ dw_verify_iso() {
         dash -n "$proj/src/$f" || { dw_fail "dash -n 语法错误：src/$f"; return 1; }
     done
     echo "     校验通过：src 四脚本 dash -n 语法 0 错误"
+
+    # 6.5 initrd 内模块必须为未压缩 .ko（busybox 无 zstd 解压，.ko.zst 加载必失败）
+    if find "$build_dir/initrdx/lib/modules" -name '*.ko.zst' 2>/dev/null | grep -q .; then
+        dw_fail "initrd 内仍有 .ko.zst 模块（busybox 无法解压加载）"; return 1
+    fi
+    nko=$(find "$build_dir/initrdx/lib/modules" -name '*.ko' 2>/dev/null | wc -l)
+    [ "$nko" -gt 0 ] || { dw_fail "initrd 内无任何未压缩 .ko 模块"; return 1; }
+    echo "     校验通过：initrd 内模块全部为未压缩 .ko（共 $nko 个，无 .ko.zst 残留）"
 }
 
 # ---------- 主入口 ----------

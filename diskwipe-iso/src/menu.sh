@@ -16,8 +16,9 @@ WIPE_SH="$(dirname "$0")/wipe.sh"
 
 # 从 dw_enum_disks 输出行提取展示字段，输出 "设备|容量|型号|TRAN大写"（| 分隔）。
 # 行格式：设备 容量 型号[可含空格] TRAN[可空] 挂载点[可含空格]。
-# 解析：从右往左定位挂载点起始（首个以 / 开头的字段），其前一个字段为 TRAN、再前为型号；
-#       TRAN 为空时型号占位"未知型号"与挂载点相邻，据占位词与真实 TRAN 区分。
+# 解析：从右往左定位挂载点起始（首个以 / 开头的字段），其前一个字段仅当属于已知
+#       TRAN 集合（sata/sas/nvme/usb/spi/ata/scsi/virtio/pcie）才视为 TRAN；
+#       否则（TRAN 为空）该字段是型号末词，并入型号。
 disk_display_fields() {
     dline="$1"
     printf '%s\n' "$dline" | awk '
@@ -27,22 +28,24 @@ disk_display_fields() {
             for (i=NF; i>=3; i--) if ($i ~ /^\//) { mpstart=i; break }
             model=""; tran=""
             if (mpstart == 0) {
-                if (NF == 3) model=$3
-                else {
+                if (NF == 3) {
+                    model=$3
+                } else if ($NF ~ /^(sata|sas|nvme|usb|spi|ata|scsi|virtio|pcie)$/) {
                     tran=$NF
                     for (i=3; i<NF; i++) model=model " " $i
-                    model=substr(model,2)
+                } else {
+                    for (i=3; i<=NF; i++) model=model " " $i
                 }
+                model=substr(model,2)
             } else {
                 pre=$(mpstart-1)
-                if (pre == "未知型号") {
-                    for (i=3; i<=mpstart-1; i++) model=model " " $i
-                    model=substr(model,2)
-                } else {
+                if (pre ~ /^(sata|sas|nvme|usb|spi|ata|scsi|virtio|pcie)$/) {
                     tran=pre
                     for (i=3; i<mpstart-1; i++) model=model " " $i
-                    model=substr(model,2)
+                } else {
+                    for (i=3; i<mpstart; i++) model=model " " $i
                 }
+                model=substr(model,2)
             }
             print dev "|" size "|" model "|" tran "|" toupper(tran)
         }

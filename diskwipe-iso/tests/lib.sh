@@ -15,7 +15,8 @@
 #   列序 NAME SIZE TYPE MODEL TRAN MOUNTPOINT（空格分隔；MODEL 可含空格；
 #   为空的列（TRAN/挂载点/MODEL）直接省略；挂载点一律以 / 开头、可含空格）。
 #   -o NAME,SIZE,TYPE,MODEL,TRAN,MOUNTPOINT            → 原样输出整表
-#   -o NAME,TYPE,MOUNTPOINT,PKNAME <dev>               → 输出该盘及子树行（挂载点取
+#   -o NAME,TYPE,MOUNTPOINT,PKNAME <dev>               → 输出表头 + 该盘及子树行
+#                                                        （与真实 lsblk 一致带表头；挂载点取
 #                                                        首个 / 开头字段起至行尾原文；
 #                                                        PKNAME 由名字推导：nvme0n1p1 去
 #                                                        p+数字、sda1 去尾部数字）
@@ -73,7 +74,9 @@ case "$1" in
     NAME,TYPE,MOUNTPOINT,PKNAME)
         dev="${3#/dev/}"
         [ -f "$ROOT/lsblk.table" ] || exit 0
-        awk -v d="$dev" '"'"'NR==1{next}{
+        # 真实 lsblk 恒有表头（lib.sh 的 NR==1 跳过），此处同样先输出表头
+        awk -v d="$dev" '"'"'BEGIN { print "NAME TYPE MOUNTPOINT PKNAME" }
+            NR==1{next}{
             name=$1; type=$3
             mps=""
             for (i=4; i<=NF; i++) {

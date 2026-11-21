@@ -17,6 +17,7 @@
 #   W11 wipefs -n 命令失败 → 单独提示验证失败，退出非 0
 #   W12 挂载点含空格 → 整行卸载不拆词
 #   W13 无参数 → 打印用法提示并退出 1
+#   W14 整盘挂载点含空格（无 PKNAME 行）→ 末 token 不截断、整行卸载
 set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 trap 'rc=$?; cleanup_case; exit "$rc"' EXIT
@@ -277,6 +278,20 @@ setup_case
 run_wipe "$OUTF"
 check_rc 1 '无参数应退出 1'
 check_out '用法：wipe.sh' '应打印用法提示'
+cleanup_case
+
+# ---------- W14：整盘挂载点含空格（无 PKNAME 行，末 token 不得截断） ----------
+CASE="W14 整盘挂载点含空格"
+setup_case
+cat > "$ROOT/lsblk.table" <<'EOF'
+NAME SIZE TYPE MODEL TRAN MOUNTPOINT
+sda 894G disk HGST 7K6000 sata /mnt/my data
+EOF
+run_wipe "$OUTF" sda
+check_rc 0 '整盘含空格挂载点清除应退出 0'
+check_cmds 'umount /mnt/my data' '应整行卸载整盘含空格挂载点（末 token 不截断）'
+check_cmds 'wipefs -a /dev/sda' '应整盘 wipefs -a'
+check_out '✓ 已恢复未初始化：/dev/sda' '应清除成功'
 cleanup_case
 
 finish

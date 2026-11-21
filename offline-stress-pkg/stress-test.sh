@@ -1,7 +1,7 @@
 #!/bin/bash
 # stress-test.sh —— 压测主控脚本（Kylin V10 SP3，三类机型 CPU/内存/硬盘压测）
 # 用法：
-#   bash stress-test.sh start <cpu|mem|hdd|combo> [--model 5380|7380|7360|auto] [--timeout 10h] \
+#   bash stress-test.sh start <cpu|mem|hdd|combo> [--model <型号>|auto] [--timeout 10h] \
 #       [--cpu N] [--vm N] [--vm-bytes X] [--hdd-bytes X] [--dirs "d1 d2"] [--sysdisk] [--sysdisk-only] \
 #       [--peer-disks N]
 #   说明：hdd 模式无 /mnt/HDD* 挂载点时加 --sysdisk 可仅压系统盘；--sysdisk-only 无论是否有数据盘都只压系统盘；
@@ -58,7 +58,7 @@ SCRIPT="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 usage() {
     cat <<'EOF'
 用法:
-  bash stress-test.sh start <cpu|mem|hdd|combo> [--model 5380|7380|7360|auto] [--timeout 10h] \
+  bash stress-test.sh start <cpu|mem|hdd|combo> [--model <型号>|auto] [--timeout 10h] \
       [--cpu N] [--vm N] [--vm-bytes X] [--hdd-bytes X] [--dirs "d1 d2"] [--sysdisk] [--sysdisk-only] \
       [--peer-disks N]
   bash stress-test.sh status

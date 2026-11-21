@@ -119,9 +119,40 @@ cpu_workers_auto() {
     return 0
 }
 
-# 机型标称逻辑线程数（仅用于报告标注与交叉校验）
+# 从 lscpu/CPUINFO 提取 CPU 型号（多品牌）：
+#   海光 "Hygon C86-3G 5380 ..." → "5380"（纯数字）
+#   AMD "AMD EPYC 7763 ..." → "EPYC-7763"
+#   Intel "Intel(R) Xeon(R) Gold 6338 ..." → "Xeon-6338"
+# 兼容中英文 lscpu 输出（Model name / 型号名称）、大小写与多空格；无品牌匹配输出空串（调用方回退逻辑线程分界）
+detect_cpu_model() {
+    local s=""
+    s=$("$LSCPU_BIN" 2>/dev/null | grep -iE "Model name|型号名称" | head -1)
+    [ -z "$s" ] && s=$(grep -iE "model name" "$CPUINFO" 2>/dev/null | head -1)
+    case "$s" in
+        *[Cc]86-3[Gg]*)
+            echo "$s" | sed -nE 's/.*[Cc]86-3[Gg][[:space:]]+([0-9]+).*/\1/p' | head -1 ;;
+        *[Ee][Pp][Yy][Cc]*)
+            echo "$s" | sed -nE 's/.*[Ee][Pp][Yy][Cc][[:space:]]*([0-9]+).*/EPYC-\1/p' | head -1 ;;
+        *[Xx][Ee][Oo][Nn]*)
+            # 取 Xeon 后第一组 3~4 位连续数字（跳过 E5- 这类 1~2 位嵌入数字），输出统一 Xeon-<数字>
+            echo "$s" | sed -nE 's/.*[Xx][Ee][Oo][Nn][^0-9]*([0-9]{1,2}[^0-9]+)*([0-9]{3,4})([^0-9]|$).*/Xeon-\2/p' | head -1 ;;
+        *) echo "" ;;
+    esac
+}
+
+# 机型标称逻辑线程数（仅用于报告标注与交叉校验）：海光 5380/7360/7380 + AMD EPYC / Intel Xeon 典型型号；
+# 未知型号输出空串（调用方跳过标称校验、不误报）
 nominal_threads() {
-    case "$1" in 5380) echo 64 ;; 7360) echo 96 ;; 7380) echo 128 ;; *) echo "" ;; esac
+    case "$1" in
+        5380) echo 64 ;;
+        7360) echo 96 ;;
+        7380) echo 128 ;;
+        EPYC-7763) echo 128 ;;
+        EPYC-7543) echo 64 ;;
+        Xeon-6338) echo 64 ;;
+        Xeon-8380) echo 112 ;;
+        *) echo "" ;;
+    esac
 }
 
 # 实测线程数与机型标称值交叉校验：偏差 >10% 时提示并记日志，不改变任何参数。

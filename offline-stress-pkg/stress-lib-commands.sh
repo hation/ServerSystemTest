@@ -71,21 +71,65 @@ cmd_start() {
     # 保证机型交叉校验、内存推导等前置步骤的日志都能落盘
     mkdir -p "$STRESS_TEST_ROOT" || { echo "无法创建结果根目录：$STRESS_TEST_ROOT"; exit 1; }
 
-    # 机型解析（缺省 auto）：mem>=800G→7380；nproc>=120→7380；nproc>=90→7360；否则 5380
+    # 机型解析（缺省 auto）：优先从 CPU 信息智能识别型号（lscpu "Model name" / /proc/cpuinfo "model name"，
+    # 多品牌：海光 C86-3G 后型号数字如 5380/9800、AMD EPYC-xxxx、Intel Xeon-xxxx，兼容中英文输出）；
+    # 识别失败回退逻辑线程分界（5380=64、7360=96、7380=128，含内存兜底）。
+    # 识别结果与实际逻辑线程交叉校验：不一致（偏差>10%）时明确提示"型号识别结果与实测线程不符"；
+    # 仅海光四位数字型号标称与实测矛盾时才按实测线程分界修正（AMD/Intel 品牌型号保留品牌标注、不做分界修正，
+    # 避免把 EPYC/Xeon 误标成海光档位）；识别来源写入启动日志与 run-config 机型字段，便于复核。
     if [ "$model" = "auto" ]; then
-        local mem_gb n
-        mem_gb=$(awk '/^MemTotal:/{printf "%.0f", $2/1048576}' "$MEMINFO_FILE" 2>/dev/null)
-        [ -z "$mem_gb" ] && mem_gb=0
-        n=$(logical_cpus)
-        case "$n" in ''|*[!0-9]*) n=0 ;; esac
-        if [ "$mem_gb" -ge 800 ]; then model=7380
-        elif [ "$n" -ge 120 ]; then model=7380
-        elif [ "$n" -ge 90 ]; then model=7360
-        else model=5380; fi
-        echo "检测到机型 $model（仅用于报告标注与交叉校验）"
+        local detected mem_gb n src
+        detected=$(detect_cpu_model)
+        if [ -n "$detected" ]; then
+            model="$detected"
+            src="智能识别 CPU 信息"
+            n=$(logical_cpus)
+            case "$n" in ''|*[!0-9]*) n=0 ;; esac
+            if [ "$n" -ge 1 ]; then
+                local nominal diff pct fixed=""
+                nominal=$(nominal_threads "$model")
+                if [ -n "$nominal" ]; then
+                    diff=$(( nominal - n )); [ "$diff" -lt 0 ] && diff=$(( -diff ))
+                    if [ $(( diff * 100 )) -gt $(( nominal * 10 )) ]; then
+                        pct=$(( diff * 100 / nominal ))
+                        echo "型号识别结果与实测线程不符（检测到机型 $model 标称 ${nominal} 线程，实测 ${n} 线程，偏差 ${pct}%）"
+                        # 仅海光四位数字型号标称与实测矛盾时按实测线程分界修正；
+                        # AMD/Intel 品牌型号（EPYC-xxxx/Xeon-xxxx）无海光型号概念，保留品牌标注、不做分界修正
+                        case "$model" in
+                            [0-9][0-9][0-9][0-9])
+                                if   [ "$n" -ge 120 ]; then fixed=7380
+                                elif [ "$n" -ge 90 ];  then fixed=7360
+                                elif [ "$n" -ge 64 ];  then fixed=5380
+                                fi
+                                ;;
+                        esac
+                        if [ -n "$fixed" ] && [ "$fixed" != "$model" ]; then
+                            echo "已按实测线程修正机型：$model → $fixed"
+                            model="$fixed"
+                        fi
+                    fi
+                fi
+            fi
+        else
+            mem_gb=$(awk '/^MemTotal:/{printf "%.0f", $2/1048576}' "$MEMINFO_FILE" 2>/dev/null)
+            [ -z "$mem_gb" ] && mem_gb=0
+            n=$(logical_cpus)
+            case "$n" in ''|*[!0-9]*) n=0 ;; esac
+            if   [ "$n" -ge 120 ]; then model=7380
+            elif [ "$n" -ge 90 ];  then model=7360
+            elif [ "$n" -ge 64 ];  then model=5380
+            # 线程不可用时的兜底（按内存粗略匹配）
+            elif [ "$mem_gb" -ge 800 ]; then model=7380
+            elif [ "$mem_gb" -ge 450 ]; then model=7360
+            else model=5380; fi
+            src="逻辑线程分界/内存兜底（CPU 信息识别失败）"
+        fi
+        echo "检测到机型 $model（来源: $src）"
+        log_op "model-detect 机型 $model（来源: $src）"
     fi
-    case "$model" in 5380|7380|7360) ;;
-        *) echo "未知机型：$model（应为 5380|7380|7360|auto）"; exit 1 ;;
+    case "$model" in
+        [0-9][0-9][0-9][0-9]|EPYC-[0-9][0-9]*|Xeon-[0-9][0-9]*) ;;
+        *) echo "未知机型：$model（应为品牌-型号格式：海光四位数字型号如 5380|7380|7360，AMD EPYC-xxxx，Intel Xeon-xxxx，或 auto）"; exit 1 ;;
     esac
 
     # CPU 参数：按逻辑线程推导（显式 --cpu 直接使用）；hdd 模式不推导、不校验

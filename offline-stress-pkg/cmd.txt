@@ -1,3 +1,30 @@
+最新命令：
+cd ~/offline-stress-pkg
+sudo bash install.sh
+bash verify.sh
+
+中高强度整机压测办法（硬盘<=7块的时候使用，默认压测10小时）
+sudo bash oneclick.sh full
+
+自定义时间：
+sudo bash oneclick.sh full --timeout 10h
+
+同类办法(默认压测10小时)
+sudo bash oneclick.sh
+2
+
+求稳强度整机压测办法（硬盘>7块时使用，默认压测10小时）
+sudo bash oneclick.sh all
+
+自定义时间：
+sudo bash oneclick.sh all --timeout 10h
+
+同类办法(默认压测10小时)
+sudo bash oneclick.sh
+1
+
+
+
 所有命令：
 cd ~/offline-stress-pkg
 sudo bash install.sh

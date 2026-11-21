@@ -5,6 +5,8 @@
 #   bash disk-mount.sh mount [--disks sdb,sdc] [--yes] [--rebuild] [--dry-run]
 #                                               # 逐盘选择→计划确认→挂载到 /mnt/HDDxx（--yes 跳过 y 确认）
 #   bash disk-mount.sh umount [--all]           # 卸载全部已挂载测试盘（--all 跳过确认）
+#   bash disk-mount.sh clean [--disks sdb,sdc] [--yes] [--dry-run]
+#                                               # 卸载挂载点→wipefs -a 整盘→partprobe（一键清空非系统盘、非U盘）
 # 环境变量（测试接缝）：
 #   DRY_RUN=1          只打印执行计划，不执行任何写操作（含不写 mount.log）
 #   SKIP_ROOT_CHECK=1  跳过 root 检查（仅本地测试用）
@@ -30,6 +32,7 @@ MKFS_BIN="${MKFS_BIN:-mkfs.ext4}"
 MOUNT_BIN="${MOUNT_BIN:-mount}"
 UMOUNT_BIN="${UMOUNT_BIN:-umount}"
 DF_BIN="${DF_BIN:-df}"
+WIPEFS_BIN="${WIPEFS_BIN:-wipefs}"
 
 REBUILD=0
 
@@ -49,5 +52,6 @@ case "$CMD" in
     list)   cmd_list ;;
     mount)  cmd_mount "$@" ;;
     umount) cmd_umount "$@" ;;
+    clean)  cmd_clean "$@" ;;
     *) usage; exit 1 ;;
 esac

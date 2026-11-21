@@ -219,6 +219,186 @@ cmd_mount() {
     echo "全部完成。挂载日志：$MOUNT_LOG"
 }
 
+# ---------- clean ----------
+
+# 清空（clean）子命令：卸载目标盘全部子树挂载点 → wipefs -a 整盘 → partprobe，
+# 把数据盘恢复到空白状态（系统盘与 /stresstest-hdd 不涉及）。
+# 范围：--disks 显式指定（分区经 disk_parent 归一为整盘；系统盘/U 盘/不存在盘一律拒绝）
+#       或一键枚举全部非系统盘、非U盘（含业务挂载点盘，由用户显式决策，计划中醒目标注）。
+# 安全：系统盘识别不可靠（SYS_ID_OK=0）且非 dry-run → 中止零写，dry-run 仅告警；
+#       空白盘（wipefs -n 无输出）跳过；wipefs -n 不可用/失败 → fail-safe 照清；
+#       执行期任一步失败只跳过该盘、其他盘继续，退出码 1。
+cmd_clean() {
+    local disks_opt="" assume_yes=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --disks) if [ $# -lt 2 ]; then echo "--disks 缺少参数"; usage; exit 1; fi; disks_opt="$2"; shift 2 ;;
+            --yes) assume_yes=1; shift ;;
+            --dry-run) DRY_RUN=1; shift ;;
+            *) echo "未知参数：$1"; usage; exit 1 ;;
+        esac
+    done
+
+    root_check
+
+    # ---------- 前置：系统盘识别必须可靠（fail-closed） ----------
+    local dfdev
+    dfdev=$($DF_BIN / 2>/dev/null | awk 'NR==2{print $1}')
+    if [ "$SYS_ID_OK" != "1" ]; then
+        if [ "$DRY_RUN" = "1" ]; then
+            echo "警告：无法可靠识别系统盘（df / → ${dfdev:-未知}），DRY RUN 仅打印计划，不做任何写操作"
+        else
+            echo "无法可靠识别系统盘（df / → ${dfdev:-未知}），已中止：不执行任何写操作"
+            exit 1
+        fi
+    fi
+
+    collect_non_sys_disks
+
+    # ---------- 候选盘：--disks 归一后逐盘校验；否则枚举全部非系统盘并滤除 U 盘 ----------
+    local chosen=() item raw c
+    if [ -n "$disks_opt" ]; then
+        local raws=()
+        IFS=',' read -ra raws <<< "$disks_opt"
+        for raw in "${raws[@]}"; do
+            item=$(trim "$raw")
+            [ -n "$item" ] || continue
+            item="${item#/dev/}"
+            item=$(disk_parent "$item")   # 分区自动归一为整盘
+            if is_sys_disk_or_part "$item"; then
+                echo "拒绝：$item 是系统盘（$SYS_BASE），不清理"
+                exit 1
+            fi
+            if disk_is_usb "$item"; then
+                echo "拒绝：$item 是 U 盘（USB），不清理"
+                exit 1
+            fi
+            if ! disk_is_known "$item"; then
+                echo "盘不存在或不是块设备：$item"
+                exit 1
+            fi
+            chosen+=("$item")
+        done
+        [ "${#chosen[@]}" -gt 0 ] || { echo "--disks 未指定任何有效盘"; exit 1; }
+    else
+        for c in "${DISK_NAMES[@]}"; do
+            disk_is_usb "$c" || chosen+=("$c")
+        done
+        if [ "${#chosen[@]}" -eq 0 ]; then
+            echo "无非系统盘、非U盘可清理"
+            exit 0
+        fi
+    fi
+
+    # ---------- 每盘状态：挂载点列表 + wipefs -n 签名（空白判定；-n 失败 fail-safe 照清） ----------
+    CLEAN_DISKS=() CLEAN_MPS=() CLEAN_BUS=()
+    NOOP_DISKS=()
+    local mps mp sigs rc busmps
+    for c in "${chosen[@]}"; do
+        mps=$(disk_mountpoints "$c")
+        busmps=""
+        if [ -n "$mps" ]; then
+            while IFS= read -r mp; do
+                [ -n "$mp" ] || continue
+                case "$mp" in
+                    /mnt/HDD[0-9]*) ;;
+                    *) busmps="${busmps:+$busmps }$mp" ;;   # 仅用于计划展示（空格连接）
+                esac
+            done <<< "$mps"
+        fi
+        sigs=$($WIPEFS_BIN -n "/dev/$c" 2>/dev/null); rc=$?
+        if [ -n "$mps" ] || [ -n "$sigs" ] || [ "$rc" -ne 0 ]; then
+            CLEAN_DISKS+=("$c"); CLEAN_MPS+=("$mps"); CLEAN_BUS+=("$busmps")
+        else
+            NOOP_DISKS+=("$c")
+        fi
+    done
+
+    # ---------- 打印执行计划（业务挂载点醒目标注） ----------
+    local i n=0 busmps_str busnote
+    echo "==== 清空执行计划 ===="
+    for i in "${!CLEAN_DISKS[@]}"; do
+        n=$((n + 1))
+        c="${CLEAN_DISKS[$i]}"
+        mps="${CLEAN_MPS[$i]}"
+        busmps_str=$(printf '%s' "${CLEAN_BUS[$i]}" | tr '\n' ' ')
+        busnote=""
+        if [ -n "$busmps_str" ]; then
+            busnote="  （含业务挂载点：$busmps_str，清空将删除业务数据！）"
+        fi
+        echo "  $(printf "%02d" "$n")  /dev/$c  $(disk_size "$c")  清理：umount 全部挂载点（$(printf '%s' "$mps" | tr '\n' ' ')）→ wipefs -a /dev/$c → partprobe /dev/$c$busnote"
+    done
+    for c in "${NOOP_DISKS[@]}"; do
+        echo "  -    /dev/$c  $(disk_size "$c")  无需清理（无挂载点、无文件系统签名）"
+    done
+
+    # ---------- DRY RUN：只打印计划，零写操作、不写 mount.log ----------
+    if [ "$DRY_RUN" = "1" ]; then
+        echo "（DRY RUN，未执行）"
+        exit 0
+    fi
+
+    if [ "${#CLEAN_DISKS[@]}" -eq 0 ]; then
+        echo "所选盘均无需清理，无需操作"
+        exit 0
+    fi
+
+    # ---------- 单个 y 确认（--yes 跳过） ----------
+    if [ "$assume_yes" -ne 1 ]; then
+        local ans=""
+        printf "确认清空以上 %d 块盘（y/N）：" "${#CLEAN_DISKS[@]}"
+        IFS= read -r ans || true
+        case "$ans" in
+            y|Y) ;;
+            *) echo "已取消，未执行任何操作"; exit 0 ;;
+        esac
+    fi
+
+    # ---------- 逐盘执行：umount 全部子树挂载点 → wipefs -a 整盘 → partprobe ----------
+    mkdir -p "$(dirname "$MOUNT_LOG")" || { echo "无法创建日志目录：$(dirname "$MOUNT_LOG")"; exit 1; }
+    local fails=() ok mp
+    for i in "${!CLEAN_DISKS[@]}"; do
+        c="${CLEAN_DISKS[$i]}"
+        echo "清理 /dev/$c：卸载全部挂载点 → wipefs -a 整盘 → partprobe"
+        ok=1
+        while IFS= read -r mp; do
+            [ -n "$mp" ] || continue
+            if ! run_log "$UMOUNT_BIN" "$mp"; then
+                echo "卸载失败：$mp（结果非 0，跳过 /dev/$c）"
+                ok=0
+                break
+            fi
+        done <<< "${CLEAN_MPS[$i]}"
+        if [ "$ok" -ne 1 ]; then
+            fails+=("清理失败：$c（umount 失败）")
+            continue
+        fi
+        if ! run_log "$WIPEFS_BIN" -a "/dev/$c"; then
+            echo "wipefs 失败：/dev/$c（结果非 0，跳过该盘）"
+            fails+=("清理失败：$c（wipefs -a 失败）")
+            continue
+        fi
+        if ! run_log "$PARTPROBE_BIN" "/dev/$c"; then
+            echo "partprobe 失败：/dev/$c（结果非 0，跳过该盘）"
+            fails+=("清理失败：$c（partprobe 失败）")
+            continue
+        fi
+        echo "已清空 /dev/$c"
+    done
+
+    if [ "${#fails[@]}" -gt 0 ]; then
+        echo
+        echo "==== 失败汇总 ===="
+        local f
+        for f in "${fails[@]}"; do
+            echo "  $f"
+        done
+        echo "全部完成（存在失败盘）。挂载日志：$MOUNT_LOG"
+        exit 1
+    fi
+    echo "全部完成。挂载日志：$MOUNT_LOG"
+}
+
 # ---------- umount ----------
 
 cmd_umount() {

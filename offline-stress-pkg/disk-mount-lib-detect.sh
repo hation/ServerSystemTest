@@ -6,6 +6,7 @@ usage() {
   bash disk-mount.sh list
   bash disk-mount.sh mount [--disks sdb,sdc] [--yes] [--rebuild] [--dry-run]
   bash disk-mount.sh umount [--all]
+  bash disk-mount.sh clean [--disks sdb,sdc] [--yes] [--dry-run]
 
 说明:
   list    列出全部块设备，标出系统盘（永不测试）、分区状态与挂载点
@@ -19,6 +20,10 @@ usage() {
            --dry-run  只打印计划，不执行任何写操作（等价 DRY_RUN=1）
            --yes      跳过 y 确认，供 oneclick.sh 调用（仍须指定 --disks，系统盘校验不变）
   umount  列出已挂载测试盘（/mnt/HDD*）并确认后逐个卸载（--all 跳过确认）
+  clean   卸载目标盘全部子树挂载点 → wipefs -a 整盘 → partprobe（一键清空非系统盘、非U盘）
+          默认范围：全部非系统盘、非U盘（含业务挂载点盘，计划中醒目标注，默认 y/N 确认）
+          --disks 显式指定（分区自动归一为整盘；系统盘/U 盘/不存在盘一律拒绝退出 1）
+          --dry-run 只打印计划，零写操作；系统盘识别不可靠时非 dry-run 中止零写
 
 测试接缝（本地测试用）:
   DRY_RUN=1           只打印计划不执行
@@ -146,6 +151,33 @@ disk_is_known() {
         [ "${DISK_NAMES[$i]}" = "$1" ] && return 0
     done
     return 1
+}
+
+# 该盘是否为 U 盘：lsblk -P -o NAME,TRAN 中该盘 TRAN==usb。
+# 解析失败/无输出视为非 USB（安全方向：宁可多清不误排，排除逻辑只认明确 usb）。
+disk_is_usb() {
+    local n="$1"
+    $LSBLK_BIN -P -o NAME,TRAN 2>/dev/null | awk -v n="$n" '
+        function v(line, key,   re, s) {
+            re = key "=\""
+            if (match(line, re)) {
+                s = substr(line, RSTART + length(re))
+                return substr(s, 1, index(s, "\"") - 1)
+            }
+            return ""
+        }
+        v($0,"NAME")==n && v($0,"TRAN")=="usb" { found=1; exit }
+        END { exit (found ? 0 : 1) }
+    '
+}
+
+# 设备（盘或分区）的父整盘名：经 lsblk -ln -no PKNAME 解析（sdb1→sdb、nvme0n1p1→nvme0n1）；
+# 无父盘（本身即整盘）则原样返回。
+disk_parent() {
+    local n="$1" p
+    p=$($LSBLK_BIN -ln -no PKNAME "/dev/$n" 2>/dev/null | awk 'NF{print; exit}')
+    [ -n "$p" ] || p="$n"
+    printf '%s' "${p#/dev/}"
 }
 
 disk_is_mounted() {

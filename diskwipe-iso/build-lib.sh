@@ -4,7 +4,7 @@
 #
 # 流程（与设计 §10 一致）：
 #   1) apt 安装构建依赖（幂等：已装自动跳过）
-#   2) 组装 rootfs/：静态 busybox + 全部 applet 链接、util-linux 动态 wipefs/lsblk
+#   2) 组装 rootfs/：静态 busybox + 全部 applet 链接、util-linux 动态 wipefs/lsblk/blkid
 #      （ldd 收集 .so 依赖按原路径布局拷入）、白名单驱动模块目录 + zstd 解压
 #      （.ko.zst → .ko，busybox 无 zstd 解压）+ depmod、
 #      src 四脚本（init 强制 chmod +x——内核要求 /init 可执行）+ VERSION → /diskwipe.version
@@ -19,8 +19,10 @@
 #       绝不写任何块设备（本机物理盘零接触）。
 # 任何一步失败 → 打印「✗ ...」并返回非 0（不静默，残留构建目录供排查）。
 
-# 模块白名单（与 src/init 的 DRIVE_MODULES 一致，见设计 §6.2）
-DW_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod"
+# 模块白名单（与 src/init 的 DRIVE_MODULES 一致，见设计 §6.2）。
+# usb_storage/uas：U 盘日志介质需要（无 U 盘时加载亦无害；依赖 usbcore/scsi_mod/sd_mod 已在列）；
+# nls_iso8859-1/exfat/ntfs3：vfat 挂载 iocharset / exfat、ntfs3（模块）日志介质需要
+DW_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod usb_storage uas nls_iso8859-1 exfat ntfs3"
 # apt 构建依赖（幂等：已装自动跳过；grub-mkrescue 双引导需要 grub-pc-bin(BIOS) +
 # grub-efi-amd64-bin(UEFI)，mtools 提供 mformat 生成 EFI 镜像；
 # zstd：Ubuntu 24.04 generic 内核 CONFIG_MODULE_COMPRESS_ZSTD，模块全部 .ko.zst 压缩，
@@ -71,13 +73,17 @@ dw_assemble_rootfs() {
     done
     echo "     busybox applet 链接数：$(ls "$rootfs"/bin | wc -l)"
 
-    # 2.2 util-linux 动态 wipefs/lsblk + ldd 收集 .so 依赖（按原绝对路径布局，动态 loader 运行）
-    for bin in wipefs lsblk; do
+    # 2.2 util-linux 动态 wipefs/lsblk/blkid + ldd 收集 .so 依赖（按原绝对路径布局，动态 loader 运行）。
+    # blkid：busybox-static 无 blkid applet（实测 --list 不含）——日志介质文件系统探测
+    #       （dw_mount_log_media 的 vfat/exfat/ntfs 过滤）与系统盘判定（dw_is_system_disk）
+    #       都依赖它，必须随 util-linux 拷入
+    for bin in wipefs lsblk blkid; do
         src_bin="$(command -v "$bin")"
         [ -n "$src_bin" ] || { dw_fail "未找到 util-linux $bin（util-linux 未安装？）"; return 1; }
         case "$bin" in
         wipefs) dst="$rootfs/usr/sbin/wipefs" ;;
         lsblk)  dst="$rootfs/usr/bin/lsblk" ;;
+        blkid)  dst="$rootfs/usr/sbin/blkid" ;;
         esac
         cp "$src_bin" "$dst" || { dw_fail "拷贝 $bin 失败"; return 1; }
         # ldd 解析：'libx => /abs/path (addr)' 取第 3 字段；'/abs/path (addr)'（如 ld-linux）取第 1 字段
@@ -93,7 +99,9 @@ dw_assemble_rootfs() {
         || { dw_fail "wipefs 动态依赖不完整（chroot 运行失败）"; return 1; }
     $DW_SUDO chroot "$rootfs" /usr/bin/lsblk --version >/dev/null 2>&1 \
         || { dw_fail "lsblk 动态依赖不完整（chroot 运行失败）"; return 1; }
-    echo "     wipefs/lsblk 动态依赖完整（chroot 实测可运行）"
+    $DW_SUDO chroot "$rootfs" /usr/sbin/blkid --version >/dev/null 2>&1 \
+        || { dw_fail "blkid 动态依赖不完整（chroot 运行失败）"; return 1; }
+    echo "     wipefs/lsblk/blkid 动态依赖完整（chroot 实测可运行）"
 
     # 2.3 内核模块白名单：拷贝驱动目录（含依赖）+ depmod 生成 modules.dep。
     # /lib/modules 下模块文件需 root 可读（/boot、部分模块 0600），统一走 $DW_SUDO
@@ -116,6 +124,19 @@ dw_assemble_rootfs() {
     mkdir -p "$rootfs/lib/modules/$kver/kernel/drivers/usb" || return 1
     $DW_SUDO cp -a "/lib/modules/$kver/kernel/drivers/usb/host" "$rootfs/lib/modules/$kver/kernel/drivers/usb/" \
         || { dw_fail "拷贝 usb/host（xhci-pci）失败"; return 1; }
+    # usb/storage：usb_storage/uas 驱动（日志介质 U 盘需要；usbcore 通常内核内建无模块目录）
+    [ -d "/lib/modules/$kver/kernel/drivers/usb/storage" ] || { dw_fail "内核模块目录 kernel/drivers/usb/storage 不存在"; return 1; }
+    $DW_SUDO cp -a "/lib/modules/$kver/kernel/drivers/usb/storage" "$rootfs/lib/modules/$kver/kernel/drivers/usb/" \
+        || { dw_fail "拷贝 usb/storage（usb_storage/uas）失败"; return 1; }
+    # fs/nls + fs/exfat + fs/ntfs3：vfat 挂载需 iocharset 模块（CONFIG_NLS_ISO8859_1=m，
+    #    缺失会报 "IO charset iso8859-1 not found" 导致日志介质 mount 失败）；exfat/ntfs3
+    #    为模块（Ventoy 数据区/Windows U 盘）。zstd 压缩由后续统一解压
+    mkdir -p "$rootfs/lib/modules/$kver/kernel/fs" || return 1
+    for fdir in nls exfat ntfs3; do
+        [ -d "/lib/modules/$kver/kernel/fs/$fdir" ] || { dw_fail "内核模块目录 kernel/fs/$fdir 不存在"; return 1; }
+        $DW_SUDO cp -a "/lib/modules/$kver/kernel/fs/$fdir" "$rootfs/lib/modules/$kver/kernel/fs/" \
+            || { dw_fail "拷贝 fs/$fdir 失败"; return 1; }
+    done
     # 拷贝内核安装期生成的 builtin/order 清单（modules.builtin 供 busybox modprobe 识别内建模块；
     # depmod 会重生成 modules.dep/alias/symbols，故先拷后跑）
     for mf in modules.builtin modules.builtin.modinfo modules.order modules.alias modules.symbols; do
@@ -236,7 +257,7 @@ dw_verify_iso() {
     echo "     校验通过：initrd 内 /init 具执行位"
     # 6.3b 版本文件：initrd 内 /diskwipe.version 必须存在且整行等于 VERSION（menu 横幅/日志头来源）
     dwver="$(tr -d ' \r\n' < "$proj/VERSION")"
-    if ! grep -qx "$dwver" "$build_dir/initrdx/diskwipe.version" 2>/dev/null; then
+    if ! grep -qxF "$dwver" "$build_dir/initrdx/diskwipe.version" 2>/dev/null; then
         dw_fail "initrd 内 /diskwipe.version 缺失或内容错误（应整行含 $dwver）"; return 1
     fi
     echo "     校验通过：initrd 内 /diskwipe.version = $dwver"

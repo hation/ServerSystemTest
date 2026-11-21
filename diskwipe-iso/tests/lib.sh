@@ -20,11 +20,10 @@
 #                                                        首个 / 开头字段起至行尾原文；
 #                                                        PKNAME 由名字推导：nvme0n1p1 去
 #                                                        p+数字、sda1 去尾部数字）
-#   -o NAME,TYPE,TRAN,LABEL                            → 输出「名字 类型 TRAN 卷标」四列
-#                                                        （TRAN 按表格约定从右往左定位：末字段
-#                                                         为挂载点则跳过，其前字段属已知 TRAN
-#                                                         集合才视为 TRAN；卷标取 lsblk.labels，
-#                                                         "设备 卷标"可含空格，无条目为空）
+#   -o NAME,TYPE,TRAN,PKNAME -l                       → 输出「名字 类型 TRAN PKNAME」
+#                                                        （与真实 lsblk 一致：TRAN 只出现在整盘
+#                                                         行；分区行 TRAN 恒空、PKNAME 由名字
+#                                                         推导；卷标经 blkid LABEL 假件读取）
 #   -no PARTFLAGS <dev>                                → 按 lsblk.flags（"设备 标志"，
 #                                                        真实格式如 MBR 活动=0x80）
 #   -no PARTTYPENAME <dev>                             → 按 lsblk.ptname（"设备 类型名"，
@@ -96,22 +95,25 @@ case "$1" in
             if (name==d || pk==d) printf "%s %s %s %s\n", name, type, mps, pk
         }'"'"' "$ROOT/lsblk.table"
         ;;
-    NAME,TYPE,TRAN,LABEL)
+    NAME,TYPE,TRAN,PKNAME)
         [ -f "$ROOT/lsblk.table" ] || exit 0
-        [ -f "$ROOT/lsblk.labels" ] || : > "$ROOT/lsblk.labels"
-        # 输出「名字 类型 TRAN 卷标」；卷标取 lsblk.labels（"设备 卷标"，可含空格）
-        # 注意：用 FILENAME==ARGV[1] 区分文件而非 NR==FNR——labels 文件可能为空，
-        #       NR==FNR 在首文件为空时会与第二个文件记录同步而失效
-        awk '"'"'FILENAME == ARGV[1] { if (NF >= 2) { lab[$1]=$2; for (i=3; i<=NF; i++) lab[$1]=lab[$1] " " $i } next }
-            FNR==1 { next }
+        # 输出「名字 类型 TRAN PKNAME」（与真实 lsblk -o NAME,TYPE,TRAN,PKNAME -l 一致：
+        # TRAN 只出现在整盘行；分区行 TRAN 恒空、PKNAME 由名字推导——nvme0n1p1 去
+        # p+数字、sda1 去尾部数字）
+        awk '"'"'FNR==1 { next }
             {
                 name=$1; type=$3
                 tran=""; t=NF
                 if ($NF ~ /^\//) t=NF-1
-                if (t > 3 && $t ~ /^(sata|sas|nvme|usb|spi|ata|scsi|virtio|pcie)$/) tran=$t
-                lv=(name in lab) ? lab[name] : ""
-                print name, type, tran, lv
-            }'"'"' "$ROOT/lsblk.labels" "$ROOT/lsblk.table"
+                if (type == "disk" && t > 3 && $t ~ /^(sata|sas|nvme|usb|spi|ata|scsi|virtio|pcie)$/) tran=$t
+                pk=""
+                if (type != "disk") {
+                    pk=name
+                    if (pk ~ /p[0-9]+$/) sub(/p[0-9]+$/, "", pk)
+                    else while (pk ~ /[0-9]$/) pk=substr(pk,1,length(pk)-1)
+                }
+                print name, type, tran, pk
+            }'"'"' "$ROOT/lsblk.table"
         ;;
     esac
     ;;
@@ -131,17 +133,27 @@ case "$1" in
     ;;
 esac
 exit 0'
-    # 假 blkid：blkid -s TYPE -o value <dev>，按 $ROOT/blk.type（"设备 类型"）返回；
-    # 无条目 → 无输出 rc 2（模拟无法探测）
+    # 假 blkid：blkid -s TYPE|-s LABEL -o value <dev>；TYPE 按 $ROOT/blk.type（"设备 类型"）、
+    # LABEL 按 $ROOT/lsblk.labels（"设备 卷标"）返回；无条目 → 无输出 rc 2（模拟无法探测）
     fake_bin blkid '#!/bin/sh
 [ -n "$ROOT" ] || exit 2
-dev=""
+dev=""; sel=""
 for a in "$@"; do
-    case "$a" in /dev/*) dev="${a#/dev/}" ;; esac
+    case "$a" in
+    /dev/*) dev="${a#/dev/}" ;;
+    -s) : ;;
+    TYPE) sel=type ;;
+    LABEL) sel=label ;;
+    esac
 done
 [ -n "$dev" ] || exit 2
-[ -f "$ROOT/blk.type" ] || exit 2
-awk -v d="$dev" '"'"'$1==d { print $2; found=1; exit } END { exit (found?0:2) }'"'"' "$ROOT/blk.type"'
+if [ "$sel" = "label" ]; then
+    [ -f "$ROOT/lsblk.labels" ] || exit 2
+    awk -v d="$dev" '"'"'$1==d { print $2; found=1; exit } END { exit (found?0:2) }'"'"' "$ROOT/lsblk.labels"
+else
+    [ -f "$ROOT/blk.type" ] || exit 2
+    awk -v d="$dev" '"'"'$1==d { print $2; found=1; exit } END { exit (found?0:2) }'"'"' "$ROOT/blk.type"
+fi'
     # 假 wipefs：-a 记录调用到 cmds.txt（$ROOT/wipefs.afail 列出的设备返回 1）；
     #           -n 也记录调用，并按 $ROOT/wipefs.sigs 输出（无文件/空 = 无残留）
     fake_bin wipefs '#!/bin/sh

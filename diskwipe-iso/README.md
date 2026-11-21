@@ -61,7 +61,7 @@ bash diskwipe-iso/build.sh
 **构建流程**（全部在 WSL 虚拟盘文件系统 + `output/` 内产出 iso **文件**，绝不写任何真实块设备）：
 
 1. apt 安装构建依赖（`busybox-static xorriso mtools grub-pc-bin grub-efi-amd64-bin linux-image-generic`，另补装 `genisoimage` 提供 isoinfo）；
-2. 组装 initramfs rootfs：静态 busybox + 全部 applet；util-linux 动态 `wipefs`/`lsblk`（`ldd` 收集 .so 依赖按原路径布局拷入，chroot 实测可运行）；磁盘驱动白名单模块目录 + **zstd 解压**（`.ko.zst` → `.ko`，busybox 无 zstd 解压能力）后 `depmod` 生成 `modules.dep`；`src/` 四个脚本（`init` 强制 `chmod +x`，内核要求 /init 可执行）；`VERSION` 拷入 rootfs 为 `/diskwipe.version`（菜单横幅与日志文件头的版本来源）；
+2. 组装 initramfs rootfs：静态 busybox + 全部 applet；util-linux 动态 `wipefs`/`lsblk`/`blkid`（`ldd` 收集 .so 依赖按原路径布局拷入，chroot 实测可运行；busybox-static 无 blkid applet，日志介质探测与系统盘判定依赖它）；磁盘驱动白名单模块目录 + **zstd 解压**（`.ko.zst` → `.ko`，busybox 无 zstd 解压能力）后 `depmod` 生成 `modules.dep`；`src/` 四个脚本（`init` 强制 `chmod +x`，内核要求 /init 可执行）；`VERSION` 拷入 rootfs 为 `/diskwipe.version`（菜单横幅与日志文件头的版本来源）；
 3. cpio 打包 initrd.img（gzip）；
 4. 写 `boot/grub/grub.cfg`（内核参数 `console=tty0 console=ttyS0,115200n8`），放置 vmlinuz/initrd.img 到 rootfs/boot/；
 5. `grub-mkrescue` 生成 **BIOS + UEFI 双引导** iso（兼容主流服务器；现场 Secure Boot 不开，无需签名）；
@@ -121,9 +121,9 @@ lsblk -f         # 目标盘无文件系统列（FSTYPE 为空）
   | 基础信息 | 工具版本（读 initramfs 内 `/diskwipe.version`，构建时由 `VERSION` 拷入）、会话开始/结束时间、日志介质状态（usb/none） |
   | 盘清单 | 清理目标盘：设备、容量、型号、类型（系统盘/数据盘/未知） |
   | 每盘结果 | 每盘 `✓ 已恢复未初始化` 或 `✗ <原因>`，含失败汇总 |
-  | 排除/跳过记录 | 被排除的 U 盘/光驱设备名、白名单外设备跳过记录 |
+  | 排除/跳过记录 | 会话内的排除编号汇总（如「已排除编号：1,2」）与「仅发现启动介质」等汇总提示（按代码实际落日志内容，不含逐设备名） |
 - **无可写介质**：未插 U 盘/无可写分区时打印「未找到可写日志介质，本次日志仅屏幕显示。」，**不阻断清理**（清理照常执行、结果仍显示屏幕）。
-- **当前限制（真实行为核对）**：initramfs 驱动白名单目前只加载 USB3 控制器（`xhci_pci`），**未加载 usb-storage/uas 驱动**——qemu 冒烟实测 U 盘在总线层可见但无块设备节点，日志走「仅屏幕」分支；即当前构建下 U 盘分区不可识别、日志尚不能落盘，后续版本将把 usb-storage/uas 纳入驱动白名单后自动落盘。
+- **驱动覆盖**：initramfs 驱动白名单含 USB3 控制器（`xhci_pci`）与 **usb-storage/uas**（U 盘块设备生成必需）；qemu 冒烟已实测虚拟 U 盘（VTOYEFI+数据区）可识别、日志真实落盘（`DW_LOG_MEDIA=usb`），见验证记录。
 
 ## 7. 交互说明
 
@@ -156,7 +156,7 @@ lsblk -f         # 目标盘无文件系统列（FSTYPE 为空）
 
 **现象**：目标服务器启动 iso 后菜单为空（提示仅发现启动介质），或 init 停留在救援 shell 报模块加载失败——说明该服务器磁盘控制器驱动不在白名单/Ubuntu generic 未覆盖（如特殊 SAS/RAID 卡）。
 
-**白名单模块**（init 逐模块加载，依赖模块经 `modules.dep` 自动带入）：`ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod`。已覆盖主流 AHCI/NVMe/LSI/板载 RAID/虚拟化/USB3 控制器；**仍未覆盖时**按以下替换路径处理：
+**白名单模块**（init 逐模块加载，依赖模块经 `modules.dep` 自动带入）：`ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod usb_storage uas`。已覆盖主流 AHCI/NVMe/LSI/板载 RAID/虚拟化/USB3 控制器与 USB 存储（日志介质 U 盘）；**仍未覆盖时**按以下替换路径处理：
 
 **手动替换路径（当前可用做法）**：
 

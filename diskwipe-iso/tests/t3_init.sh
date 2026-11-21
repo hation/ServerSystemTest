@@ -20,7 +20,7 @@ trap 'rc=$?; cleanup_case; exit "$rc"' EXIT
 
 INIT_SH="$REPO_ROOT/diskwipe-iso/src/init"
 # 与 src/init 内 DRIVE_MODULES 常量保持一致
-DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod"
+DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod usb_storage uas nls_iso8859-1 exfat ntfs3"
 
 echo "==== T3 initramfs 启动脚本测试 ===="
 
@@ -98,6 +98,9 @@ check_cmds 'mount -t proc proc /proc' '应挂载 /proc'
 check_cmds 'mount -t sysfs sysfs /sys' '应挂载 /sys'
 check_cmds 'mount -t devtmpfs devtmpfs /dev' '应挂载 /dev'
 check_cmds 'mdev -s' '应执行 mdev -s 扫描设备'
+# USB 存储设备异步枚举：init 在 sleep 后进入重试循环（每轮 mdev -s + 探测）；
+# stub 环境假 lsblk 恒空（无 U 盘）→ 3 轮重试 + 首扫 = mdev -s 共 4 次
+check_cmd_count 'mdev -s' 4 '设备扫描应执行 4 次（首扫 1 + 日志介质重试 3 轮）'
 for m in $DRIVE_MODULES; do
     check_cmds "modprobe $m" "应加载模块 $m"
 done

@@ -1,7 +1,8 @@
 #!/bin/sh
 # diskwipe-iso initramfs 启动脚本（PID 1 入口）：
 #   挂载 /proc /sys /dev → busybox modprobe 白名单磁盘驱动 → mdev -s 扫描设备
-#   → sleep 2 等待设备稳定 → exec menu.sh（交互菜单）。
+#   → sleep 2 等待设备稳定 → 重试循环（每轮 mdev -s 补建节点 + 探测日志介质）
+#   → exec menu.sh（交互菜单）。
 # 任一步失败（挂载/模块加载/mdev）打印错误并停留在救援 shell（不 exec menu.sh），
 # 便于现场诊断（与设计 §6.3 一致）。
 #
@@ -9,7 +10,8 @@
 #   - POSIX/ash 兼容（initramfs 运行时只有 busybox ash；禁止 [[ ]]、数组、${var:0:3} 等
 #     bash 专属语法），LF 行尾，中文注释。
 #   - 只做启动编排；交互/清除逻辑由 menu.sh/wipe.sh/lib.sh 保证。
-#   - 模块白名单覆盖主流服务器磁盘控制器（AHCI/NVMe/LSI/板载 RAID/虚拟化/USB3 等），
+#   - 模块白名单覆盖主流服务器磁盘控制器（AHCI/NVMe/LSI/板载 RAID/虚拟化/USB3 等）与
+#     USB 存储驱动（usb_storage/uas——日志介质 U 盘需要；无 U 盘时加载亦无害），
 #     依赖模块由 busybox modprobe 按 modules.dep 自动带入。
 #   - 测试经 INIT_PATH 接缝变量注入假件（mount/modprobe/mdev 只记录调用，不真挂载）。
 
@@ -19,8 +21,11 @@ export PATH="${INIT_PATH:-/bin:/sbin:/usr/bin:/usr/sbin}"
 # 加载共享库（dw_mount_log_media 等；接缝变量 LSBLK_BIN/BLKID_BIN/UMOUNT_BIN 随 PATH 解析）
 . "$(dirname "$0")/lib.sh"
 
-# 磁盘驱动模块白名单（按此字符串逐模块加载）
-DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod"
+# 磁盘驱动模块白名单（按此字符串逐模块加载）。
+# usb_storage/uas：U 盘日志介质需要（无 U 盘时加载同样成功——驱动加载与设备存在无关）
+# nls_iso8859-1/exfat/ntfs3：vfat 挂载需 iocharset 模块；exfat/ntfs3 为模块（Ventoy
+#   数据区/Windows U 盘日志介质需要；无对应设备时加载亦无害）
+DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod usb_storage uas nls_iso8859-1 exfat ntfs3"
 
 # 启动失败：打印错误并停留在救援 shell（不 exec menu.sh，便于现场诊断）
 init_rescue() {
@@ -49,10 +54,18 @@ echo "磁盘驱动模块加载完成"
 mdev -s || init_rescue "mdev -s 扫描设备失败"
 echo "设备节点扫描完成"
 
-# 4) 等待设备稳定后探测并挂载日志介质（U 盘可写分区；无介质/全败 → DW_LOG_MEDIA=none，
-#    仅提示不阻断清理；挂载失败静默降级，提示在 menu 里给）
+# 4) 等待设备稳定 + 重试探测日志介质（最多 3 轮，每轮间隔 2s）。
+#    为什么重试：USB 存储设备在 usb-storage 模块加载后才异步枚举/绑定（qemu 实测
+#    绑定后 SCSI 枚举需 ~2s），首个 mdev -s 扫描时尚未生成 /dev/sdX；且 initramfs
+#    无 hotplug 事件自动补建节点，故每轮先 mdev -s 补建、再探测。全部失败 →
+#    DW_LOG_MEDIA=none（仅屏幕提示，不阻断清理）
 sleep 2
-dw_mount_log_media
+for dwtry in 1 2 3; do
+    mdev -s
+    dw_mount_log_media
+    [ "$DW_LOG_MEDIA" = "usb" ] && break
+    sleep 2
+done
 
 # 5) 进入交互菜单（exec 替换自身，menu.sh 读 stdin 写 /dev/console）
 exec "$(dirname "$0")/menu.sh"

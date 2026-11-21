@@ -230,28 +230,30 @@ dw_log() {
 dw_mount_log_media() {
     DW_LOG_MEDIA=none
     export DW_LOG_MEDIA
-    # 1) 枚举 U 盘可写分区候选「分区名|卷标」（跳过 VTOYEFI；卷标可含空格，取第 4 字段起）
-    dwcands="$("$LSBLK_BIN" -o NAME,TYPE,TRAN,LABEL 2>/dev/null | awk '
+    # 1) 枚举 U 盘可写分区候选（分区名，逐行）。真实 lsblk 的 TRAN 只出现在整盘行、
+    #    分区行 TRAN 恒空（字段右移）——先收集 TRAN=usb 的整盘，再收其分区
+    #    （PKNAME 恒为末列；-l 列表模式免树形前缀）。卷标不依赖 lsblk（实测 guest 内
+    #    lsblk LABEL 探测不可靠），改由 blkid LABEL 逐分区读（见下）
+    dwcands="$("$LSBLK_BIN" -o NAME,TYPE,TRAN,PKNAME -l 2>/dev/null | awk '
         NR==1 { next }
-        $2 == "part" && $3 == "usb" {
-            dwlab=""
-            if (NF >= 4) { dwlab=$4; for (dwi=5; dwi<=NF; dwi++) dwlab=dwlab " " $dwi }
-            if (dwlab == "VTOYEFI") next
-            print $1 "|" dwlab
-        }
+        $2 == "disk" && $3 == "usb" { isusb[$1] = 1; next }
+        $2 == "part" && ($NF in isusb) { print $1 }
     ')"
     [ -n "$dwcands" ] || return 0
     # 挂载点不存在则创建（失败不阻断：mount 会失败，由循环降级 none）
     mkdir -p /diskwipe-log 2>/dev/null || :
-    # 2) 逐候选：可写文件系统过滤 → mount → 写测试；失败卸载换下一个（POSIX 无 local，
+    # 2) 逐候选：可写文件系统过滤（blkid TYPE ∈ vfat|exfat|ntfs）→ 跳过卷标 VTOYEFI
+    #    （blkid LABEL）→ mount → 写测试；失败卸载换下一个（POSIX 无 local，
     #    函数内部变量统一 dw_ 前缀）
-    while IFS='|' read -r dwpart dwlab; do
+    while IFS= read -r dwpart; do
         [ -n "$dwpart" ] || continue
         dwtype="$("$BLKID_BIN" -s TYPE -o value "/dev/$dwpart" 2>/dev/null)"
         case "$dwtype" in
         vfat|exfat|ntfs) ;;
         *) continue ;;
         esac
+        dwlab="$("$BLKID_BIN" -s LABEL -o value "/dev/$dwpart" 2>/dev/null)"
+        [ "$dwlab" != "VTOYEFI" ] || continue
         if ! mount "/dev/$dwpart" /diskwipe-log >/dev/null 2>&1; then
             continue
         fi

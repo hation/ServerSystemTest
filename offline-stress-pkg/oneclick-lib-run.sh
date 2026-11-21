@@ -134,6 +134,122 @@ do_mount() {
     return "$rc"
 }
 
+# ---------- 批次结束自动清理数据盘 ----------
+
+# 设备父整盘名（oneclick 不 source disk-mount-lib-detect.sh，此处本地实现）：
+# 优先 lsblk -ln -no PKNAME 归一（sdb1→sdb、nvme0n1p1→nvme0n1）；无父盘（整盘本身/查询失败）
+# 时按分区后缀 p?[0-9]+ 兜底剥离（nvme/mmcblk 只剥 p+数字，避免误伤 nvme0n1 这类整盘名）。
+cleanup_parent_disk() {
+    local n="$1" p
+    p=$("$LSBLK_BIN" -ln -no PKNAME "/dev/$n" 2>/dev/null | awk 'NF{print; exit}')
+    if [ -n "$p" ]; then
+        printf '%s' "${p#/dev/}"
+        return 0
+    fi
+    case "$n" in
+        nvme*|mmcblk*)
+            n=$(printf '%s' "$n" | sed -E 's/p[0-9]+$//') ;;
+        *)
+            n=$(printf '%s' "$n" | sed -E 's/(p)?[0-9]+$//') ;;
+    esac
+    printf '%s' "$n"
+}
+
+# 记录本批数据盘父整盘名到 $BATCH/cleanup-devices.txt（供批次结束自动清理）：
+# 对每个 /mnt/HDD* 目录 findmnt -n -o SOURCE --target 取设备 → basename → 父盘归一 → 去重。
+# 目录未挂载（findmnt 失败/无输出）不记录。
+record_cleanup_devices() {
+    local file="$BATCH/cleanup-devices.txt" d src dev parent
+    : > "$file"
+    while IFS= read -r d; do
+        [ -n "$d" ] || continue
+        src=$("$FINDMNT_BIN" -n -o SOURCE --target "$d" 2>/dev/null)
+        [ -n "$src" ] || continue
+        dev=$(basename "$src")
+        parent=$(cleanup_parent_disk "$dev")
+        [ -n "$parent" ] || continue
+        printf '%s\n' "$parent" >> "$file"
+    done <<< "$(collect_hdd_dirs)"
+    sort -u -o "$file" "$file"
+}
+
+# 批次结束自动清理数据盘：只在 all/full/hdd 且非 --no-hdd、CLEANUP=1、cleanup-devices.txt 非空时执行。
+# 清理时点预检：盘已不存在 / 出现非 /mnt/HDD* 挂载点 → 跳过该盘并在 summary 标注，不整批失败；
+# 剩余盘经 show_run 展示并落 commands.txt，执行 disk-mount.sh clean --disks <列表> --yes；
+# 结果追加进 summary.txt；清理失败只标注并提示手动命令，不改变 review 结论与批次退出码
+# （清理粒度/退出码由 disk-mount.sh clean 自身保证）。
+run_auto_clean() {
+    local mode="$1" file="$BATCH/cleanup-devices.txt"
+    local missing=0 nonhdd=0 d mps mp skip=0 keep=() list="" rc
+    case "$mode" in
+        all|full|hdd) ;;
+        *) return 0 ;;
+    esac
+    echo "" >> "$BATCH/summary.txt"
+    echo "==== 数据盘清理 ====" >> "$BATCH/summary.txt"
+    if [ "$NO_HDD" -eq 1 ]; then
+        echo "数据盘清理: 无数据盘（--no-hdd 排除硬盘，无自动清理）" >> "$BATCH/summary.txt"
+        return 0
+    fi
+    if [ "$CLEANUP" -ne 1 ]; then
+        echo "数据盘清理: 已跳过（--no-cleanup）" >> "$BATCH/summary.txt"
+        return 0
+    fi
+    if [ ! -s "$file" ]; then
+        echo "数据盘清理: 无数据盘（本批未记录到数据盘）" >> "$BATCH/summary.txt"
+        return 0
+    fi
+    # 清理时点预检：跳过原因各自计数，不整批失败
+    while IFS= read -r d; do
+        [ -n "$d" ] || continue
+        # 盘已不存在（lsblk 无该设备行）→ 跳过
+        if ! "$LSBLK_BIN" -ln -no KNAME "/dev/$d" 2>/dev/null | awk 'NF{print; exit}' | grep -q .; then
+            missing=$((missing + 1))
+            continue
+        fi
+        # 出现非 /mnt/HDD* 挂载点（业务挂载点等）→ 跳过，不自动清
+        skip=0
+        mps=$("$LSBLK_BIN" -ln -o MOUNTPOINT "/dev/$d" 2>/dev/null | awk 'NF{print}')
+        if [ -n "$mps" ]; then
+            while IFS= read -r mp; do
+                [ -n "$mp" ] || continue
+                case "$mp" in
+                    /mnt/HDD*) ;;
+                    *) skip=1; break ;;
+                esac
+            done <<< "$mps"
+        fi
+        if [ "$skip" -eq 1 ]; then
+            nonhdd=$((nonhdd + 1))
+            continue
+        fi
+        keep+=("$d")
+    done < "$file"
+    [ "$missing" -gt 0 ] && echo "数据盘清理: 已跳过 $missing 块（设备已不存在）" >> "$BATCH/summary.txt"
+    [ "$nonhdd" -gt 0 ] && echo "数据盘清理: 已跳过 $nonhdd 块（出现非 /mnt/HDD* 挂载点，未自动清理）" >> "$BATCH/summary.txt"
+    # 存在跳过盘时统一提示手动命令（无论是否还有盘可自动清理）
+    if [ "$missing" -gt 0 ] || [ "$nonhdd" -gt 0 ]; then
+        echo "数据盘清理: 请手动执行 bash disk-mount.sh clean 处理以上跳过盘" >> "$BATCH/summary.txt"
+    fi
+    if [ "${#keep[@]}" -eq 0 ]; then
+        return 0
+    fi
+    for d in "${keep[@]}"; do
+        list="${list:+$list,}$d"
+    done
+    echo "数据盘清理: 自动清理 ${#keep[@]} 块：$list" >> "$BATCH/summary.txt"
+    show_run bash "$DM" clean --disks "$list" --yes
+    MOUNT_LOG="$BATCH/clean.mount.log" bash "$DM" clean --disks "$list" --yes 2>&1 | tee "$BATCH/clean.log"
+    rc=${PIPESTATUS[0]}
+    if [ "$rc" -eq 0 ]; then
+        echo "数据盘清理: 已清空（${#keep[@]} 块：$list）" >> "$BATCH/summary.txt"
+    else
+        echo "数据盘清理: 失败（退出码 $rc，见 $BATCH/clean.log）" >> "$BATCH/summary.txt"
+        echo "数据盘清理: 请手动执行 bash disk-mount.sh clean（清理失败盘）" >> "$BATCH/summary.txt"
+    fi
+    return 0
+}
+
 # ---------- 生成任务计划 ----------
 
 write_plan() {
@@ -250,6 +366,14 @@ write_plan() {
         cpu)     printf 'CPU|cpu|\n' >> "$plan" ;;
         mem)     printf 'MEM|mem|\n' >> "$plan" ;;
         *)       die "未知模式：$mode" ;;
+    esac
+    # 记录本批数据盘父整盘名（供批次结束自动清理；仅 all/full/hdd 且非 --no-hdd 时有数据盘）
+    case "$mode" in
+        all|full|hdd)
+            if [ "$NO_HDD" -ne 1 ]; then
+                record_cleanup_devices
+            fi
+            ;;
     esac
     echo "==== 任务计划（$plan）===="
     sed 's/^/  /' "$plan"
@@ -500,6 +624,10 @@ cmd_review() {
 run_mode() {
     local mode="$1" stamp k=0 id type n=0 started="" review_rc=0 line f
     local -a extras=() fields=()
+    # clean：直接交给 disk-mount.sh clean（交互 y/N 确认；不进批次、不依赖压测环境）
+    if [ "$mode" = "clean" ]; then
+        exec bash "$DM" clean
+    fi
     # 重建开关口径：仅 all/hdd/full 生效；其他模式带 --rebuild 时提示并忽略（在 write_plan 之前复位）
     case "$mode" in
         all|hdd|full)
@@ -606,6 +734,9 @@ run_mode() {
     echo "[$(now)] 全部任务已结束，开始逐个复盘"
     run_review_all
     review_rc=$?
+
+    # 批次结束自动清理数据盘（结果追加 summary；不改变 review 结论与批次退出码）
+    run_auto_clean "$mode"
 
     if [ "$ABORTED" -eq 1 ] || [ "$START_FAILED" -eq 1 ] || [ "$review_rc" -ne 0 ] || [ "$MOUNT_RC" -ne 0 ]; then
         exit 1

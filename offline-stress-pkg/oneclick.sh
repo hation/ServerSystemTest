@@ -5,6 +5,7 @@
 #       内部子命令 __task、就绪握手、失败即停）+ 等待全部结束 + 自动逐个复盘 + 汇总。
 #       --no-hdd：仅 all 模式生效，排除所有硬盘（数据盘+系统盘），仅测 CPU+内存（COMBO peer=0），
 #       跳过自动挂载且与 --rebuild 互斥。
+#       --no-cleanup：批次结束不自动清空本批数据盘（默认复盘后自动清空，范围 = cleanup-devices.txt）。
 #       status/review 子命令均基于最近一次批次目录（$STRESS_TEST_ROOT/oneclick-*）。
 PKG_DIR="$(cd "$(dirname "$0")" && pwd)"
 STRESS_TEST_ROOT="${STRESS_TEST_ROOT:-/root/stress-test}"
@@ -46,6 +47,12 @@ LAST_TASK_CMD=""
 REBUILD=0
 # 排除硬盘开关：仅 all 模式生效；--no-hdd 置 1（任务计划只写 COMBO peer=0，跳过数据盘/系统盘任务）
 NO_HDD=0
+# 批次结束自动清空数据盘开关：默认 1（复盘后自动清理本批数据盘，范围 = $BATCH/cleanup-devices.txt）；
+# --no-cleanup 置 0（关闭自动清理，仅影响 all/full/hdd 且非 --no-hdd 的批次）
+CLEANUP=1
+# 数据盘自动清理接缝（findmnt 取挂载设备、lsblk 父盘归一/清理时点预检；默认系统命令，测试可注入假件）
+FINDMNT_BIN="${FINDMNT_BIN:-findmnt}"
+LSBLK_BIN="${LSBLK_BIN:-lsblk}"
 # 中高强度开关：--high 置 1（一键中高强度整机压测，等价 full；与 --no-hdd 互斥）
 HIGH=0
 # 自动挂载退出码：all/hdd 记录 disk-mount.sh 的结果，非 0 表示存在跳过/失败盘，批次最终退出 1
@@ -119,6 +126,7 @@ show_menu() {
   7) 只测内存
   8) 查看状态
   9) 生成复盘
+  10) 清空数据盘（全部非系统盘、非U盘；卸载并 wipefs 整盘，需 y 确认）
   0) 退出
 当前超时：$TIMEOUT（可用 --timeout 覆盖）
 EOF
@@ -143,7 +151,7 @@ menu_loop() {
     local choice
     while :; do
         show_menu
-        printf '请选择（0-9）：'
+        printf '请选择（0-10）：'
         if ! IFS= read -r choice; then
             echo
             exit 0
@@ -156,8 +164,9 @@ menu_loop() {
             3) NO_HDD=1; REBUILD=0; run_mode all ;;
             4) NO_HDD=0; if [ "$REBUILD" = "0" ]; then ask_rebuild; fi; run_mode hdd ;;
             5) run_mode sysdisk ;; 6) run_mode cpu ;; 7) run_mode mem ;; 8) cmd_status ;; 9) cmd_review ;;
+            10) run_mode clean ;;
             0) exit 0 ;;
-            *) echo "无效选择：$choice（请输入 0-9）" ;;
+            *) echo "无效选择：$choice（请输入 0-10）" ;;
         esac
     done
 }
@@ -194,6 +203,10 @@ main() {
                 NO_HDD=1
                 shift
                 ;;
+            --no-cleanup)
+                CLEANUP=0
+                shift
+                ;;
             --high)
                 HIGH=1
                 shift
@@ -210,7 +223,7 @@ main() {
                 TIMEOUT="${1#*=}"
                 shift
                 ;;
-            all|hdd|sysdisk|cpu|mem|full)
+            all|hdd|sysdisk|cpu|mem|full|clean)
                 mode="$1"
                 shift
                 ;;
@@ -265,7 +278,7 @@ main() {
         "") menu_loop ;;
         status) cmd_status ;;
         review) cmd_review ;;
-        all|hdd|sysdisk|cpu|mem|full) run_mode "$mode" ;;
+        all|hdd|sysdisk|cpu|mem|full|clean) run_mode "$mode" ;;
     esac
 }
 

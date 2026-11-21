@@ -2,7 +2,7 @@ usage() {
     cat <<'EOF'
 用法:
   bash oneclick.sh                                   # 菜单（推荐）
-  bash oneclick.sh all|hdd|sysdisk|cpu|mem|full [--timeout 10h]
+  bash oneclick.sh all|hdd|sysdisk|cpu|mem|full|clean [--timeout 10h]
   bash oneclick.sh --high [--timeout 10h]            # 一键中高强度整机压测（等价 full，不弹菜单）
   bash oneclick.sh status
   bash oneclick.sh review
@@ -19,6 +19,7 @@ usage() {
   sysdisk   只测系统盘
   cpu       只测 CPU
   mem       只测内存
+  clean     清空数据盘：卸载并 wipefs 全部非系统盘、非U盘（交互 y/N 确认；不进批次）
   status    查看最近一次批次的启动状态
   review    对最近一次批次逐个复盘并生成汇总
 
@@ -32,19 +33,22 @@ usage() {
   7) 只测内存
   8) 查看状态
   9) 生成复盘
+  10) 清空数据盘（全部非系统盘、非U盘；卸载并 wipefs 整盘，需 y 确认）
   0) 退出
 
 选项:
   --timeout <时长>   所有任务统一超时，默认 10h（数字 + 可选 d/h/m/s，如 10h、30m）
   --rebuild          重新分区并格式化数据盘（会清空数据盘；仅 all/hdd/full 生效）
   --no-hdd           仅 all 模式生效：排除所有硬盘（数据盘+系统盘），仅测 CPU+内存（COMBO peer=0）；跳过自动挂载，与 --rebuild 互斥
+  --no-cleanup       批次结束后不自动清空本批数据盘（默认自动清空本批数据盘）
   --high             一键中高强度整机压测（等价 full；仅 all/full 生效，与 --no-hdd 互斥；cpu/mem/hdd/sysdisk 带 --high 时忽略）
   --quiet            不在终端打印实际执行的命令（命令仍写入批次目录）
   --help             显示本帮助
 
 执行顺序:
   前置检查 → 自动挂载（all/hdd/full）→ CPU+内存组合 → 每块数据盘一个窗口 → 系统盘
-  → 等待全部结束 → 自动逐个复盘 → 输出汇总（批次目录 summary.txt，存在异常结论则退出码 1）
+  → 等待全部结束 → 自动逐个复盘 → 自动清空本批数据盘（--no-cleanup 可关）
+  → 输出汇总（批次目录 summary.txt，存在异常结论则退出码 1）
 任务窗口:
   标题固定为 压测-组合CPU+内存 / 压测-HDDxx / 压测-系统盘 / 压测-CPU / 压测-内存；
   无图形环境（SSH、无 DISPLAY）自动降级为后台并行执行，输出写入批次目录 <任务>.out。
@@ -82,6 +86,6 @@ write_env_file() {
       echo "TIMEOUT=$TIMEOUT"; echo "STRESS_TEST_ROOT=$STRESS_TEST_ROOT";
       echo "STRESS_TEST_SH=$ST"; echo "DISK_MOUNT_SH=$DM"; echo "TERM_KIND=$TERM_KIND";
       echo "POLL_INTERVAL=$POLL_INTERVAL"; echo "READY_TIMEOUT=$READY_TIMEOUT";
-      echo "REBUILD=$REBUILD"; echo "SHOW_CMD=$SHOW_CMD"; } > "$BATCH/env.txt"
+      echo "REBUILD=$REBUILD"; echo "SHOW_CMD=$SHOW_CMD"; echo "CLEANUP=$CLEANUP"; } > "$BATCH/env.txt"
 }
 

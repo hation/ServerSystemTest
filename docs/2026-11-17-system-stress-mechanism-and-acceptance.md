@@ -43,7 +43,7 @@ stress-test.sh review --dir <结果目录>  →  summary.txt / 结论 / 执行�
 
 运行中可用 `stress-test.sh snapshot <结果目录>` 手动补抓一次进程快照（只作展示，不作为一致性证据）。
 
-一键入口只做编排：`oneclick.sh` 的 `all` 计划为 `COMBO → HDD01..N → SYSDISK`，每条计划最终仍调用 `stress-test.sh start ...`（`oneclick-lib-run.sh L153-175`、`L470-498`）。
+一键入口只做编排：`oneclick.sh` 的 `all` 计划为 `COMBO → HDD01..N → SYSDISK`，每条计划最终仍调用 `stress-test.sh start ...`（`oneclick-lib-run.sh L280-309`（写计划）、`L384-427`（`__task` 内执行 `bash <ST> start ...`））。
 
 ---
 
@@ -411,8 +411,8 @@ hdd worker      = 每数据盘 1 个；系统盘单独 1 个
 | status 判定 | `stress-lib-commands.sh L1178-1192` |
 | review/执行一致性 | `stress-lib-commands.sh L762-1244`（cmd_review） |
 | snapshot 子命令 | `stress-lib-commands.sh L1248-1255`（cmd_snapshot） |
-| oneclick all 计划 | `oneclick-lib-run.sh L153-175` |
-| 失败策略 | `oneclick-lib-run.sh L511-530` |
+| oneclick all 计划 | `oneclick-lib-run.sh L280-309` |
+| 失败策略 | `oneclick-lib-run.sh L708-719`（failed-tasks.txt / COMBO 中止 / 单盘跳过）、`L741-744`（批次退出码） |
 
 ### 9.3 术语
 

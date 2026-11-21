@@ -91,9 +91,9 @@ CASE="I1 正常启动编排"
 setup_stub
 run_init "$OUTF"
 check_rc 0 '正常路径应退出 0'
-check_out '已挂载 /proc' '输出应包含挂载 /proc'
-check_out '已挂载 /sys' '输出应包含挂载 /sys'
-check_out '已挂载 /dev' '输出应包含挂载 /dev'
+check_out 'Mounted /proc' '输出应包含挂载 /proc'
+check_out 'Mounted /sys' '输出应包含挂载 /sys'
+check_out 'Mounted /dev' '输出应包含挂载 /dev'
 check_cmds 'mount -t proc proc /proc' '应挂载 /proc'
 check_cmds 'mount -t sysfs sysfs /sys' '应挂载 /sys'
 check_cmds 'mount -t devtmpfs devtmpfs /dev' '应挂载 /dev'
@@ -115,7 +115,7 @@ else
     _fail 'mdev -s 应在全部模块加载之后'
 fi
 check_out 'MENU_EXEC_MARKER' '最后应 exec menu.sh（假 menu.sh 打标记）'
-check_not_out '失败' '正常路径不应出现失败提示'
+check_not_out 'failed' '正常路径不应出现失败提示'
 cleanup_case
 
 # ---------- I2：modprobe 某模块失败 ----------
@@ -124,8 +124,8 @@ setup_stub
 printf 'mpt3sas\n' > "$ROOT/modprobe.fail"
 run_init "$OUTF"
 check_rc 0 '失败后进入救援 shell，shell 退出后进程正常结束'
-check_out '✗ 加载内核模块 mpt3sas 失败' '应打印模块加载失败错误'
-check_out '救援 shell' '应提示停留在救援 shell'
+check_out 'ERROR: failed to load kernel module mpt3sas' '应打印模块加载失败错误'
+check_out 'rescue shell' '应提示停留在救援 shell'
 check_out 'RESCUE_SHELL_MARKER' '应进入救援 shell（假 sh 打标记）'
 check_not_out 'MENU_EXEC_MARKER' '失败时不得 exec menu.sh'
 check_cmds 'modprobe mpt3sas' '应尝试加载失败模块（记录在 cmds.txt）'
@@ -139,7 +139,7 @@ setup_stub
 printf '/sys\n' > "$ROOT/mount.fail"
 run_init "$OUTF"
 check_rc 0 '挂载失败后进入救援 shell，shell 退出后进程正常结束'
-check_out '✗ 挂载 /sys 失败' '应打印挂载失败错误'
+check_out 'ERROR: mount /sys failed' '应打印挂载失败错误'
 check_out 'RESCUE_SHELL_MARKER' '应进入救援 shell（假 sh 打标记）'
 check_not_out 'MENU_EXEC_MARKER' '失败时不得 exec menu.sh'
 check_cmd_count 'modprobe' 0 '挂载失败后不得加载模块'

@@ -1,7 +1,7 @@
 # diskwipe-iso：一键把硬盘恢复为「未初始化」的可启动 ISO 工具
 
-- 版本：v1.1.0（`VERSION` 文件；iso 文件名含版本）
-- 定位：替代「FirPE + DiskGenius 逐盘删分区」的现场流程——从 U 盘启动后自动进入干净终端菜单，列出全部硬盘（默认全选），大写 `YES` 二次确认后一键清除分区表与文件系统签名，硬盘**秒级**恢复为「未初始化」。无图形界面、无「保存更改」中间步骤、无界面干扰。
+- 版本：v1.2.0（`VERSION` 文件；iso 文件名含版本）
+- 定位：替代「FirPE + DiskGenius 逐盘删分区」的现场流程——从 U 盘启动后自动进入干净终端菜单，列出全部硬盘（默认全选），大写 `YES` 二次确认后一键清除分区表与文件系统签名，硬盘**秒级**恢复为「未初始化」。无图形界面、无「保存更改」中间步骤、无界面干扰。**全部屏幕输出为英文（ASCII）**：init 启动提示、菜单、每盘结果在无中文字体的终端（IPMI 虚拟 KVM / 串口 SOL）上完全可读，无乱码。
 
 ## 1. 工具用途与安全边界
 
@@ -11,7 +11,7 @@
 
 | 边界 | 说明 |
 |---|---|
-| 只清分区表 + 签名 | 对整盘执行 `wipefs -a`：清 GPT/MBR 分区表签名与盘内全部 fs/raid/PV 签名，再以 `wipefs -n` 验证（输出为空 = 已未初始化） |
+| 只清分区表 + 签名 | 对整盘执行 `wipefs -a`：清 GPT/MBR 分区表签名与盘内全部 fs/raid/PV 签名；随后**立即 `partprobe`** 刷新内核分区视图（失败仅 `WARN:` 提示、不影响该盘结论，重启后同样生效），再以 `wipefs -n` 验证（输出为空 = 已未初始化） |
 | **不清数据块** | 不覆盖、不写零、不做安全擦除——数据块原文仍在盘上，只是分区表与签名被清；如需彻底抹除数据请另做安全擦除 |
 | **不清 SMART** | `wipefs` 只写块设备的签名区，**不读写 SMART 属性**——盘的通电时间、通电次数等统计保持不变 |
 
@@ -19,10 +19,11 @@
 
 - 运行时**完全离线**（不依赖网络；仅构建时需要网络）。
 - 操作**不可恢复**：分区表与签名一经清除无法复原，执行前请确认目标盘。
-- 启动介质保护：启动 U 盘（`TRAN=usb`）与光驱（`sr*`）**硬排除**，绝不误清；设备名有代码层白名单校验（仅 `sd[a-z]` / `nvme[0-9]n[0-9]` / `vd[a-z]` / `mmcblk[0-9]`，排除 `loop*` / `ram*`）。
+- 启动介质保护：启动 U 盘（`TRAN=usb`）与光驱（`sr*`）**硬排除**，绝不误清；设备名有代码层白名单校验（`sd[a-z]`/`sd[a-z][a-z]`、`nvme` 多位数字、`vd[a-z]`、`mmcblk` 多位数字——支持 27+ 块盘，排除 `loop*` / `ram*` / `sr*`）。
 - 不自动关机：清完后由现场手动断电/重启（屏幕提示）。
+- **屏幕全英文（乱码修复）**：v1.2.0 起 init 启动提示（挂载/模块加载/mdev/救援 shell）、菜单（标题/表头/类型/提示/确认/反馈）、每盘结果（`OK`/`FAIL`）全部为纯 ASCII——IPMI 虚拟 KVM（VGA→Linux vt console，无中文字体）、串口 SOL 均完全可读，不再出现方框乱码；中文仅保留在代码注释与本文档。引导菜单条目亦已 ASCII 化（`DiskWipe v1.2.0`）。
 
-> **白名单限制**：`nvme[0-9]n[0-9]` 与 `mmcblk[0-9]` 仅匹配单个数字（即 nvme0n1~nvme9n1、mmcblk0~mmcblk9），`sd` 仅到 `sdz`（不含 sdaa 等）；超出范围的盘（如 nvme10n1、mmcblk10、sdaa）**不会列出，也绝不会被清除**——现场如遇此类盘请先调整盘位/名称使其落入白名单。
+> **v1.2.0 白名单扩展**：白名单由 `sd[a-z]`/`nvme[0-9]n[0-9]`/`mmcblk[0-9]`（单数字、sdz 止）扩展为 `sd[a-z]`+`sd[a-z][a-z]`（支持 27+ 块盘，如 sdaa/sdab）、`nvme`/`mmcblk` 多位数字（如 nvme0n10、mmcblk10）——此类盘现在会正常列出并可清除；仍硬排除 `sr*`（光驱）、`loop*`、`ram*` 与 `TRAN=usb`（启动 U 盘）。
 >
 > **注意**：启动介质保护仅针对 `TRAN=usb` 的 U 盘与 `sr*` 光驱；**若直接从硬盘启动本 iso，该硬盘不会被排除，会正常出现在可清列表**（属设计口径，勿在装有系统/数据的硬盘上启动后回车清盘）。
 
@@ -31,7 +32,7 @@
 ```
 diskwipe-iso/
 ├── README.md            本说明
-├── VERSION              版本号（当前 1.1.0，iso 文件名含版本；构建时拷入 initramfs 的 /diskwipe.version）
+├── VERSION              版本号（当前 1.2.0，iso 文件名含版本；构建时拷入 initramfs 的 /diskwipe.version）
 ├── .gitignore           忽略构建产物 output/（不入库）
 ├── build.sh             Windows 一键构建入口（经 WSL Ubuntu 执行）
 ├── build-lib.sh         构建函数库（apt 依赖→组装 initramfs→cpio→grub.cfg→grub-mkrescue→isoinfo 校验）
@@ -41,7 +42,7 @@ diskwipe-iso/
 │   ├── wipe.sh          清除入口（逐盘 umount→wipefs -a→wipefs -n 验证）
 │   └── lib.sh           共享库（盘枚举/白名单/挂载点/类型标注/单盘清除）
 ├── output/              构建产物 diskwipe-v<版本>.iso（git 忽略，可随时由 build.sh 再生成）
-└── tests/               离线测试（t1 核心逻辑 / t2 菜单 / t3 initramfs / t4 清理日志，共 226 项用例）
+└── tests/               离线测试（t1 核心逻辑 / t2 菜单 / t3 initramfs / t4 清理日志 / t5 真机修复验收，共 281 项用例）
 ```
 
 ## 3. 构建（Windows 本机一键）
@@ -60,14 +61,14 @@ bash diskwipe-iso/build.sh
 
 **构建流程**（全部在 WSL 虚拟盘文件系统 + `output/` 内产出 iso **文件**，绝不写任何真实块设备）：
 
-1. apt 安装构建依赖（`busybox-static xorriso mtools grub-pc-bin grub-efi-amd64-bin linux-image-generic`，另补装 `genisoimage` 提供 isoinfo）；
-2. 组装 initramfs rootfs：静态 busybox + 全部 applet；util-linux 动态 `wipefs`/`lsblk`/`blkid`（`ldd` 收集 .so 依赖按原路径布局拷入，chroot 实测可运行；busybox-static 无 blkid applet，日志介质探测与系统盘判定依赖它）；磁盘驱动白名单模块目录 + **zstd 解压**（`.ko.zst` → `.ko`，busybox 无 zstd 解压能力）后 `depmod` 生成 `modules.dep`；`src/` 四个脚本（`init` 强制 `chmod +x`，内核要求 /init 可执行）；`VERSION` 拷入 rootfs 为 `/diskwipe.version`（菜单横幅与日志文件头的版本来源）；
+1. apt 安装构建依赖（`busybox-static xorriso mtools grub-pc-bin grub-efi-amd64-bin linux-image-generic zstd parted`——parted 提供 `partprobe`；另补装 `genisoimage` 提供 isoinfo）；
+2. 组装 initramfs rootfs：静态 busybox + 全部 applet；util-linux 动态 `wipefs`/`lsblk`/`blkid` + parted 的 `partprobe`（`wipefs -a` 后刷新内核分区视图用；`ldd` 收集 .so 依赖按原路径布局拷入，chroot 实测可运行；busybox-static 无 blkid applet，日志介质探测与系统盘判定依赖它）；磁盘驱动白名单模块目录 + **zstd 解压**（`.ko.zst` → `.ko`，busybox 无 zstd 解压能力）后 `depmod` 生成 `modules.dep`；`src/` 四个脚本（`init` 强制 `chmod +x`，内核要求 /init 可执行）；`VERSION` 拷入 rootfs 为 `/diskwipe.version`（菜单横幅与日志文件头的版本来源）；
 3. cpio 打包 initrd.img（gzip）；
 4. 写 `boot/grub/grub.cfg`（内核参数 `console=tty0 console=ttyS0,115200n8`），放置 vmlinuz/initrd.img 到 rootfs/boot/；
 5. `grub-mkrescue` 生成 **BIOS + UEFI 双引导** iso（兼容主流服务器；现场 Secure Boot 不开，无需签名）；
 6. `isoinfo` 校验：iso 含 `boot/grub/grub.cfg`、`boot/vmlinuz`、`boot/initrd.img`（目录树 + 实际抽取双检）；grub.cfg 含双 console 参数；initrd 内 /init 具执行位；initrd 内 `/diskwipe.version` 内容等于 VERSION；src 四脚本 `dash -n` 语法 0 错误。
 
-**产物**：`diskwipe-iso/output/diskwipe-v1.1.0.iso`（当前版本 1.1.0，约 71 MiB）。构建成功打印 iso 路径与使用说明；任何一步失败打印 `✗ ...` 并以非 0 退出（不静默）。
+**产物**：`diskwipe-iso/output/diskwipe-v1.2.0.iso`（当前版本 1.2.0，约 77M）。构建成功打印 iso 路径与使用说明；任何一步失败打印 `✗ ...` 并以非 0 退出（不静默）。
 
 ## 4. 写入 U 盘
 
@@ -77,14 +78,14 @@ bash diskwipe-iso/build.sh
 
 ```bash
 # 以 U 盘设备号为 /dev/sdX 为例（用 lsblk 确认，勿用整机系统盘）
-sudo dd if=diskwipe-v1.1.0.iso of=/dev/sdX bs=4M status=progress
+sudo dd if=diskwipe-v1.2.0.iso of=/dev/sdX bs=4M status=progress
 sync
 ```
 
 **Windows（Rufus）**：
 
 1. 打开 Rufus，在「设备」选择目标 U 盘；
-2. 「引导类型选择」选中 `diskwipe-v1.1.0.iso`；
+2. 「引导类型选择」选中 `diskwipe-v1.2.0.iso`；
 3. 写入方式选择 **DD 镜像**（保证 BIOS+UEFI 双引导兼容性；若默认「ISO 镜像」方式写出的 U 盘在某台机器引导失败，改用 DD 模式重写）；
 4. 点「开始」等待完成。
 
@@ -93,12 +94,13 @@ sync
 | 步骤 | 操作 | 期望结果 |
 |---|---|---|
 | 1 | 按第 4 节把 iso 写入 U 盘 | 写入完成无报错 |
-| 2 | 目标服务器从 U 盘启动（BIOS/UEFI 均可；Secure Boot 关闭） | 出现引导菜单（`DiskWipe v1.1.0 硬盘清理工具`），3 秒自动进入 |
-| 3 | 菜单**列出全部硬盘**（编号/设备/容量/型号，系统盘标注「系统盘」、其余「数据盘」） | 每块目标盘一行；启动 U 盘、光驱不出现 |
-| 4 | 默认全选（直接回车）或输入编号排除不想要的盘，再回车 | 打印「将清除以下 N 块硬盘」清单，与预期一致 |
-| 5 | 输入大写 `YES` 确认 | 逐盘输出 `✓ 已恢复未初始化：/dev/...`；失败盘显式标 `✗` |
-| 6 | 退出（输入 0）后断电/重启 | 提示可断电/重启 |
-| 7 | **验证**：DiskGenius 或 `lsblk` 查看目标盘 | 目标盘**无分区**（`lsblk` 无分区子项；`lsblk -f` 无 FSTYPE），即「未初始化」 |
+| 2 | 目标服务器从 U 盘启动（BIOS/UEFI 均可；Secure Boot 关闭） | 出现引导菜单（`DiskWipe v1.2.0`），3 秒自动进入 |
+| 3 | 启动第一屏（init 提示） | 全英文可读（`Mounted /proc`、`Disk driver modules loaded`、`Device nodes scanned` 等），无乱码 |
+| 4 | 菜单**列出全部硬盘**（编号/设备/容量/型号，类型标注 SYS=系统盘 / DATA=数据盘 / UNK=未知） | 每块目标盘一行；启动 U 盘、光驱不出现 |
+| 5 | 默认全选（直接回车）或输入编号排除不想要的盘，再回车 | 打印 `Will wipe the following N disks (irreversible!). Type YES to confirm:` 清单，与预期一致 |
+| 6 | 输入大写 `YES` 确认 | 逐盘输出 `OK /dev/<dev> reset to uninitialized`；失败盘显式 `FAIL /dev/<dev>: <英文原因>` |
+| 7 | 退出（输入 0）后断电/重启 | 提示 `Exited. You may power off or reboot after done.` |
+| 8 | **验证**：DiskGenius 或 `lsblk` 查看目标盘 | 目标盘**无分区**（`lsblk` 无分区子项；`lsblk -f` 无 FSTYPE），即「未初始化」 |
 
 验证命令示例：
 
@@ -119,10 +121,10 @@ lsblk -f         # 目标盘无文件系统列（FSTYPE 为空）
   | 类 | 内容 |
   |---|---|
   | 基础信息 | 工具版本（读 initramfs 内 `/diskwipe.version`，构建时由 `VERSION` 拷入）、会话开始/结束时间、日志介质状态（usb/none） |
-  | 盘清单 | 清理目标盘：设备、容量、型号、类型（系统盘/数据盘/未知） |
-  | 每盘结果 | 每盘 `✓ 已恢复未初始化` 或 `✗ <原因>`，含失败汇总 |
-  | 排除/跳过记录 | 会话内的排除编号汇总（如「已排除编号：1,2」）与「仅发现启动介质」等汇总提示（按代码实际落日志内容，不含逐设备名） |
-- **无可写介质**：未插 U 盘/无可写分区时打印「未找到可写日志介质，本次日志仅屏幕显示。」，**不阻断清理**（清理照常执行、结果仍显示屏幕）。
+  | 盘清单 | 清理目标盘：设备、容量、型号、类型（SYS 系统盘 / DATA 数据盘 / UNK 未知） |
+  | 每盘结果 | 每盘 `OK /dev/<dev> reset to uninitialized` 或 `FAIL /dev/<dev>: <英文原因>`，含失败汇总 |
+  | 排除/跳过记录 | 会话内的排除编号汇总（如 `Excluded: 1,2`）与 `Only boot media found` 等汇总提示（按代码实际落日志内容，不含逐设备名） |
+- **无可写介质**：未插 U 盘/无可写分区时打印 `No writable log media found; log will be screen-only.`，**不阻断清理**（清理照常执行、结果仍显示屏幕）。
 - **驱动覆盖**：initramfs 驱动白名单含 USB3 控制器（`xhci_pci`）与 **usb-storage/uas**（U 盘块设备生成必需）；qemu 冒烟已实测虚拟 U 盘（VTOYEFI+数据区）可识别、日志真实落盘（`DW_LOG_MEDIA=usb`），见验证记录。
 
 ## 7. 交互说明
@@ -131,26 +133,28 @@ lsblk -f         # 目标盘无文件系统列（FSTYPE 为空）
 
 ```
 ==============================================
-  硬盘清理工具 1.1.0  清除分区并恢复为未初始化
+  DiskWipe Tool 1.2.0 - Reset disks to uninitialized
 ==============================================
-  编号  设备      容量    型号/状态              类型
+  #     Device  Size  Model/Status  Type
   ---------------------------------------------------
-  1    /dev/sda  894G   HGST 7K6000 (SATA)       系统盘
-  2    /dev/sdb  894G   Samsung PM983 (NVMe)     数据盘
+  1    /dev/sda  894G   HGST 7K6000 (SATA)  SYS
+  2    /dev/sdb  894G   Samsung PM983 (NVME)  DATA
   ---------------------------------------------------
-  默认已全部选中；输入要【排除】的编号（可多选如 1,2；直接回车=全部）
+  Default: all selected. Enter exclusions (e.g. 1,2; empty = all)
+  0 = exit (power off or reboot after done)
+>
 ```
 
 交互规则（与脚本实际行为逐条对应）：
 
 - **默认全选**：直接回车 = 全部选中；输入编号（逗号/空格分隔，可多选如 `1,2`）= **排除**对应盘，非法/越界编号忽略；排除列表为空即全选。
-- **输入 `0` 退出**：打印「已退出。清除完成后可断电或重启。」后退出。
-- **二次确认**：打印将清除清单后，**必须输入大写 `YES`** 才执行；非 YES（含小写 yes）提示「已取消（未执行清除）」并回到菜单。
-- **清除流程**：每盘先 `umount` 全部子树挂载点 → `wipefs -a` 整盘 → `wipefs -n` 验证；逐盘打印 `✓ 已恢复未初始化：/dev/...` 或 `✗ <失败原因>`。单盘失败不影响其他盘，失败盘会汇总列出。
+- **输入 `0` 退出**：打印 `Exited. You may power off or reboot after done.` 后退出。
+- **二次确认**：打印 `Will wipe the following N disks (irreversible!). Type YES to confirm:` 清单后，**必须输入大写 `YES`** 才执行；非 YES（含小写 yes）提示 `Cancelled (nothing wiped).` 并回到菜单。
+- **清除流程**：每盘先 `umount` 全部子树挂载点 → `wipefs -a` 整盘 → **立即 `partprobe`**（刷新内核分区视图；失败仅 `WARN: partprobe failed ...`，不影响该盘结论）→ `wipefs -n` 验证；逐盘打印 `OK /dev/<dev> reset to uninitialized` 或 `FAIL /dev/<dev>: <英文原因>`（原因：`umount failed` / `wipefs -a failed` / `wipefs -n failed` / `signatures remain` / `not whitelisted`）。单盘失败不影响其他盘，失败盘会汇总列出（`Failed disks: ...`）。
 - **循环刷新**：清除结束后回到主菜单（盘列表刷新），可继续清理或输入 `0` 退出。
-- **类型标注**：探测到 OS 迹象（EFI 系统分区 / MBR 活动分区 / ntfs 等）标「系统盘」，无迹象标「数据盘」，判定失败标「未知」——**仅提示，不影响可勾选**（系统盘、业务盘都清）。
-- **启动介质保护**：`TRAN=usb` 的 U 盘与 `sr*` 光驱硬排除；若只剩启动介质（无可清硬盘），提示「仅发现启动介质」并退出，不执行任何清除。
-- **启动失败兜底**：init 任一步失败（挂载/模块加载/mdev）打印错误并**停留在救援 shell**（可输入命令排查，`exit` 退出），不会静默继续。
+- **类型标注**：探测到 OS 迹象（EFI 系统分区 / MBR 活动分区 / ntfs 等）标 `SYS`，无迹象标 `DATA`，判定失败标 `UNK`——**仅提示，不影响可勾选**（系统盘、业务盘都清）。
+- **启动介质保护**：`TRAN=usb` 的 U 盘与 `sr*` 光驱硬排除；若只剩启动介质（无可清硬盘），提示 `Only boot media found (no wipable disks; boot USB/optical drive auto-excluded)` 并退出，不执行任何清除。
+- **启动失败兜底**：init 任一步失败（挂载/模块加载/mdev）打印英文错误（`ERROR: ...`）并**停留在救援 shell**（`Stuck at rescue shell (run commands to diagnose; type exit to quit)`，可输入命令排查，`exit` 退出），不会静默继续。
 
 ## 8. 驱动兜底（特殊 SAS/RAID 卡不识别盘）
 
@@ -170,7 +174,7 @@ lsblk -f         # 目标盘无文件系统列（FSTYPE 为空）
 
 ## 9. 测试
 
-**运行全部测试**（本机 Git Bash；共 226 项用例，任一失败整体退出非 0）：
+**运行全部测试**（本机 Git Bash；共 281 项用例，任一失败整体退出非 0）：
 
 ```bash
 bash diskwipe-iso/tests/run-all.sh
@@ -180,11 +184,21 @@ bash diskwipe-iso/tests/run-all.sh
   ```bash
   "C:\Program Files\Git\bin\bash.exe" diskwipe-iso/tests/run-all.sh
   ```
-- 四个测试组：`t1_wipe`（核心逻辑：枚举/类型标注/umount→wipefs→验证/逐盘独立/整盘含空格挂载点，79 项）、`t2_menu`（交互：默认全选/排除/YES/0 退出/循环刷新/仅启动介质/TRAN 空型号显示，59 项）、`t3_init`（initramfs 启动编排：挂载→模块白名单→mdev→exec menu.sh，失败进救援 shell，38 项）、`t4_log`（清理日志持久化：介质挂载/跳过 VTOYEFI/会话级单文件多轮追加/无介质降级/0 退出卸载/版本回退/写失败不阻断，50 项）。
-- **测试安全**：全部用例在临时目录以**假件注入**运行（`LSBLK_BIN`/`BLKID_BIN`/`WIPEFS_BIN`/`UMOUNT_BIN` 接缝变量指向假命令），wipefs 假件只把调用参数记入 `cmds.txt`、绝不执行真实 wipefs，**绝不触碰本机真实块设备**。
+- 五个测试组：`t1_wipe`（核心逻辑：枚举/类型标注/umount→wipefs→partprobe→验证/逐盘独立/整盘含空格挂载点，89 项）、`t2_menu`（交互：默认全选/排除/YES/0 退出/循环刷新/仅启动介质/TRAN 空型号显示，61 项）、`t3_init`（initramfs 启动编排：挂载→模块白名单→mdev→exec menu.sh，失败进救援 shell（英文提示），44 项）、`t4_log`（清理日志持久化：介质挂载/跳过 VTOYEFI/会话级单文件多轮追加/无介质降级/0 退出卸载/版本回退/写失败不阻断，50 项）、`t5_ascii`（真机修复验收：N1 屏幕输出纯 ASCII / N2 SYS-DATA-UNK 标注 / N3 OK-FAIL 结果行 / N4 partprobe 时机与 WARN / N5 PARTPROBE_BIN 接缝 / N6 白名单扩展，37 项）。
+- **测试安全**：全部用例在临时目录以**假件注入**运行（`LSBLK_BIN`/`BLKID_BIN`/`WIPEFS_BIN`/`UMOUNT_BIN`/`PARTPROBE_BIN` 接缝变量指向假命令），wipefs/partprobe 假件只把调用参数记入 `cmds.txt`、绝不执行真实命令，**绝不触碰本机真实块设备**。
 
 **语法校验**（initramfs 运行时只有 busybox ash，脚本必须保持 POSIX/ash 兼容）：
 
 ```bash
 "C:\Program Files\Git\bin\bash.exe" --posix -n diskwipe-iso/src/*.sh diskwipe-iso/src/init
 ```
+
+## 10. 交付后重测指引（v1.2.0 真机验收）
+
+用 v1.2.0 iso（`output/diskwipe-v1.2.0.iso`）执行真机复测：
+
+1. 写入 U 盘后从目标服务器启动（IPMI 虚拟 KVM 查看）。
+2. 确认**启动第一屏与菜单全部英文可读**（无方框乱码；含系统盘在内每块盘一行，类型 SYS/DATA/UNK）。
+3. **全选**（直接回车）→ 大写 `YES` 确认 → 逐盘核对 `OK /dev/<dev> reset to uninitialized` / `FAIL /dev/<dev>: <英文原因>`。
+4. 退出（输入 0）后重启，用 **FirPE** 复查系统盘与业务盘均为「未初始化」（无分区/无系统）。
+5. 若系统盘仍未清，**记录盘列表与每盘结果**（拍照/抄录 `OK`/`FAIL` 行）反馈实现方定位。

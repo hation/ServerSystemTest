@@ -27,7 +27,8 @@ DW_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk v
 # grub-efi-amd64-bin(UEFI)，mtools 提供 mformat 生成 EFI 镜像；
 # zstd：Ubuntu 24.04 generic 内核 CONFIG_MODULE_COMPRESS_ZSTD，模块全部 .ko.zst 压缩，
 # busybox 静态版无 zstd 解压能力 → 构建期统一解压为 .ko，见 dw_assemble_rootfs 2.3 步）
-DW_APT_PKGS="busybox-static xorriso mtools grub-pc-bin grub-efi-amd64-bin linux-image-generic zstd"
+# parted：提供 /usr/sbin/partprobe（wipefs -a 后刷新内核分区视图，见下 2.2 步）
+DW_APT_PKGS="busybox-static xorriso mtools grub-pc-bin grub-efi-amd64-bin linux-image-generic zstd parted"
 
 dw_fail() {
     echo "✗ $*" >&2
@@ -73,17 +74,23 @@ dw_assemble_rootfs() {
     done
     echo "     busybox applet 链接数：$(ls "$rootfs"/bin | wc -l)"
 
-    # 2.2 util-linux 动态 wipefs/lsblk/blkid + ldd 收集 .so 依赖（按原绝对路径布局，动态 loader 运行）。
+    # 2.2 util-linux 动态 wipefs/lsblk/blkid + parted 的 partprobe，统一 ldd 收集 .so
+    #    依赖（按原绝对路径布局，动态 loader 运行）。
     # blkid：busybox-static 无 blkid applet（实测 --list 不含）——日志介质文件系统探测
     #       （dw_mount_log_media 的 vfat/exfat/ntfs 过滤）与系统盘判定（dw_is_system_disk）
     #       都依赖它，必须随 util-linux 拷入
-    for bin in wipefs lsblk blkid; do
+    # partprobe：wipefs -a 后刷新内核分区视图（lib.sh dw_wipe_disk 调用）。注意它来自
+    #       GNU parted 包（非 util-linux，实测 dpkg -L util-linux 无 partprobe），随
+    #       DW_APT_PKGS 的 parted 安装；ldd 依赖（libparted/libdevmapper/libselinux/
+    #       libudev 等）由下方通用 ldd 收集
+    for bin in wipefs lsblk blkid partprobe; do
         src_bin="$(command -v "$bin")"
         [ -n "$src_bin" ] || { dw_fail "未找到 util-linux $bin（util-linux 未安装？）"; return 1; }
         case "$bin" in
-        wipefs) dst="$rootfs/usr/sbin/wipefs" ;;
-        lsblk)  dst="$rootfs/usr/bin/lsblk" ;;
-        blkid)  dst="$rootfs/usr/sbin/blkid" ;;
+        wipefs)    dst="$rootfs/usr/sbin/wipefs" ;;
+        lsblk)     dst="$rootfs/usr/bin/lsblk" ;;
+        blkid)     dst="$rootfs/usr/sbin/blkid" ;;
+        partprobe) dst="$rootfs/usr/sbin/partprobe" ;;
         esac
         cp "$src_bin" "$dst" || { dw_fail "拷贝 $bin 失败"; return 1; }
         # ldd 解析：'libx => /abs/path (addr)' 取第 3 字段；'/abs/path (addr)'（如 ld-linux）取第 1 字段
@@ -101,7 +108,9 @@ dw_assemble_rootfs() {
         || { dw_fail "lsblk 动态依赖不完整（chroot 运行失败）"; return 1; }
     $DW_SUDO chroot "$rootfs" /usr/sbin/blkid --version >/dev/null 2>&1 \
         || { dw_fail "blkid 动态依赖不完整（chroot 运行失败）"; return 1; }
-    echo "     wipefs/lsblk/blkid 动态依赖完整（chroot 实测可运行）"
+    $DW_SUDO chroot "$rootfs" /usr/sbin/partprobe --version >/dev/null 2>&1 \
+        || { dw_fail "partprobe 动态依赖不完整（chroot 运行失败）"; return 1; }
+    echo "     wipefs/lsblk/blkid/partprobe 动态依赖完整（chroot 实测可运行）"
 
     # 2.3 内核模块白名单：拷贝驱动目录（含依赖）+ depmod 生成 modules.dep。
     # /lib/modules 下模块文件需 root 可读（/boot、部分模块 0600），统一走 $DW_SUDO
@@ -197,7 +206,7 @@ dw_write_bootfiles() {
     cat > "$rootfs/boot/grub/grub.cfg" <<EOF
 set timeout=3
 set default=0
-menuentry "DiskWipe v$version 硬盘清理工具" {
+menuentry "DiskWipe v$version" {
     linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8
     initrd /boot/initrd.img
 }

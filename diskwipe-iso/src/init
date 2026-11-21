@@ -29,30 +29,30 @@ DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_bl
 
 # 启动失败：打印错误并停留在救援 shell（不 exec menu.sh，便于现场诊断）
 init_rescue() {
-    echo "✗ $1"
-    echo "已停留在救援 shell（可输入命令排查；exit 可退出）..."
+    echo "ERROR: $1"
+    echo "Stuck at rescue shell (run commands to diagnose; type exit to quit)..."
     exec sh
     # exec 失败（极端情况）时以非 0 终止，避免带病继续启动
     exit 1
 }
 
 # 1) 挂载基础文件系统（busybox mount；/dev 用 devtmpfs，mdev 再补设备节点）
-mount -t proc proc /proc || init_rescue "挂载 /proc 失败"
-echo "已挂载 /proc"
-mount -t sysfs sysfs /sys || init_rescue "挂载 /sys 失败"
-echo "已挂载 /sys"
-mount -t devtmpfs devtmpfs /dev || init_rescue "挂载 /dev 失败"
-echo "已挂载 /dev"
+mount -t proc proc /proc || init_rescue "mount /proc failed"
+echo "Mounted /proc"
+mount -t sysfs sysfs /sys || init_rescue "mount /sys failed"
+echo "Mounted /sys"
+mount -t devtmpfs devtmpfs /dev || init_rescue "mount /dev failed"
+echo "Mounted /dev"
 
 # 2) 逐模块加载磁盘驱动白名单（任一失败立即停止并进入救援 shell）
 for im in $DRIVE_MODULES; do
-    modprobe "$im" || init_rescue "加载内核模块 $im 失败"
+    modprobe "$im" || init_rescue "failed to load kernel module $im"
 done
-echo "磁盘驱动模块加载完成"
+echo "Disk driver modules loaded"
 
 # 3) mdev -s 扫描并创建设备节点
-mdev -s || init_rescue "mdev -s 扫描设备失败"
-echo "设备节点扫描完成"
+mdev -s || init_rescue "mdev -s device scan failed"
+echo "Device nodes scanned"
 
 # 4) 等待设备稳定 + 重试探测日志介质（最多 3 轮，每轮间隔 2s）。
 #    为什么重试：USB 存储设备在 usb-storage 模块加载后才异步枚举/绑定（qemu 实测

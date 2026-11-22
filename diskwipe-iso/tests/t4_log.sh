@@ -225,4 +225,66 @@ check_cmds 'wipefs -a /dev/sdb' '清理仍执行'
 check_cmds 'umount /diskwipe-log' '退出仍尽力卸载'
 cleanup_case
 
+# ---------- L8：写测试超时（U 盘写 I/O 阻塞）→ 降级 none，不挂起 ----------
+CASE="L8 写测试超时降级 none"
+setup_case
+cat > "$ROOT/lsblk.table" <<'EOF'
+NAME SIZE TYPE MODEL TRAN MOUNTPOINT
+sda 894G disk HGST 7K6000 sata
+sdc 30G disk USB DISK 3.0 usb
+sdc1 8G part USB DISK 3.0 usb
+EOF
+add_blk_type sdc1 exfat
+# 开关：写测试（sh -c 含 printf x >）返回 124（模拟介质写阻塞超时）
+touch "$ROOT/timeout.writetest"
+run_mount "$OUTF"
+check_rc 0 '写测试超时 dw_mount_log_media 应正常返回（不挂起）'
+check_out 'DW_LOG_MEDIA=none' '写测试超时应降级 DW_LOG_MEDIA=none'
+check_cmds 'mount /dev/sdc1 /diskwipe-log' '应尝试挂载可写分区'
+check_not_cmds 'wipefs' '不得触发任何清除'
+cleanup_case
+
+# ---------- L9：dw_log tee 超时 → LOG_DEGRADED 降级 + WARN + 后续只屏幕 ----------
+CASE="L9 dw_log 写超时降级"
+setup_case
+touch "$ROOT/timeout.tee"
+mkdir -p "$ROOT/logdir"
+PATH="$FAKE_BIN:$PATH" \
+LSBLK_BIN=lsblk BLKID_BIN=blkid WIPEFS_BIN=wipefs UMOUNT_BIN=umount \
+LOG_FILE="$ROOT/logdir/t.log" \
+bash -c ". \"$LIB_SH\"; dw_log 'first line'; dw_log 'second line'; echo \"DEGRADED=\$LOG_DEGRADED\"" > "$OUTF" 2>&1
+LAST_RC=$?
+check_rc 0 'dw_log 写超时应正常返回（不挂起）'
+check_out 'second line' '降级后第二行仍显示屏幕（降级分支 echo）'
+check_out 'DEGRADED=1' '写超时后应置 LOG_DEGRADED=1'
+check_out 'WARN: cleanup log media failed' '应打印一次性 WARN 提示'
+# 日志文件不得被写入（tee 超时未落盘；降级后也不写）
+if [ -f "$ROOT/logdir/t.log" ] && grep -Fq 'second line' "$ROOT/logdir/t.log"; then
+    _fail '降级后日志文件不得写入'
+else
+    _pass '降级后日志文件不写入'
+fi
+cleanup_case
+
+# ---------- L10：menu 全流程 + 日志介质写超时 → 清理照常 + 0 退出正常 ----------
+CASE="L10 日志介质写超时清理照常"
+setup_case
+cat > "$ROOT/lsblk.table" <<'EOF'
+NAME SIZE TYPE MODEL TRAN MOUNTPOINT
+sda 894G disk HGST 7K6000 sata
+sdb 894G disk Samsung PM983 nvme
+EOF
+mkdir -p "$ROOT/logdir"
+touch "$ROOT/timeout.tee"
+run_menu $'\nYES\n0\n' "$OUTF" DW_LOG_MEDIA=usb LOG_DIR="$ROOT/logdir"
+check_rc 0 '日志写超时清理应正常退出 0'
+check_out 'WARN: cleanup log media failed' '应提示日志介质写失败'
+check_out 'OK /dev/sda reset to uninitialized' '清理结果仍显示屏幕'
+check_out 'OK /dev/sdb reset to uninitialized' '两盘结果均显示'
+check_out 'Exited' '0 退出正常'
+check_cmds 'wipefs -a /dev/sda' '清理仍执行'
+check_cmds 'wipefs -a /dev/sdb' '清理仍执行'
+check_cmds 'umount /diskwipe-log' '退出仍尽力卸载'
+cleanup_case
+
 finish

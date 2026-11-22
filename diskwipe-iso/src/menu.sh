@@ -224,8 +224,14 @@ EOF
     if [ "$myn" = "YES" ]; then
         echo
         dw_log "Wiping: umount -> wipefs -a -> partprobe -> wipefs -n verify..."
-        # 每盘结果（OK/FAIL）经 stdout 由 tee 同时落到屏幕与日志文件
-        "$WIPE_SH" $msel 2>&1 | tee -a "${LOG_FILE:-/dev/null}"
+        # 每盘结果（OK/FAIL）经 stdout 由 tee 同时落到屏幕与日志文件；日志介质已降级
+        # （LOG_DEGRADED）时仅屏幕显示、不写盘（tee 不包 timeout——写管道超时可能
+        # SIGPIPE 中断 wipe.sh，故降级检查代替超时；dw_log 前置写入失败即触发降级）
+        if [ "${LOG_DEGRADED:-0}" = "1" ]; then
+            "$WIPE_SH" $msel 2>&1
+        else
+            "$WIPE_SH" $msel 2>&1 | tee -a "${LOG_FILE:-/dev/null}"
+        fi
         echo
         continue
     fi

@@ -369,8 +369,19 @@ dw_version() {
 
 # 日志双写：屏幕 + 追加到日志文件（LOG_FILE 未设置/为空 → tee 到 /dev/null，仅屏幕）。
 # tee 写失败仅提示、不阻断调用方（清理逻辑不因日志失败受影响）。
+# v1.3.1：写 U 盘包 timeout 2——介质 I/O 阻塞时 2 秒超时即降级 LOG_DEGRADED=1
+#   （后续 dw_log 仅屏幕 + 一次性 WARN 提示），绝不拖住菜单/清理；日志写失败与
+#   LOG_DEGRADED 判定均基于管道末命令（timeout）返回码。
 dw_log() {
-    echo "$1" | tee -a "${LOG_FILE:-/dev/null}"
+    if [ "${LOG_DEGRADED:-0}" = "1" ]; then
+        echo "$1"
+        return 0
+    fi
+    echo "$1" | "$TIMEOUT_BIN" 2 tee -a "${LOG_FILE:-/dev/null}"
+    if [ "$?" -ne 0 ]; then
+        LOG_DEGRADED=1
+        echo "WARN: cleanup log media failed; log is screen-only." >&2
+    fi
 }
 
 # 探测并挂载日志介质（U 盘可写分区）：
@@ -415,8 +426,10 @@ dw_mount_log_media() {
         if ! mount "/dev/$dwpart" /diskwipe-log >/dev/null 2>&1; then
             continue
         fi
-        if printf 'x' > "$DW_LOG_PROBE" 2>/dev/null \
-           && rm -f "$DW_LOG_PROBE" 2>/dev/null; then
+        # v1.3.1：写测试（含删）包 timeout 3——U 盘写 I/O 阻塞时 3 秒超时即放弃该
+        # 候选（继续/降级 none），init 启动不被坏介质拖死（仅只读探测与写测试超时；
+        # mount 不加 timeout）。
+        if "$TIMEOUT_BIN" 3 sh -c 'printf x > "$1" && rm -f "$1"' sh "$DW_LOG_PROBE" 2>/dev/null; then
             DW_LOG_MEDIA=usb
             export DW_LOG_MEDIA
             return 0

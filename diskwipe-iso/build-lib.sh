@@ -351,6 +351,12 @@ dw_write_bootfiles() {
     cat > "$rootfs/boot/grub/grub.cfg" <<EOF
 set timeout=3
 set default=0
+# 强制文本终端（VGA 文本模式，所有显卡均支持）：grub-mkrescue 内嵌配置默认 gfxterm，
+# 在无合适视频模式的服务器上会报 "error: no suitable video mode found. Booting in
+# blind mode" 并进入盲模式（菜单不可见）——terminal_output console 切回文本终端规避。
+set gfxmode=auto
+terminal_output console
+terminal_input console
 menuentry "DiskWipe v$version" {
     linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8
     initrd /boot/initrd.img

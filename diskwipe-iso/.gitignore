@@ -1,5 +1,7 @@
 # diskwipe-iso 构建产物（iso 体积大且可由 build.sh 再生，不入库）
 output/
-# Kylin 内核材料解压目录（996M，可由 kylin-src-<日期>.tar.gz 解压再生，不入库；
-# tar.gz 本体作为构建材料入库保留）
+# Kylin 内核材料解压目录（996M，可由 kylin-src-<日期>.tar.gz 解压再生，不入库）
 kylin-src/
+# Kylin 内核材料 tar.gz（425M，超 GitHub 100MB 限制不入库；本地保留，构建需手动放入
+# diskwipe-iso/ 后 build.sh 自动检测）
+kylin-src-*.tar.gz

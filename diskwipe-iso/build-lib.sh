@@ -13,6 +13,21 @@
 #     清单拷入并 sed 改后缀；固件仅拷 amd-ucode（CPU 微码，缺失不阻塞）。
 #     自动检测：kylin-src/boot/vmlinuz-4.19* 存在即用 Kylin 内核；或 DW_KERNEL_MODE
 #     （auto|ubuntu|kylin，build.sh 可透传）显式指定。
+# v1.5.0 引导方式重构（BIOS → ISOLINUX + UEFI → 精简 GRUB），根治两个真机问题：
+#   - 问题1（GRUB 视频模式盲模式卡死）：grub-mkrescue 的 GRUB 2.12 core 内嵌 gfxterm，
+#     在该海光服务器无合适视频模式 → "error: no suitable video mode found. Booting in
+#     blind mode" → 盲模式 boot 卡死（黑屏）。v1.5.0 起 BIOS 引导不再经 GRUB，改
+#     ISOLINUX（syslinux，纯文本 VGA，无视频模式概念）；UEFI 引导用 grub-mkimage
+#     手动打包的精简 GRUB（剔除 gfxterm/video/video_fb/efi_gop/efi_uga 模块，纯文本终端）。
+#   - 问题2（initrd 传递）：Ventoy「grub2 mode」（Ventoy 自己的 grub 2.04）执行我们的
+#     grub.cfg 时打印 loading initrd 但内核未收到 initramfs（无 Unpacking initramfs/
+#     Run /init），卡在无 initramfs + 无 root= 挂 root。initrd 本身完全正常（/init 755、
+#     busybox 静态 x86-64、gzip 格式 Kylin 4.19 支持）。v1.5.0 起 BIOS 路径 initrd 加载
+#     走 syslinux 成熟路径（isolinux.cfg 的 KERNEL + APPEND initrd=）。
+#   iso 生成由 grub-mkrescue 改为 xorriso 手动打包（见 dw_mkiso）：
+#     isohdpfx.bin 作混合 MBR + El Torito BIOS 项 isolinux/isolinux.bin +
+#     El Torito UEFI 项 EFI/BOOT/BOOTX64.EFI（embedded 配置 search -f /boot/grub/grub.cfg
+#     + terminal_output console 文本终端）+ -isohybrid-gpt-basdat。
 #
 # 流程（与设计 §10 一致）：
 #   1) apt 安装构建依赖（幂等：已装自动跳过）
@@ -22,10 +37,16 @@
 #      manifest sed 改后缀）+ src 四脚本（init 强制 chmod +x——内核要求 /init 可执行）
 #      + VERSION → /diskwipe.version
 #   3) cpio 打包 initrd.img（gzip）
-#   4) 写 boot/grub/grub.cfg（linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8
-#      + initrd /boot/initrd.img），放置 vmlinuz/initrd.img 到 rootfs/boot/
-#   5) grub-mkrescue 生成 BIOS+UEFI 双引导 iso → <proj>/output/diskwipe-v<版本>.iso
-#   6) isoinfo 校验：三个关键文件存在 + grub.cfg 双 console 参数 +
+#   4) 写引导文件 + 放置 vmlinuz/initrd.img 到 rootfs/boot/：
+#      boot/grub/grub.cfg（UEFI 精简 GRUB 用，文本终端 terminal_output console +
+#      gfxmode/gfxpayload=text，linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8
+#      + initrd）、isolinux/isolinux.bin + isolinux.cfg（BIOS 用，KERNEL /boot/vmlinuz +
+#      APPEND console=tty0 console=ttyS0,115200n8 initrd=/boot/initrd.img）、
+#      EFI/BOOT/BOOTX64.EFI（grub-mkimage 精简版，无 gfxterm/video 模块）
+#   5) xorriso 手动打包 BIOS(ISOLINUX)+UEFI(精简 GRUB) 双引导 iso →
+#      <proj>/output/diskwipe-v<版本>.iso（替代 grub-mkrescue）
+#   6) isoinfo 校验：isolinux.bin/isolinux.cfg、EFI/BOOT/BOOTX64.EFI、boot/grub/grub.cfg、
+#      boot/vmlinuz、boot/initrd.img 存在 + isolinux.cfg/grub.cfg 双 console 参数 +
 #      initrd 内 /init 执行位 + src 四脚本 dash -n 语法 0 错误 +
 #      kylin 模式追加：vmlinuz 为 Kylin 4.19（strings 版本串）+ 关键模块未压缩 .ko
 #
@@ -44,14 +65,20 @@ DW_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk v
 # 挂载需要）。依赖链（ahci→libahci→libata、nvme→nvme-core→nvme-common、uas→usb-storage、
 # mpt3sas→raid_class+scsi_transport_sas、vfat→fat）由 dw_modules_kylin 按 modules.dep 解析
 DW_KYLIN_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat"
-# apt 构建依赖（幂等：已装自动跳过；grub-mkrescue 双引导需要 grub-pc-bin(BIOS) +
-# grub-efi-amd64-bin(UEFI)，mtools 提供 mformat 生成 EFI 镜像；
+# apt 构建依赖（幂等：已装自动跳过）。
+# isolinux：提供 /usr/lib/ISOLINUX/isolinux.bin + isohdpfx.bin（v1.5.0 BIOS ISOLINUX
+#   引导与混合 MBR 必需；syslinux 为其依赖包，一并安装）
+# grub-efi-amd64-bin：提供 grub-mkimage 的 x86_64-efi 模块（v1.5.0 UEFI 精简 GRUB
+#   BOOTX64.EFI 打包必需）
+# grub-pc-bin/mtools：旧 grub-mkrescue 依赖（v1.5.0 不再使用 grub-mkrescue；保留安装
+#   无副作用，幂等跳过）；mtools 的 mcopy/mmd 现用于封 FAT efi.img（UEFI 引导镜像）
+# dosfstools：提供 mkfs.vfat（格式化 efi.img 用，v1.5.0 UEFI 引导镜像必需）
 # zstd：Ubuntu 24.04 generic 内核 CONFIG_MODULE_COMPRESS_ZSTD，模块全部 .ko.zst 压缩，
 # busybox 静态版无 zstd 解压能力 → 构建期统一解压为 .ko，见 dw_assemble_rootfs 2.3 步）
 # xz-utils：Kylin 4.19 模块为 .ko.xz 压缩（CONFIG_MODULE_COMPRESS_XZ），busybox 无 xz
 # 解压能力 → dw_modules_kylin 构建期统一 xz -d 解压为 .ko（xz-utils 提供 xz 命令）
 # parted：提供 /usr/sbin/partprobe（wipefs -a 后刷新内核分区视图，见下 2.2 步）
-DW_APT_PKGS="busybox-static xorriso mtools grub-pc-bin grub-efi-amd64-bin linux-image-generic zstd xz-utils parted"
+DW_APT_PKGS="busybox-static xorriso mtools grub-pc-bin grub-efi-amd64-bin linux-image-generic zstd xz-utils parted isolinux dosfstools"
 
 dw_fail() {
     echo "✗ $*" >&2
@@ -328,10 +355,15 @@ dw_pack_initrd() {
     [ -x "$rootfs/init" ] || { dw_fail "rootfs/init 无执行位（内核要求 /init 可执行）"; return 1; }
 }
 
-# ---------- 4) 写 grub.cfg + 放置内核/initrd 到 rootfs/boot ----------
+# ---------- 4) 写引导文件（grub.cfg + isolinux.cfg + 精简 GRUB EFI）+ 放置内核/initrd ----------
+# v1.5.0 引导重构：BIOS → ISOLINUX（syslinux，纯文本 VGA，无视频模式概念；initrd 加载走
+# syslinux 成熟路径——根治 grub-mkrescue GRUB 2.12 core 在无合适视频模式服务器上
+# "error: no suitable video mode found. Booting in blind mode" 盲模式卡死，与 Ventoy
+# grub2 mode 下 initrd 传递丢失）；UEFI → 精简 GRUB（grub-mkimage 手动打包 BOOTX64.EFI，
+# 剔除 gfxterm/video/video_fb/efi_gop/efi_uga 模块，纯文本终端，无视频模式概念）。
 dw_write_bootfiles() {
     rootfs="$1"; build_dir="$2"; kver="$3"; version="$4"; proj="$5"; mode="${6:-ubuntu}"
-    echo "==> [4/7] 写 boot/grub/grub.cfg + 放置 vmlinuz/initrd.img（模式 $mode）"
+    echo "==> [4/7] 写引导文件（isolinux.cfg/grub.cfg/BOOTX64.EFI）+ 放置 vmlinuz/initrd.img（模式 $mode）"
     mkdir -p "$rootfs/boot/grub" || { dw_fail "mkdir boot/grub 失败"; return 1; }
     if [ "$mode" = "kylin" ]; then
         # Kylin 模式：vmlinuz 取自 kylin-src/boot/vmlinuz-<kver>（/mnt/c 上世界可读，无需 sudo）；
@@ -348,48 +380,103 @@ dw_write_bootfiles() {
     $DW_SUDO chmod 0644 "$rootfs/boot/vmlinuz" || { dw_fail "chmod vmlinuz 失败"; return 1; }
     fi
     cp "$build_dir/initrd.img" "$rootfs/boot/initrd.img" || { dw_fail "拷贝 initrd.img 失败"; return 1; }
+
+    # 4.1 UEFI 精简 GRUB 的 grub.cfg（文本终端，无 gfxterm 引用——v1.5.0 起不再有
+    #     视频模式概念；terminal_output console 强制文本输出，根治盲模式卡死）
     cat > "$rootfs/boot/grub/grub.cfg" <<EOF
 set timeout=3
 set default=0
-# 强制文本终端（VGA 文本模式，所有显卡均支持）：grub-mkrescue 内嵌配置默认 gfxterm，
-# 在无合适视频模式的服务器上会报 "error: no suitable video mode found. Booting in
-# blind mode" 并进入盲模式（菜单不可见）——terminal_output console 切回文本终端规避。
-set gfxmode=auto
-terminal_output console
-terminal_input console
-# 启动内核时不尝试视频模式（gfxpayload=text 用文本模式传递；gfxmode=text 避免
-# GRUB 在 boot 阶段再尝试 gfxterm 触发 "no suitable video mode found"）
+# v1.5.0 UEFI 精简 GRUB（grub-mkimage 剔除 gfxterm/video 模块）：
+# terminal_output console 强制文本终端，无视频模式概念——根治真机
+# "error: no suitable video mode found. Booting in blind mode" 盲模式卡死
+# （v1.5.0 起 BIOS 走 ISOLINUX 不再经 GRUB，此配置仅 UEFI 路径使用）
 set gfxmode=text
 set gfxpayload=text
 menuentry "DiskWipe v$version" {
-    linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8
+    linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8 rdinit=/init
     initrd /boot/initrd.img
 }
 EOF
-    echo "     grub.cfg：linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8 + initrd /boot/initrd.img"
-}
 
-# ---------- 5) grub-mkrescue 生成 BIOS+UEFI 双引导 iso ----------
-dw_mkrescue() {
-    rootfs="$1"; proj="$2"; iso="$3"; build_dir="$4"
-    echo "==> [5/7] grub-mkrescue 生成 BIOS+UEFI 双引导 iso → $iso"
-    mkdir -p "$proj/output" || { dw_fail "创建 output/ 失败"; return 1; }
-    rm -f "$iso" || { dw_fail "清理旧 iso 失败"; return 1; }
-    # embedded 配置（grub-mkrescue -c 指定，写入 GRUB 核心镜像最先执行的配置）：
-    # 在 GRUB 尝试图形终端（gfxterm）之前强制文本终端——规避无合适视频模式服务器上
-    # "error: no suitable video mode found. Booting in blind mode" 后盲模式卡死。
-    # search -f 定位含 grub.cfg 的 iso 分区（不依赖 UUID，Ventoy/虚拟光驱均可靠）。
-    cat > "$build_dir/embedded.cfg" <<EOF
+    # 4.2 BIOS ISOLINUX（isolinux.bin 来自 isolinux 包 /usr/lib/ISOLINUX/；KERNEL/APPEND
+    #     路径相对 iso 根；APPEND initrd= 走 syslinux 成熟 initrd 加载路径——根治 Ventoy
+    #     grub2 mode 下 initrd 传递丢失；PROMPT 1 + TIMEOUT 30(3s) 超时自动引导 DEFAULT。
+    #     syslinux 6.x 的核心代码在 ldlinux.c32（/usr/lib/syslinux/modules/bios/，来自
+    #     syslinux-common 包），必须与 isolinux.bin 同目录，否则 isolinux 报
+    #     "Failed to load ldlinux.c32"）
+    mkdir -p "$rootfs/isolinux" || { dw_fail "mkdir isolinux 失败"; return 1; }
+    cp /usr/lib/ISOLINUX/isolinux.bin "$rootfs/isolinux/isolinux.bin" \
+        || { dw_fail "拷贝 isolinux.bin 失败（isolinux 包未安装？）"; return 1; }
+    cp /usr/lib/syslinux/modules/bios/ldlinux.c32 "$rootfs/isolinux/ldlinux.c32" \
+        || { dw_fail "拷贝 ldlinux.c32 失败（syslinux-common 未安装？）"; return 1; }
+    cat > "$rootfs/isolinux/isolinux.cfg" <<EOF
+DEFAULT linux
+LABEL linux
+KERNEL /boot/vmlinuz
+APPEND console=tty0 console=ttyS0,115200n8 initrd=/boot/initrd.img
+TIMEOUT 30
+PROMPT 1
+EOF
+
+    # 4.3 UEFI 精简 GRUB 核心（grub-mkimage 手动打包 BOOTX64.EFI，模块列表剔除
+    #     gfxterm/video/video_fb/efi_gop/efi_uga；embedded 配置先 search 定位 iso 根再
+    #     加载 grub.cfg，terminal_output console 文本终端；iso9660 供 iso 内读文件，
+    #     part_gpt/part_msdos/fat/ext2 兜底 Ventoy/分区形态，memdisk 常规保留。
+    #     注：GRUB 2.12 的 initrd 命令已内建（无 initrd.mod），linux/initrd 命令随
+    #     linux 模块与 core 提供，无需单独模块）
+    #     El Torito EFI 引导镜像必须是 FAT 卷（内含 EFI/BOOT/BOOTX64.EFI）——OVMF/主流
+    #     固件对裸 PE 文件作 EFI 条目的 El Torito 引导实测报 "failed to load ... Not
+    #     Found"（grub-mkrescue 亦用此 FAT 镜像方案；真机 v1.4.x UEFI 引导正常即基于此）
+    mkdir -p "$rootfs/EFI/BOOT" || { dw_fail "mkdir EFI/BOOT 失败"; return 1; }
+    cat > "$build_dir/embedded-efi.cfg" <<EOF
 search --no-floppy --set=root -f /boot/grub/grub.cfg
 set prefix=(\$root)/boot/grub
 terminal_output console
 terminal_input console
 configfile /boot/grub/grub.cfg
 EOF
-    # 注：Ubuntu 24.04 grub 2.12 下「-- -V DISKWIPE rootfs」形式会被 xorriso 当命令拒绝
-    #（实测 "Not a known command"），正确写法是 -V 置于源目录之前
-    grub-mkrescue -c "$build_dir/embedded.cfg" -o "$iso" -V DISKWIPE "$rootfs" \
-        || { dw_fail "grub-mkrescue 失败（见上方输出）"; return 1; }
+    grub-mkimage -o "$rootfs/EFI/BOOT/BOOTX64.EFI" -O x86_64-efi -p /boot/grub \
+        -c "$build_dir/embedded-efi.cfg" \
+        iso9660 linux normal search search_fs_file configfile part_gpt part_msdos fat ext2 boot fshelp memdisk \
+        || { dw_fail "grub-mkimage 生成 BOOTX64.EFI 失败（grub-efi-amd64-bin 未安装？）"; return 1; }
+    # 封入 FAT efi.img（El Torito EFI 引导镜像；mtools 的 mcopy 不自动建目录，先 mmd 建
+    # ::/EFI/BOOT；BOOTX64.EFI 源为刚生成的 rootfs 内文件）
+    truncate -s 8M "$build_dir/efi.img" || { dw_fail "创建 efi.img 失败"; return 1; }
+    mkfs.vfat -n DWEFI "$build_dir/efi.img" >/dev/null 2>&1 \
+        || { dw_fail "mkfs.vfat 格式化 efi.img 失败（dosfstools 未安装？）"; return 1; }
+    mmd -i "$build_dir/efi.img" ::/EFI >/dev/null 2>&1 || { dw_fail "mmd 建 ::/EFI 目录失败"; return 1; }
+    mmd -i "$build_dir/efi.img" ::/EFI/BOOT >/dev/null 2>&1 || { dw_fail "mmd 建 ::/EFI/BOOT 目录失败"; return 1; }
+    mcopy -i "$build_dir/efi.img" "$rootfs/EFI/BOOT/BOOTX64.EFI" ::/EFI/BOOT/BOOTX64.EFI \
+        || { dw_fail "mcopy BOOTX64.EFI 封入 efi.img 失败"; return 1; }
+    cp "$build_dir/efi.img" "$rootfs/EFI/BOOT/efi.img" || { dw_fail "拷贝 efi.img 到 rootfs 失败"; return 1; }
+    echo "     grub.cfg（UEFI）：文本终端 terminal_output console，linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8 + initrd"
+    echo "     isolinux（BIOS）：isolinux.bin + isolinux.cfg（DEFAULT linux，KERNEL /boot/vmlinuz + initrd= 双 console）"
+    echo "     BOOTX64.EFI（UEFI）：精简 GRUB $(ls -lh "$rootfs/EFI/BOOT/BOOTX64.EFI" | awk '{print $5}')（无 gfxterm/video 模块）"
+    echo "     efi.img（El Torito UEFI 引导镜像）：FAT 卷内含 EFI/BOOT/BOOTX64.EFI（OVMF/主流固件兼容）"
+}
+
+# ---------- 5) xorriso 手动打包 BIOS(ISOLINUX)+UEFI(精简 GRUB) 双引导 iso ----------
+# v1.5.0：不再用 grub-mkrescue（其 GRUB 2.12 core 内嵌 gfxterm，在无合适视频模式服务器上
+# 报 "error: no suitable video mode found. Booting in blind mode" 盲模式卡死）。改 xorriso
+# 手动打包：isohdpfx.bin 作混合 MBR + El Torito BIOS 项 isolinux/isolinux.bin
+# （-boot-info-table 由 mkisofs 补丁）+ El Torito UEFI 项 EFI/BOOT/efi.img
+# （FAT 卷内含 EFI/BOOT/BOOTX64.EFI 精简 GRUB）。-isohybrid-gpt-basdat 使 GPT 分区表
+# 指向与 MBR 相同的数据块（混合 MBR/GPT，U 盘/真机引导兼容）。
+dw_mkiso() {
+    rootfs="$1"; proj="$2"; iso="$3"; build_dir="$4"
+    echo "==> [5/7] xorriso 打包 BIOS(ISOLINUX)+UEFI(精简 GRUB) 双引导 iso → $iso"
+    mkdir -p "$proj/output" || { dw_fail "创建 output/ 失败"; return 1; }
+    rm -f "$iso" || { dw_fail "清理旧 iso 失败"; return 1; }
+    # -R：Rock Ridge（isoinfo -R 校验需要）；-V 置于源目录之前（xorriso mkisofs 仿真）
+    xorriso -as mkisofs \
+        -R \
+        -o "$iso" -V DISKWIPE \
+        -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
+        -b isolinux/isolinux.bin -c isolinux/boot.cat \
+        -no-emul-boot -boot-load-size 4 -boot-info-table \
+        -eltorito-alt-boot -e EFI/BOOT/efi.img -no-emul-boot \
+        -isohybrid-gpt-basdat "$rootfs" \
+        || { dw_fail "xorriso 打包 iso 失败（见上方输出）"; return 1; }
     echo "     iso：$(ls -lh "$iso" | awk '{print $5}')"
 }
 
@@ -399,10 +486,12 @@ dw_verify_iso() {
     echo "==> [6/7] isoinfo 校验 iso（模式 $mode）"
     echo "     卷信息：$(isoinfo -i "$iso" -d 2>/dev/null | grep -i '^Volume id' | head -n 1)"
 
-    # 6.1 三个关键文件。isoinfo -R -l 为树形输出（"Directory listing of /boot/grub/" 段下
-    # 逐行列出文件名），按「目录段 + 文件名」两段式校验；再以 -x 从 iso 实际抽取实检
+    # 6.1 关键文件（v1.5.0：isolinux/isolinux.bin、isolinux/ldlinux.c32、isolinux/isolinux.cfg、
+    #     EFI/BOOT/BOOTX64.EFI、EFI/BOOT/efi.img + boot/grub/grub.cfg、boot/vmlinuz、
+    #     boot/initrd.img）。isoinfo -R -l 为树形输出（"Directory listing of /boot/grub/" 段下
+    #     逐行列出文件名），按「目录段 + 文件名」两段式校验；再以 -x 从 iso 实际抽取实检
     il="$(isoinfo -R -i "$iso" -l 2>/dev/null)"
-    for spec in "boot/grub/ grub.cfg" "boot/ vmlinuz" "boot/ initrd.img"; do
+    for spec in "isolinux/ isolinux.bin" "isolinux/ ldlinux.c32" "isolinux/ isolinux.cfg" "EFI/BOOT/ BOOTX64.EFI" "EFI/BOOT/ efi.img" "boot/grub/ grub.cfg" "boot/ vmlinuz" "boot/ initrd.img"; do
         set -- $spec
         ok=$(printf '%s\n' "$il" | awk -v d="/$1" -v f="$2" '
             /^Directory listing of / { insec = ($0 ~ ("of " d "$")); next }
@@ -410,17 +499,47 @@ dw_verify_iso() {
             END { print found + 0 }')
         [ "$ok" = "1" ] || { dw_fail "iso 缺少 $1$2（isoinfo -R -l 未列出）"; return 1; }
     done
-    for p in /boot/grub/grub.cfg /boot/vmlinuz /boot/initrd.img; do
+    for p in /isolinux/isolinux.bin /isolinux/ldlinux.c32 /isolinux/isolinux.cfg /EFI/BOOT/BOOTX64.EFI /EFI/BOOT/efi.img /boot/grub/grub.cfg /boot/vmlinuz /boot/initrd.img; do
         isoinfo -R -i "$iso" -x "$p" > "$build_dir/x.out" 2>/dev/null || { dw_fail "iso 无法抽取 $p"; return 1; }
         [ -s "$build_dir/x.out" ] || { dw_fail "iso 抽取 $p 内容为空"; return 1; }
     done
-    echo "     校验通过：boot/grub/grub.cfg、boot/vmlinuz、boot/initrd.img 均在 iso 中（-l 目录树 + -x 抽取实检）"
+    echo "     校验通过：isolinux.bin/ldlinux.c32/isolinux.cfg、EFI/BOOT/BOOTX64.EFI + efi.img、boot/grub/grub.cfg、boot/vmlinuz、boot/initrd.img 均在 iso 中（-l 目录树 + -x 抽取实检）"
 
-    # 6.2 grub.cfg 含双 console 参数
+    # 6.2a isolinux.cfg（BIOS 路径内核参数来源）含 KERNEL /boot/vmlinuz、initrd=、双 console
+    icfg="$(isoinfo -R -i "$iso" -x /isolinux/isolinux.cfg 2>/dev/null)"
+    printf '%s\n' "$icfg" | grep -q 'KERNEL /boot/vmlinuz' || { dw_fail "isolinux.cfg 缺少 KERNEL /boot/vmlinuz"; return 1; }
+    printf '%s\n' "$icfg" | grep -q 'initrd=/boot/initrd.img' || { dw_fail "isolinux.cfg 缺少 initrd=/boot/initrd.img"; return 1; }
+    printf '%s\n' "$icfg" | grep -q 'console=tty0' || { dw_fail "isolinux.cfg 缺少 console=tty0"; return 1; }
+    printf '%s\n' "$icfg" | grep -q 'console=ttyS0,115200n8' || { dw_fail "isolinux.cfg 缺少 console=ttyS0,115200n8"; return 1; }
+    echo "     校验通过：isolinux.cfg 含 KERNEL /boot/vmlinuz + initrd=/boot/initrd.img + console=tty0/ttyS0,115200n8"
+
+    # 6.2b grub.cfg（UEFI 路径）含双 console 参数，且无诊断残留（debug loglevel / 诊断 echo）
     gcfg="$(isoinfo -R -i "$iso" -x /boot/grub/grub.cfg 2>/dev/null)"
     printf '%s\n' "$gcfg" | grep -q 'console=tty0' || { dw_fail "grub.cfg 缺少 console=tty0"; return 1; }
     printf '%s\n' "$gcfg" | grep -q 'console=ttyS0,115200n8' || { dw_fail "grub.cfg 缺少 console=ttyS0,115200n8"; return 1; }
-    echo "     校验通过：grub.cfg 含 console=tty0 与 console=ttyS0,115200n8"
+    if printf '%s\n' "$gcfg" | grep -q 'debug loglevel'; then dw_fail "grub.cfg 残留诊断参数 debug loglevel（应已清理）"; return 1; fi
+    if printf '%s\n' "$gcfg" | grep -q 'GRUB: loading'; then dw_fail "grub.cfg 残留诊断 echo 行（应已清理）"; return 1; fi
+    echo "     校验通过：grub.cfg 含双 console 参数且无诊断残留（debug loglevel/echo 已清理）"
+
+    # 6.2c BOOTX64.EFI 精简性：PE 头（MZ 魔数）+ 无 gfxterm/video_fb/efi_gop/efi_uga
+    #     模块（grub-mkimage 模块列表已剔除——诊断回归防护：若 gfxterm 模块被打包回 core，
+    #     真机盲模式卡死会复发）。注意：
+    #     - GRUB 2.12 内核/normal 模块代码本身含字符串 "gfxterm"（如 normal 的错误消息
+    #       "module `gfxterm' isn't loaded"），未内嵌时恰好 1 处；gfxterm.mod 内嵌则
+    #       其模块头/依赖表再增 ≥1 处 → 以出现次数 ≤1 判定未内嵌（实测精简版 =1）。
+    #     - video 模块会被 linux.mod 依赖自动带入（linux: boot mmap relocator video），
+    #       无害（gfxterm 才是触发 "no suitable video mode found" 盲模式的模块），不判失败。
+    isoinfo -R -i "$iso" -x /EFI/BOOT/BOOTX64.EFI > "$build_dir/bootx64.check" 2>/dev/null \
+        || { dw_fail "抽取 BOOTX64.EFI 失败（PE 校验）"; return 1; }
+    head -c 2 "$build_dir/bootx64.check" | grep -q 'MZ' || { dw_fail "BOOTX64.EFI 非有效 PE 文件（缺 MZ 头）"; return 1; }
+    ngfx="$(grep -ao 'gfxterm' "$build_dir/bootx64.check" | wc -l)"
+    [ "$ngfx" -le 1 ] || { dw_fail "BOOTX64.EFI 含 gfxterm 模块（gfxterm 出现 $ngfx 处 > 1，精简 GRUB 打包失败）"; return 1; }
+    for m in video_fb efi_gop efi_uga; do
+        if grep -aq "$m" "$build_dir/bootx64.check"; then
+            dw_fail "BOOTX64.EFI 含 $m 模块（精简 GRUB 打包失败）"; return 1
+        fi
+    done
+    echo "     校验通过：BOOTX64.EFI 为有效 PE（MZ 头）且未内嵌 gfxterm/video_fb/efi_gop/efi_uga 模块（精简 GRUB 无视频模式依赖）"
 
     # 6.3 initrd 内 /init 执行位（解包实检）
     isoinfo -R -i "$iso" -x /boot/initrd.img > "$build_dir/initrd.check.img" 2>/dev/null \
@@ -516,7 +635,7 @@ dw_build_iso() {
     dw_assemble_rootfs "$rootfs" "$proj" "$kver" "$mode" || { echo "✗ 构建中止。临时目录在 WSL /tmp 内（会话结束即失效）：$build_dir" >&2; return 1; }
     dw_pack_initrd      "$rootfs" "$build_dir" || { echo "✗ 构建中止。临时目录在 WSL /tmp 内（会话结束即失效）：$build_dir" >&2; return 1; }
     dw_write_bootfiles  "$rootfs" "$build_dir" "$kver" "$version" "$proj" "$mode" || { echo "✗ 构建中止。临时目录在 WSL /tmp 内（会话结束即失效）：$build_dir" >&2; return 1; }
-    dw_mkrescue         "$rootfs" "$proj" "$iso" "$build_dir" || { echo "✗ 构建中止。临时目录在 WSL /tmp 内（会话结束即失效）：$build_dir" >&2; return 1; }
+    dw_mkiso            "$rootfs" "$proj" "$iso" "$build_dir" || { echo "✗ 构建中止。临时目录在 WSL /tmp 内（会话结束即失效）：$build_dir" >&2; return 1; }
     dw_verify_iso       "$iso" "$build_dir" "$proj" "$mode" || { echo "✗ 构建中止。临时目录在 WSL /tmp 内（会话结束即失效）：$build_dir" >&2; return 1; }
 
     # 模块经 $DW_SUDO 拷贝后属主为 root，清理须同样走 sudo
@@ -525,7 +644,7 @@ dw_build_iso() {
     echo
     echo "======================================================"
     echo "  ✓ 构建成功：$iso（大小 $sz）"
-    echo "  BIOS+UEFI 双引导 grub-mkrescue iso；isoinfo 校验全部通过"
+    echo "  BIOS(ISOLINUX)+UEFI(精简 GRUB) 双引导 iso（xorriso 打包）；isoinfo 校验全部通过"
     echo "  使用：将 iso 写入 U 盘（Ventoy/Rufus 等）后从 U 盘启动即可"
     echo "======================================================"
 }

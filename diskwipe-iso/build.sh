@@ -8,7 +8,7 @@
 #     ubuntu 强制用 WSL Ubuntu generic 内核
 # 流程：检测 WSL（wsl -l -v 含 Ubuntu；缺失则打印安装指引退出 1）→ 经
 #       `wsl -e bash -c` 加载 build-lib.sh 执行构建（apt 依赖→组装 rootfs→cpio
-#       initrd→grub.cfg→grub-mkrescue 双引导 iso→isoinfo 校验）
+#       initrd→引导文件(BIOS ISOLINUX + UEFI 精简 GRUB)→xorriso 打包双引导 iso→isoinfo 校验）
 #       → 产物 output/diskwipe-v<版本>.iso。
 # 安全：构建只产出 iso 文件（全部在 WSL 虚拟盘文件系统 + output/ 内），
 #       绝不写任何真实块设备（本机物理盘零接触）。

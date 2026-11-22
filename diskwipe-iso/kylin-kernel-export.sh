@@ -20,32 +20,40 @@ echo
 mkdir -p "$DST/boot"
 if ls /boot/vmlinuz-* >/dev/null 2>&1; then
     cp -a /boot/vmlinuz-* "$DST/boot/"
-    echo "[1/4] vmlinuz 已提取：$(ls "$DST/boot")"
+    echo "[1/5] vmlinuz 已提取：$(ls "$DST/boot")"
 else
-    echo "[1/4] 警告：/boot 下未找到 vmlinuz-*（请检查内核安装）"
+    echo "[1/5] 警告：/boot 下未找到 vmlinuz-*（请检查内核安装）"
 fi
 
-# 2) 当前内核模块（modules/）
+# 2) Kylin dracut initramfs（boot/，diskwipe-iso 对比测试/兼容构建用）
+if ls /boot/initramfs-*.img >/dev/null 2>&1; then
+    cp -a /boot/initramfs-*.img "$DST/boot/"
+    echo "[2/5] initramfs 已提取：$(ls "$DST/boot" | grep initramfs)"
+else
+    echo "[2/5] 警告：/boot 下未找到 initramfs-*.img（跳过）"
+fi
+
+# 3) 当前内核模块（modules/）
 mkdir -p "$DST/modules"
 if [ -d "/lib/modules/$KVER" ]; then
     cp -a "/lib/modules/$KVER" "$DST/modules/"
-    echo "[2/4] 内核模块已提取：$DST/modules/$KVER"
+    echo "[3/5] 内核模块已提取：$DST/modules/$KVER"
 else
-    echo "[2/4] 警告：/lib/modules/$KVER 不存在"
+    echo "[3/5] 警告：/lib/modules/$KVER 不存在"
 fi
 
-# 3) 固件（firmware/，可选但建议——含 CPU 微码/磁盘控制器固件）
+# 4) 固件（firmware/，可选但建议——含 CPU 微码/磁盘控制器固件）
 mkdir -p "$DST/firmware"
 if [ -d /lib/firmware ] && [ -n "$(ls /lib/firmware 2>/dev/null)" ]; then
     cp -a /lib/firmware/. "$DST/firmware/"
-    echo "[3/4] 固件已提取（可能较大）"
+    echo "[4/5] 固件已提取（可能较大）"
 else
-    echo "[3/4] 无 /lib/firmware，跳过（可选）"
+    echo "[4/5] 无 /lib/firmware，跳过（可选）"
 fi
 
-# 4) 打包
+# 5) 打包
 echo
-echo "[4/4] 打包中..."
+echo "[5/5] 打包中..."
 tar -czf "$TARBALL" -C "$OUT" kylin-src 2>/dev/null || {
     tar -czf "$TARBALL" -C "$(dirname "$DST")" "$(basename "$DST")" 2>/dev/null
 }

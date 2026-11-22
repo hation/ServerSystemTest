@@ -224,6 +224,34 @@ case "$1" in
             if (name==d || pk==d) printf "%s %s %s %s\n", name, type, mps, pk
         }' "$ROOT/lsblk.table"
         ;;
+    NAME,TYPE,MOUNTPOINT,PKNAME,PARTTYPENAME,PARTFLAGS)
+        [ -f "$ROOT/lsblk.table" ] || exit 0
+        # 批量类型探测表（同 install_fakes 形态，叠加已清盘分区过滤：盘已清后 sda1 消失 → sda 变数据盘）
+        awk -v w="$wiped" -v ptf="$ROOT/lsblk.ptname" -v flf="$ROOT/lsblk.flags" 'BEGIN {
+                print "NAME TYPE MOUNTPOINT PKNAME PARTTYPENAME PARTFLAGS"
+                if (ptf != "") while ((getline l < ptf) > 0) { split(l, a, " "); pt[a[1]] = substr(l, index(l, " ") + 1) }
+                if (flf != "") while ((getline l < flf) > 0) { split(l, a, " "); fl[a[1]] = a[2] }
+            }
+            NR==1{next}
+            $3=="part"{
+                pk=$1
+                if (pk ~ /p[0-9]+$/) sub(/p[0-9]+$/, "", pk)
+                else while (pk ~ /[0-9]$/) pk=substr(pk,1,length(pk)-1)
+                if ((" " w " ") ~ (" " pk " ")) next
+            }
+            {
+                name=$1; type=$3
+                mps=""
+                for (i=4; i<=NF; i++) { if ($i ~ /^\//) { mps=$i; for (j=i+1; j<=NF; j++) mps=mps " " $j; break } }
+                pk=""
+                if (type != "disk") {
+                    pk=name
+                    if (pk ~ /p[0-9]+$/) sub(/p[0-9]+$/, "", pk)
+                    else while (pk ~ /[0-9]$/) pk=substr(pk,1,length(pk)-1)
+                }
+                printf "%s %s %s %s %s %s\n", name, type, mps, pk, pt[name], fl[name]
+            }' "$ROOT/lsblk.table"
+        ;;
     esac
     ;;
 -no)

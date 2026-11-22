@@ -38,6 +38,10 @@ setup_stub() {
 exit 0'
     fake_bin blkid '#!/bin/sh
 exit 2'
+    # 假 timeout：只读探测超时兜底接缝（透明转执行，不记录——保持 cmds.txt 断言不变）
+    fake_bin timeout '#!/bin/sh
+shift
+"$@"'
     # 假 mount：记录调用到 cmds.txt；$ROOT/mount.fail 命中挂载点（末参数）时返回 1
     fake_bin mount '#!/bin/sh
 [ -n "$ROOT" ] || exit 0

@@ -96,6 +96,31 @@ case "$1" in
             if (name==d || pk==d) printf "%s %s %s %s\n", name, type, mps, pk
         }'"'"' "$ROOT/lsblk.table"
         ;;
+    NAME,TYPE,MOUNTPOINT,PKNAME,PARTTYPENAME,PARTFLAGS)
+        [ -f "$ROOT/lsblk.table" ] || exit 0
+        # 批量类型探测表（dw_scan_system_disks）：表头 + 每行 NAME TYPE MOUNTPOINT PKNAME
+        #   PARTTYPENAME PARTFLAGS（PARTTYPENAME 取 lsblk.ptname、PARTFLAGS 取 lsblk.flags；
+        #   挂载点/父盘推导同 NAME,TYPE,MOUNTPOINT,PKNAME 形态；树形前缀不输出）
+        awk -v ptf="$ROOT/lsblk.ptname" -v flf="$ROOT/lsblk.flags" '"'"'
+            BEGIN {
+                print "NAME TYPE MOUNTPOINT PKNAME PARTTYPENAME PARTFLAGS"
+                if (ptf != "") while ((getline l < ptf) > 0) { split(l, a, " "); pt[a[1]] = substr(l, index(l, " ") + 1) }
+                if (flf != "") while ((getline l < flf) > 0) { split(l, a, " "); fl[a[1]] = a[2] }
+            }
+            NR==1 { next }
+            {
+                name=$1; type=$3
+                mps=""
+                for (i=4; i<=NF; i++) { if ($i ~ /^\//) { mps=$i; for (j=i+1; j<=NF; j++) mps=mps " " $j; break } }
+                pk=""
+                if (type != "disk") {
+                    pk=name
+                    if (pk ~ /p[0-9]+$/) sub(/p[0-9]+$/, "", pk)
+                    else while (pk ~ /[0-9]$/) pk=substr(pk,1,length(pk)-1)
+                }
+                printf "%s %s %s %s %s %s\n", name, type, mps, pk, pt[name], fl[name]
+            }'"'"' "$ROOT/lsblk.table"
+        ;;
     NAME,TYPE,TRAN,PKNAME)
         [ -f "$ROOT/lsblk.table" ] || exit 0
         # 输出「名字 类型 TRAN PKNAME」（与真实 lsblk -o NAME,TYPE,TRAN,PKNAME -l 一致：
@@ -134,19 +159,30 @@ case "$1" in
     ;;
 esac
 exit 0'
-    # 假 blkid：blkid -s TYPE|-s LABEL -o value <dev>；TYPE 按 $ROOT/blk.type（"设备 类型"）、
-    # LABEL 按 $ROOT/lsblk.labels（"设备 卷标"）返回；无条目 → 无输出 rc 2（模拟无法探测）
+    # 假 blkid：单设备形态 blkid -s TYPE|-s LABEL -o value <dev>（TYPE 按 $ROOT/blk.type、
+    # LABEL 按 $ROOT/lsblk.labels 返回；无条目 → 无输出 rc 2 模拟无法探测）；
+    # 批量形态 blkid -c /dev/null -o full（无设备参数）→ 输出 设备: TYPE="类型" 逐行
+    # （util-linux 带设备名形态，供批量归并；无条目 → 空输出 rc 0）
     fake_bin blkid '#!/bin/sh
 [ -n "$ROOT" ] || exit 2
-dev=""; sel=""
+dev=""; sel=""; fullmode=0
 for a in "$@"; do
     case "$a" in
-    /dev/*) dev="${a#/dev/}" ;;
     -s) : ;;
+    -o) : ;;
+    -c) : ;;
+    /dev/null) : ;;
+    full) fullmode=1 ;;
     TYPE) sel=type ;;
     LABEL) sel=label ;;
+    /dev/*) dev="${a#/dev/}" ;;
     esac
 done
+if [ "$fullmode" = "1" ]; then
+    [ -f "$ROOT/blk.type" ] || exit 0
+    awk '"'"'{ print "/dev/" $1 ": TYPE=\"" $2 "\"" }'"'"' "$ROOT/blk.type"
+    exit 0
+fi
 [ -n "$dev" ] || exit 2
 if [ "$sel" = "label" ]; then
     [ -f "$ROOT/lsblk.labels" ] || exit 2
@@ -222,6 +258,13 @@ while IFS= read -r f; do
     [ "$f" = "$mp" ] && exit 1
 done < "$ROOT/mount.fail"
 exit 0'
+    # 假 timeout：模拟超时包装——去掉秒数参数后转执行剩余命令（测试内命令立即返回、
+    # 不真等 3s）；不记录 cmds.txt（避免影响既有 check_no_cmds/check_cmds 断言）。
+    # 需断言 timeout 调用形态/次数的用例（T6 H1/H2/H4/H8/H9）自行覆写为记录版本。
+    fake_bin timeout '#!/bin/sh
+[ -n "$ROOT" ] || exit 0
+shift
+"$@"'
 }
 
 # 追加 blk.type 条目：add_blk_type <分区> <类型>（ESP→vfat、Windows→ntfs、Linux→ext4）

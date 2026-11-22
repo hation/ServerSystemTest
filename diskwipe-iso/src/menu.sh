@@ -14,6 +14,9 @@
 #   - 读 stdin 写 stdout；大写 YES 严格匹配才执行；非法输入忽略（1,2,x → 忽略 x）；
 #     排除列表为空 = 默认全选；无盘可清（仅 usb+光驱）→ 提示"仅发现启动介质"并退出；
 #     0 退出（打印可断电/重启提示）；清除后回到菜单（列表刷新）。
+#   - 列盘循环零外部命令：枚举（dw_enum_disks）+ 批量类型探测（dw_scan_system_disks）+
+#     批量格式化（dw_format_disk_lines）各一次预计算，循环内纯 shell 字符串切分查表；
+#     枚举超时/失败 → 打印 ERROR 并重试一次（不误判"仅启动介质"）；清除操作无 timeout。
 #   - 设备白名单/umount/wipefs/partprobe/验证全部由 lib.sh/wipe.sh 保证，本脚本不重复实现。
 
 . "$(dirname "$0")/lib.sh"
@@ -50,46 +53,9 @@ dw_log_finish() {
     fi
 }
 
-# 从 dw_enum_disks 输出行提取展示字段，输出 "设备|容量|型号|TRAN大写"（| 分隔）。
-# 行格式：设备 容量 型号[可含空格] TRAN[可空] 挂载点[可含空格]。
-# 解析：从右往左定位挂载点起始（首个以 / 开头的字段），其前一个字段仅当属于已知
-#       TRAN 集合（sata/sas/nvme/usb/spi/ata/scsi/virtio/pcie）才视为 TRAN；
-#       否则（TRAN 为空）该字段是型号末词，并入型号。
-disk_display_fields() {
-    dline="$1"
-    printf '%s\n' "$dline" | awk '
-        {
-            dev=$1; size=$2
-            mpstart=0
-            for (i=NF; i>=3; i--) if ($i ~ /^\//) { mpstart=i; break }
-            model=""; tran=""
-            if (mpstart == 0) {
-                if (NF == 3) {
-                    model=$3
-                } else if ($NF ~ /^(sata|sas|nvme|usb|spi|ata|scsi|virtio|pcie)$/) {
-                    tran=$NF
-                    for (i=3; i<NF; i++) model=model " " $i
-                } else {
-                    for (i=3; i<=NF; i++) model=model " " $i
-                }
-                model=substr(model,2)
-            } else {
-                pre=$(mpstart-1)
-                if (pre ~ /^(sata|sas|nvme|usb|spi|ata|scsi|virtio|pcie)$/) {
-                    tran=pre
-                    for (i=3; i<mpstart-1; i++) model=model " " $i
-                } else {
-                    for (i=3; i<mpstart; i++) model=model " " $i
-                }
-                model=substr(model,2)
-            }
-            print dev "|" size "|" model "|" tran "|" toupper(tran)
-        }
-    '
-}
-
-# 类型标注（dw_is_system_disk 返回：0=数据盘 1=系统盘 2=未知；显示 DATA/SYS/UNK，
-# 仅提示不影响可勾选）
+# 类型标注（类型码：0=数据盘 1=系统盘 2=未知；显示 DATA/SYS/UNK，仅提示不影响可勾选）。
+# 类型码来自批量探测 dw_scan_system_disks（经 dw_format_disk_lines 预计算进列盘行），
+# 本函数为纯 shell case（列盘循环内零外部命令）。
 disk_type_label() {
     case "$1" in
     0) echo "DATA" ;;
@@ -99,8 +65,19 @@ disk_type_label() {
 }
 
 while :; do
-    # 枚举全部可清盘；启动 U 盘/光驱已在 lib.sh 排除，仍为空 = 仅启动介质
+    # 枚举全部可清盘（lib.sh 内 lsblk 包 "$TIMEOUT_BIN" 3 兜底；超时/失败 → 返回 1 且输出空）。
+    # 枚举失败（超时等）→ 打印错误并自动重试一次；仍失败 → 打印错误 + 可安全重启提示，
+    # 绝不误判"仅启动介质"退出；枚举成功但为空（仅 usb+光驱）才走"仅启动介质"路径。
     ml="$(dw_enum_disks)"
+    if [ "$?" -ne 0 ]; then
+        echo "ERROR: disk scan timed out or failed"
+        ml="$(dw_enum_disks)"
+        if [ "$?" -ne 0 ]; then
+            echo "ERROR: disk scan failed. You may power off or reboot safely."
+            dw_log_finish
+            exit 1
+        fi
+    fi
     if [ -z "$ml" ]; then
         echo
         dw_log "Only boot media found (no wipable disks; boot USB/optical drive auto-excluded)"
@@ -112,30 +89,49 @@ while :; do
     echo "=============================================="
     dw_log "  DiskWipe Tool $(dw_version) - Reset disks to uninitialized"
     echo "=============================================="
-    echo "  #     Device  Size  Model/Status  Type"
-    echo "  ---------------------------------------------------"
-    # 列盘（编号从 1 起；类型经 dw_is_system_disk 标注）
+    # 批量类型探测 + 列盘字段预计算（一次 lsblk + 一次 blkid，均包 timeout；批量超时 →
+    # 全部盘标 UNK，类型仅提示不影响清除）。先打印进度提示，批量探测耗时用户可见而非假死。
+    echo "Scanning disks... (please wait)"
+    mcodes="$(dw_scan_system_disks)"
+    mtab="$(printf '%s\n' "$ml" | dw_format_disk_lines "$mcodes")"
+    # 枚举结果落日志（数量 + 设备清单；一次 dw_log，不进列盘循环）
+    msum=""
     mi=0
     while IFS= read -r mline; do
         [ -n "$mline" ] || continue
         mi=$((mi + 1))
-        mfields="$(disk_display_fields "$mline")"
-        mdev="${mfields%%|*}"
-        mrest="${mfields#*|}"
+        mdev="${mline%%|*}"
+        msum="${msum:+$msum }$mdev"
+    done <<EOF
+$mtab
+EOF
+    dw_log "Disks found: $mi ($msum)"
+    echo "  #     Device  Size  Model/Status  Type"
+    echo "  ---------------------------------------------------"
+    # 列盘（编号从 1 起；类型码来自预计算查表行「设备|容量|型号|TRAN大写|类型码」，
+    # 循环内仅 shell 字符串切分 + disk_type_label 纯 shell case —— 零外部命令）
+    mi=0
+    while IFS= read -r mline; do
+        [ -n "$mline" ] || continue
+        mi=$((mi + 1))
+        mdev="${mline%%|*}"
+        mrest="${mline#*|}"
         msize="${mrest%%|*}"
         mrest="${mrest#*|}"
         mmodel="${mrest%%|*}"
         mrest="${mrest#*|}"
-        mtran_up="${mrest#*|}"
+        mtran_up="${mrest%%|*}"
+        mrest="${mrest#*|}"
+        mtcode="${mrest%%|*}"
         if [ -n "$mtran_up" ]; then
             mshow="$mmodel ($mtran_up)"
         else
             mshow="$mmodel"
         fi
-        mtype="$(disk_type_label "$(dw_is_system_disk "$mdev")")"
+        mtype="$(disk_type_label "$mtcode")"
         printf '  %d    /dev/%s  %s   %s  %s\n' "$mi" "$mdev" "$msize" "$mshow" "$mtype"
     done <<EOF
-$ml
+$mtab
 EOF
     echo "  ---------------------------------------------------"
     echo "  Default: all selected. Enter exclusions (e.g. 1,2; empty = all)"
@@ -174,7 +170,8 @@ EOF
         dw_log "Excluded: $mexcl"
     fi
 
-    # 构造选中盘列表（排除列表为空 = 默认全选）
+    # 构造选中盘列表（排除列表为空 = 默认全选）。
+    # 枚举行首个字段即设备名（无空格），${mline%% *} 纯 shell 提取——零外部命令
     msel=""
     mcnt=0
     mi=0
@@ -184,8 +181,7 @@ EOF
         case " $mexcl " in
         *" $mi "*) continue ;;
         esac
-        mfields="$(disk_display_fields "$mline")"
-        mdev="${mfields%%|*}"
+        mdev="${mline%% *}"
         msel="${msel:+$msel }$mdev"
         mcnt=$((mcnt + 1))
     done <<EOF
@@ -196,7 +192,8 @@ EOF
         continue
     fi
 
-    # 二次确认清单（逐盘列出将清除的盘；同时落日志作为本轮的盘清单）
+    # 二次确认清单（逐盘列出将清除的盘；同时落日志作为本轮的盘清单）。
+    # 直接遍历预计算查表行（$mtab）纯 shell 切分——零外部命令
     echo
     dw_log "Will wipe the following $mcnt disks (irreversible!). Type YES to confirm:"
     mi=0
@@ -206,14 +203,13 @@ EOF
         case " $mexcl " in
         *" $mi "*) continue ;;
         esac
-        mfields="$(disk_display_fields "$mline")"
-        mdev="${mfields%%|*}"
-        mrest="${mfields#*|}"
+        mdev="${mline%%|*}"
+        mrest="${mline#*|}"
         msize="${mrest%%|*}"
         mrest="${mrest#*|}"
         mmodel="${mrest%%|*}"
         mrest="${mrest#*|}"
-        mtran_up="${mrest#*|}"
+        mtran_up="${mrest%%|*}"
         if [ -n "$mtran_up" ]; then
             mshow="$mmodel ($mtran_up)"
         else
@@ -221,7 +217,7 @@ EOF
         fi
         dw_log "  /dev/$mdev  $msize  $mshow"
     done <<EOF
-$ml
+$mtab
 EOF
     printf '> '
     IFS= read -r myn || { echo; dw_log "Cancelled (YES not entered)."; continue; }

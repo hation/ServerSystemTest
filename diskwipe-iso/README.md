@@ -1,7 +1,7 @@
 # diskwipe-iso：一键把硬盘恢复为「未初始化」的可启动 ISO 工具
 
-- 版本：v1.3.3（`VERSION` 文件；iso 文件名含版本）
-- 定位：替代「FirPE + DiskGenius 逐盘删分区」的现场流程——从 U 盘启动后自动进入干净终端菜单，列出全部硬盘（默认全选），大写 `YES` 二次确认后一键清除分区表与文件系统签名，硬盘**秒级**恢复为「未初始化」。无图形界面、无「保存更改」中间步骤、无界面干扰。**全部屏幕输出为英文（ASCII）**：init 启动提示、菜单、每盘结果在无中文字体的终端（IPMI 虚拟 KVM / 串口 SOL）上完全可读，无乱码。
+- 版本：v1.4.0（`VERSION` 文件；iso 文件名含版本）
+- 定位：替代「FirPE + DiskGenius 逐盘删分区」的现场流程——从 U 盘启动后自动进入干净终端菜单，列出全部硬盘（默认全选），大写 `YES` 二次确认后一键清除分区表与文件系统签名，硬盘**秒级**恢复为「未初始化」。无图形界面、无「保存更改」中间步骤、无界面干扰。**全部屏幕输出为英文（ASCII）**：init 启动提示、菜单、每盘结果在无中文字体的终端（IPMI 虚拟 KVM / 串口 SOL）上完全可读，无乱码。**v1.4.0 起内核可选双模式**：默认自动检测 `kylin-src/` 使用 **Kylin 4.19 内核**构建（解决 Ubuntu 内核与该海光服务器 USB 栈不兼容导致启动卡死），亦可显式指定 WSL Ubuntu generic 内核。
 
 ## 1. 工具用途与安全边界
 
@@ -33,6 +33,8 @@
 >
 > **v1.3.3 批量类型探测 blkid 排除 U 盘（修复「menu 批量探测读 U 盘卡死」）**：针对 v1.3.2 真机「U 盘枚举完成（`sdb: sdb1 sdb2`）后菜单未出现、无任何输出」问题（U 盘 I/O 阻塞为内核 D 状态不可中断，timeout 的 SIGTERM 无效；dmesg `hub_event hogged CPU` 提示 USB 子系统异常）——`dw_scan_system_disks` 批量类型探测的 `blkid -c /dev/null -o full` 全盘扫描会读**所有**块设备（含启动 U 盘），U 盘 I/O 阻塞致 blkid 卡死、菜单枚举卡死。v1.3.3 改为：批量探测先经 `lsblk -o NAME,TYPE,TRAN,PKNAME -l`（同退出写 U 盘的 TRAN 枚举形态）过滤出**非 USB 白名单盘的分区列表**，`blkid` **只带这些分区作设备参数**（`-c /dev/null -o full /dev/sda1 /dev/sdb1 ...`）——**U 盘及其分区不在参数中，blkid 不读 U 盘**；无非 USB 盘分区时跳过 blkid。U 盘存在时菜单**立即出现**（qemu 冒烟含 USB 场景验证：vda/vdb/vdc + USB sda，三盘 OK）。类型判定口径（SYS/DATA/UNK）与启动介质保护不变。
 >
+> **v1.4.0 Kylin 内核构建模式（解决 Ubuntu 内核 USB 不兼容启动卡死）**：v1.3.x 系列已把「U 盘 I/O 阻塞」降级到可接受（菜单必现），但根因是 **Ubuntu 内核 xhci/USB 栈与该海光服务器 Microchip hub 不兼容**（dmesg `hub_event hogged CPU`）——该服务器 Kylin 4.19 内核系统运行正常。v1.4.0 起构建支持**内核双模式**：检测到 `diskwipe-iso/kylin-src/`（从目标 Kylin 服务器提取的内核材料，见 §3）即**自动使用 Kylin 4.19 内核**构建（`build.sh kylin` 强制 / `build.sh ubuntu` 强制 WSL Ubuntu generic 内核）；Kylin 模式从 `kylin-src/modules/<ver>/` 按 init 白名单 + `modules.dep` 依赖链提取驱动（ahci/libahci/libata、nvme/nvme-core/nvme-common、mpt3sas、megaraid_sas、virtio_blk、sd_mod、usb-storage/uas、nls_iso8859-1、vfat/fat），`.ko.xz` 构建期解压为 `.ko`（busybox modprobe 不支持 xz），`modules.dep/modules.alias` 拷入并 `sed` 改后缀；固件仅拷 `amd-ucode`（CPU 微码）；init 按 `uname -r` 含 `ky10` 自动切换白名单（Kylin 的 xhci_pci/usbcore/scsi_mod/virtio_pci 为内建无需加载，无 exfat/ntfs3 模块）。构建校验追加 Kylin 断言（vmlinuz strings 检出 `4.19.90` 版本串、关键模块为未压缩 `.ko`）；qemu 冒烟（Kylin 内核 + 虚拟 U 盘）菜单/列盘/清除/日志全过。**注意**：Kylin 4.19 无 exfat/ntfs3 模块，退出写日志 U 盘仅支持 vfat/ntfs（exfat U 盘日志写失败会降级为内存日志，不影响清理）。
+>
 > **注意**：启动介质保护仅针对 `TRAN=usb` 的 U 盘与 `sr*` 光驱；**若直接从硬盘启动本 iso，该硬盘不会被排除，会正常出现在可清列表**（属设计口径，勿在装有系统/数据的硬盘上启动后回车清盘）。
 
 ## 2. 目录结构
@@ -40,12 +42,14 @@
 ```
 diskwipe-iso/
 ├── README.md            本说明
-├── VERSION              版本号（当前 1.3.3，iso 文件名含版本；构建时拷入 initramfs 的 /diskwipe.version）
-├── .gitignore           忽略构建产物 output/（不入库）
-├── build.sh             Windows 一键构建入口（经 WSL Ubuntu 执行）
-├── build-lib.sh         构建函数库（apt 依赖→组装 initramfs→cpio→grub.cfg→grub-mkrescue→isoinfo 校验）
+├── VERSION              版本号（当前 1.4.0，iso 文件名含版本；构建时拷入 initramfs 的 /diskwipe.version）
+├── .gitignore           忽略构建产物 output/ 与 Kylin 材料解压目录 kylin-src/（不入库）
+├── build.sh             Windows 一键构建入口（经 WSL Ubuntu 执行；可选参数 kylin|ubuntu|auto 指定内核模式）
+├── build-lib.sh         构建函数库（apt 依赖→组装 initramfs→cpio→grub.cfg→grub-mkrescue→isoinfo 校验；内核双模式）
+├── kylin-kernel-export.sh  在 Kylin 服务器一键提取内核材料（boot/modules/firmware → kylin-src-<日期>.tar.gz）
+├── kylin-src-<日期>.tar.gz Kylin 内核材料包（构建材料入库；kylin-src/ 解压目录 git 忽略）
 ├── src/
-│   ├── init             initramfs 启动脚本（挂载→白名单模块→mdev→exec menu.sh；失败进救援 shell）
+│   ├── init             initramfs 启动脚本（挂载→白名单模块→mdev→exec menu.sh；失败进救援 shell；Kylin 内核自动切白名单）
 │   ├── menu.sh          交互菜单（列盘/默认全选/排除/YES 确认/循环；0 退出）
 │   ├── wipe.sh          清除入口（逐盘 umount→wipefs -a→wipefs -n 验证）
 │   └── lib.sh           共享库（盘枚举/白名单/挂载点/类型标注/单盘清除）
@@ -64,19 +68,27 @@ diskwipe-iso/
 **命令**（在项目根目录执行）：
 
 ```bash
-bash diskwipe-iso/build.sh
+bash diskwipe-iso/build.sh          # 默认 auto：检测到 kylin-src/ 即用 Kylin 内核
+bash diskwipe-iso/build.sh kylin    # 强制 Kylin 内核（需已解压 kylin-src/，见下）
+bash diskwipe-iso/build.sh ubuntu   # 强制 WSL Ubuntu generic 内核
 ```
+
+**Kylin 内核材料准备**（v1.4.0 起自动检测 `diskwipe-iso/kylin-src/boot/vmlinuz-4.19*` 存在即用 Kylin 内核构建）：
+
+1. 把 `kylin-kernel-export.sh` 拷到目标 Kylin 服务器，执行 `bash kylin-kernel-export.sh`，得到 `kylin-src-<日期>.tar.gz`（含 `boot/vmlinuz-*`、`modules/<内核版本>/`、`firmware/`）；
+2. 把 tar.gz 传回本机放入 `diskwipe-iso/`，解压出 `kylin-src/` 目录（`tar -xzf kylin-src-<日期>.tar.gz -C diskwipe-iso/`）；解压目录不入库（git 忽略），tar.gz 作为构建材料入库保留；
+3. 直接 `bash diskwipe-iso/build.sh` 即自动用 Kylin 内核构建（内核取 `kylin-src/boot/vmlinuz-4.19*`，模块按白名单 + 依赖链从 `kylin-src/modules/<ver>/` 提取）。
 
 **构建流程**（全部在 WSL 虚拟盘文件系统 + `output/` 内产出 iso **文件**，绝不写任何真实块设备）：
 
-1. apt 安装构建依赖（`busybox-static xorriso mtools grub-pc-bin grub-efi-amd64-bin linux-image-generic zstd parted`——parted 提供 `partprobe`；另补装 `genisoimage` 提供 isoinfo）；
-2. 组装 initramfs rootfs：静态 busybox + 全部 applet；util-linux 动态 `wipefs`/`lsblk`/`blkid` + parted 的 `partprobe`（`wipefs -a` 后刷新内核分区视图用；`ldd` 收集 .so 依赖按原路径布局拷入，chroot 实测可运行；busybox-static 无 blkid applet，退出写 U 盘（可写分区过滤）与系统盘判定依赖它）；磁盘驱动白名单模块目录 + **zstd 解压**（`.ko.zst` → `.ko`，busybox 无 zstd 解压能力）后 `depmod` 生成 `modules.dep`；`src/` 四个脚本（`init` 强制 `chmod +x`，内核要求 /init 可执行）；`VERSION` 拷入 rootfs 为 `/diskwipe.version`（菜单横幅与日志文件头的版本来源）；
+1. apt 安装构建依赖（`busybox-static xorriso mtools grub-pc-bin grub-efi-amd64-bin linux-image-generic zstd xz-utils parted`——parted 提供 `partprobe`，xz-utils 供 Kylin 模式 `.ko.xz` 解压；另补装 `genisoimage` 提供 isoinfo）；
+2. 组装 initramfs rootfs：静态 busybox + 全部 applet；util-linux 动态 `wipefs`/`lsblk`/`blkid` + parted 的 `partprobe`（`wipefs -a` 后刷新内核分区视图用；`ldd` 收集 .so 依赖按原路径布局拷入，chroot 实测可运行；busybox-static 无 blkid applet，退出写 U 盘（可写分区过滤）与系统盘判定依赖它）；**内核双模式模块组装**——ubuntu 模式：磁盘驱动白名单模块目录 + **zstd 解压**（`.ko.zst` → `.ko`，busybox 无 zstd 解压能力）后 `depmod` 生成 `modules.dep`；kylin 模式：从 `kylin-src/modules/<ver>/` 按白名单 + `modules.dep` 依赖链提取（`.ko.xz` → `xz` 解压为 `.ko`），`modules.dep/modules.alias` 等清单拷入并 `sed 's/\.ko\.xz/.ko/'` 改后缀，固件仅拷 `amd-ucode`；`src/` 四个脚本（`init` 强制 `chmod +x`，内核要求 /init 可执行）；`VERSION` 拷入 rootfs 为 `/diskwipe.version`（菜单横幅与日志文件头的版本来源）；
 3. cpio 打包 initrd.img（gzip）；
-4. 写 `boot/grub/grub.cfg`（内核参数 `console=tty0 console=ttyS0,115200n8`），放置 vmlinuz/initrd.img 到 rootfs/boot/；
+4. 写 `boot/grub/grub.cfg`（内核参数 `console=tty0 console=ttyS0,115200n8`），放置 vmlinuz/initrd.img 到 rootfs/boot/（kylin 模式 vmlinuz 取自 `kylin-src/boot/vmlinuz-<ver>`）；
 5. `grub-mkrescue` 生成 **BIOS + UEFI 双引导** iso（兼容主流服务器；现场 Secure Boot 不开，无需签名）；
-6. `isoinfo` 校验：iso 含 `boot/grub/grub.cfg`、`boot/vmlinuz`、`boot/initrd.img`（目录树 + 实际抽取双检）；grub.cfg 含双 console 参数；initrd 内 /init 具执行位；initrd 内 `/diskwipe.version` 内容等于 VERSION；src 四脚本 `dash -n` 语法 0 错误。
+6. `isoinfo` 校验：iso 含 `boot/grub/grub.cfg`、`boot/vmlinuz`、`boot/initrd.img`（目录树 + 实际抽取双检）；grub.cfg 含双 console 参数；initrd 内 /init 具执行位；initrd 内 `/diskwipe.version` 内容等于 VERSION；src 四脚本 `dash -n` 语法 0 错误；**kylin 模式追加**：boot/vmlinuz `strings` 检出 `4.19.90` 版本串（Kylin 内核证据）、initrd 内关键模块（ahci/usb-storage/nvme）为未压缩 `.ko` 且无 `.ko.xz`/`.ko.zst` 残留。
 
-**产物**：`diskwipe-iso/output/diskwipe-v1.3.3.iso`（当前版本 1.3.3，约 77M）。构建成功打印 iso 路径与使用说明；任何一步失败打印 `✗ ...` 并以非 0 退出（不静默）。
+**产物**：`diskwipe-iso/output/diskwipe-v1.4.0.iso`（当前版本 1.4.0；Kylin 内核模式约 40M，Ubuntu 模式约 77M）。构建成功打印 iso 路径与使用说明；任何一步失败打印 `✗ ...` 并以非 0 退出（不静默）。
 
 ## 4. 写入 U 盘
 
@@ -86,14 +98,14 @@ bash diskwipe-iso/build.sh
 
 ```bash
 # 以 U 盘设备号为 /dev/sdX 为例（用 lsblk 确认，勿用整机系统盘）
-sudo dd if=diskwipe-v1.3.3.iso of=/dev/sdX bs=4M status=progress
+sudo dd if=diskwipe-v1.4.0.iso of=/dev/sdX bs=4M status=progress
 sync
 ```
 
 **Windows（Rufus）**：
 
 1. 打开 Rufus，在「设备」选择目标 U 盘；
-2. 「引导类型选择」选中 `diskwipe-v1.3.3.iso`；
+2. 「引导类型选择」选中 `diskwipe-v1.4.0.iso`；
 3. 写入方式选择 **DD 镜像**（保证 BIOS+UEFI 双引导兼容性；若默认「ISO 镜像」方式写出的 U 盘在某台机器引导失败，改用 DD 模式重写）；
 4. 点「开始」等待完成。
 
@@ -102,7 +114,7 @@ sync
 | 步骤 | 操作 | 期望结果 |
 |---|---|---|
 | 1 | 按第 4 节把 iso 写入 U 盘 | 写入完成无报错 |
-| 2 | 目标服务器从 U 盘启动（BIOS/UEFI 均可；Secure Boot 关闭） | 出现引导菜单（`DiskWipe v1.3.3`），3 秒自动进入 |
+| 2 | 目标服务器从 U 盘启动（BIOS/UEFI 均可；Secure Boot 关闭） | 出现引导菜单（`DiskWipe v1.4.0`），3 秒自动进入 |
 | 3 | 启动第一屏（init 提示） | 全英文可读（`Mounted /proc`、`Disk driver modules loaded`、`Device nodes scanned` 等），无乱码 |
 | 4 | 菜单**列出全部硬盘**（编号/设备/容量/型号，类型标注 SYS=系统盘 / DATA=数据盘 / UNK=未知） | 先出现 `Scanning disks... (please wait)`，随后每块目标盘一行（秒级出现，不卡死）；启动 U 盘、光驱不出现 |
 | 5 | 默认全选（直接回车）或输入编号排除不想要的盘，再回车 | 打印 `Will wipe the following N disks (irreversible!). Type YES to confirm:` 清单，与预期一致 |
@@ -141,7 +153,7 @@ lsblk -f         # 目标盘无文件系统列（FSTYPE 为空）
 
 ```
 ==============================================
-  DiskWipe Tool 1.3.3 - Reset disks to uninitialized
+  DiskWipe Tool 1.4.0 - Reset disks to uninitialized
 ==============================================
   #     Device  Size  Model/Status  Type
   ---------------------------------------------------
@@ -169,17 +181,19 @@ lsblk -f         # 目标盘无文件系统列（FSTYPE 为空）
 
 **现象**：目标服务器启动 iso 后菜单为空（提示仅发现启动介质），或 init 停留在救援 shell 报模块加载失败——说明该服务器磁盘控制器驱动不在白名单/Ubuntu generic 未覆盖（如特殊 SAS/RAID 卡）。
 
-**白名单模块**（init 逐模块加载，依赖模块经 `modules.dep` 自动带入）：`ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod usb_storage uas`。已覆盖主流 AHCI/NVMe/LSI/板载 RAID/虚拟化/USB3 控制器与 USB 存储（退出写日志 U 盘）；**仍未覆盖时**按以下替换路径处理：
+**白名单模块**（init 逐模块加载，依赖模块经 `modules.dep` 自动带入）：Ubuntu 模式 `ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod usb_storage uas`；Kylin 模式按 `uname -r` 含 `ky10` 自动切换为 `ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat`（Kylin 的 xhci_pci/usbcore/scsi_mod/virtio_pci 为内核内建无需加载）。已覆盖主流 AHCI/NVMe/LSI/板载 RAID/虚拟化/USB3 控制器与 USB 存储（退出写日志 U 盘）；**仍未覆盖时**（如该服务器另有特殊 SAS/RAID 卡）：
 
-**手动替换路径（当前可用做法）**：
+**v1.4.0 推荐做法（Kylin 内核模式，自动化）**：目标服务器本身能正常识别盘（Kylin 系统内），直接用 §3 的 Kylin 内核材料流程——`kylin-kernel-export.sh` 提取该服务器内核材料 → `kylin-src/` 解压 → `build.sh` 自动用 Kylin 内核构建；Kylin 模式的 init 白名单与模块提取清单如需补充驱动，把对应模块名加进 `build-lib.sh` 的 `DW_KYLIN_MODULES` 与 `src/init` 的 Kylin `DRIVE_MODULES` 即可（依赖链自动解析）。
+
+**手动替换路径（旧做法，仅 ubuntu 模式）**：
 
 1. 在 Kylin 服务器上收集替换材料：
    - 内核：`/boot/vmlinuz-*`（目标服务器可用的内核镜像）；
    - 模块：`/lib/modules/<内核版本>/` 整个目录（至少含 `kernel/drivers/{ata,nvme,scsi,virtio}` 与 `kernel/drivers/usb/host`）。
 2. 把材料替换 `build-lib.sh` 的取材来源：内核从「WSL `/boot/vmlinuz-*-generic`」换成 Kylin vmlinuz；模块目录从「WSL `/lib/modules/<kver>`」换成 Kylin 拷出的模块目录（同名版本目录布局），随后照常 `depmod`。
-3. 重跑 `bash diskwipe-iso/build.sh` 生成新 iso，重新写入 U 盘，回到第 5 节冒烟验收。
+3. 重跑 `bash diskwipe-iso/build.sh ubuntu` 生成新 iso，重新写入 U 盘，回到第 5 节冒烟验收。
 
-> 说明：设计文档（§10/§13）为此预留了自动化接口 `EXTRA_MODULES_DIR`（把 Kylin 拷出的模块目录作为替换来源自动接入组装流程），**当前版本尚未接线**，按上述手动替换执行；后续版本再自动化。
+> 说明：设计文档（§10/§13）预留的自动化接口 `EXTRA_MODULES_DIR` 已由 v1.4.0 的 Kylin 内核模式实现同源能力（kylin-src 作为替换内核/模块来源自动接入组装流程），手动替换路径保留供参考。
 
 ## 9. 测试
 
@@ -202,13 +216,13 @@ bash diskwipe-iso/tests/run-all.sh
 "C:\Program Files\Git\bin\bash.exe" --posix -n diskwipe-iso/src/*.sh diskwipe-iso/src/init
 ```
 
-## 10. 交付后重测指引（v1.3.3 真机验收）
+## 10. 交付后重测指引（v1.4.0 Kylin 内核版真机验收）
 
-用 v1.3.3 iso（`output/diskwipe-v1.3.3.iso`）执行真机复测：
+用 v1.4.0 iso（`output/diskwipe-v1.4.0.iso`，Kylin 内核模式）执行真机复测：
 
 1. 写入 U 盘后从目标服务器启动（IPMI 虚拟 KVM 查看）。
-2. **重点：确认菜单必现**——v1.3.3 起批量类型探测的 `blkid` **不再读 U 盘**（只带非 USB 盘的分区作设备参数），即使 U 盘 I/O 阻塞（内核 D 状态不可中断、dmesg `hub_event hogged CPU`），也应看到 `Mounted /proc`→`Device nodes scanned` 后直接出现 `Scanning disks... (please wait)` 与盘列表（**不再卡在「U 盘枚举完成（sdb: sdb1 sdb2）后无任何输出」**）；启动第一屏与菜单全部英文可读（无方框乱码）。
+2. **重点：确认 Kylin 内核正常引导、菜单必现**——v1.4.0 用 Kylin 4.19 内核（该服务器本身运行 Kylin 系统正常，USB 栈兼容），启动第一屏内核版本应为 `Linux version 4.19.90-89.11.v2401.ky10...`；随后 `Mounted /proc`→`Device nodes scanned`→`Scanning disks... (please wait)` 与盘列表**秒级出现**（v1.3.3 起批量探测 `blkid` 不读 U 盘，v1.4.0 起内核层不再有 Ubuntu xhci/USB 不兼容问题）；启动第一屏与菜单全部英文可读（无方框乱码）。
 3. **全选**（直接回车）→ 大写 `YES` 确认 → 逐盘核对 `OK /dev/<dev> reset to uninitialized` / `FAIL /dev/<dev>: <英文原因>`。
-4. 退出（输入 0）：核对打印 `Log kept in memory: <路径>`，随后要么 `Cleanup log saved to USB`（插了可写 U 盘），要么 `WARN: could not write log to USB ...`（无 U 盘/写失败，可抄录日志后断电）。
+4. 退出（输入 0）：核对打印 `Log kept in memory: <路径>`，随后要么 `Cleanup log saved to USB`（插了可写 vfat/ntfs U 盘；Kylin 4.19 无 exfat/ntfs3 模块，exfat U 盘会降级为内存日志），要么 `WARN: could not write log to USB ...`（无 U 盘/写失败，可抄录日志后断电）。
 5. 退出后重启，用 **FirPE** 复查系统盘与业务盘均为「未初始化」（无分区/无系统）。
 6. 若仍卡住或盘未清，**记录盘列表与每盘结果，并抄录/拍照退出时打印的内存日志路径内容**（`/tmp/diskwipe-log/diskwipe-*.log`，含 `Disks found: N (dev list)` 盘清单与每盘结果，可直接定位是枚举/探测/显示哪一阶段）反馈实现方定位。

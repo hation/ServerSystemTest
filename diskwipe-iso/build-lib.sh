@@ -2,18 +2,32 @@
 # diskwipe-iso WSL 内构建函数库（由 build.sh 经 `wsl -e bash -c` 加载执行）。
 # 用法：. build-lib.sh && dw_build_iso <项目目录(/mnt/c 映射路径)>
 #
+# v1.4.0 内核双模式：
+#   - ubuntu 模式（默认）：内核/模块取自 WSL Ubuntu generic 内核（/boot/vmlinuz-*-generic +
+#     /lib/modules/<kver>），模块 .ko.zst 构建期解压为 .ko，depmod 生成 modules.dep。
+#   - kylin 模式：内核/模块取自 <proj>/kylin-src/（从目标 Kylin 服务器提取的材料）——
+#     解决 Ubuntu 内核 xhci/USB 与该海光服务器 Microchip hub 不兼容（dmesg
+#     `hub_event hogged CPU`）导致启动卡死；Kylin 4.19 内核 USB 栈内建、正常。
+#     模块按 src/init 白名单 + modules.dep 依赖链从 kylin-src/modules/<kver> 提取，
+#     .ko.xz 解压为 .ko（busybox modprobe 不支持 xz），modules.dep/modules.alias 等
+#     清单拷入并 sed 改后缀；固件仅拷 amd-ucode（CPU 微码，缺失不阻塞）。
+#     自动检测：kylin-src/boot/vmlinuz-4.19* 存在即用 Kylin 内核；或 DW_KERNEL_MODE
+#     （auto|ubuntu|kylin，build.sh 可透传）显式指定。
+#
 # 流程（与设计 §10 一致）：
 #   1) apt 安装构建依赖（幂等：已装自动跳过）
 #   2) 组装 rootfs/：静态 busybox + 全部 applet 链接、util-linux 动态 wipefs/lsblk/blkid
-#      （ldd 收集 .so 依赖按原路径布局拷入）、白名单驱动模块目录 + zstd 解压
-#      （.ko.zst → .ko，busybox 无 zstd 解压）+ depmod、
-#      src 四脚本（init 强制 chmod +x——内核要求 /init 可执行）+ VERSION → /diskwipe.version
+#      （ldd 收集 .so 依赖按原路径布局拷入）、白名单驱动模块目录（ubuntu：整目录 +
+#      zstd 解压 .ko.zst → .ko + depmod；kylin：白名单 + 依赖链提取 .ko.xz → xz 解压 +
+#      manifest sed 改后缀）+ src 四脚本（init 强制 chmod +x——内核要求 /init 可执行）
+#      + VERSION → /diskwipe.version
 #   3) cpio 打包 initrd.img（gzip）
 #   4) 写 boot/grub/grub.cfg（linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8
 #      + initrd /boot/initrd.img），放置 vmlinuz/initrd.img 到 rootfs/boot/
 #   5) grub-mkrescue 生成 BIOS+UEFI 双引导 iso → <proj>/output/diskwipe-v<版本>.iso
 #   6) isoinfo 校验：三个关键文件存在 + grub.cfg 双 console 参数 +
-#      initrd 内 /init 执行位 + src 四脚本 dash -n 语法 0 错误
+#      initrd 内 /init 执行位 + src 四脚本 dash -n 语法 0 错误 +
+#      kylin 模式追加：vmlinuz 为 Kylin 4.19（strings 版本串）+ 关键模块未压缩 .ko
 #
 # 安全：全部步骤只在 WSL 虚拟盘文件系统与 <proj>/output/ 内产生 iso 文件，
 #       绝不写任何块设备（本机物理盘零接触）。
@@ -23,12 +37,21 @@
 # usb_storage/uas：退出时日志写 U 盘需要（无 U 盘时加载亦无害；依赖 usbcore/scsi_mod/sd_mod 已在列）；
 # nls_iso8859-1/exfat/ntfs3：vfat 挂载 iocharset / exfat、ntfs3（模块）退出写日志 U 盘需要
 DW_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod usb_storage uas nls_iso8859-1 exfat ntfs3"
+# Kylin 4.19 白名单（文件名形态，与 src/init 的 Kylin DRIVE_MODULES 一致，见设计 §6.2）：
+# 与 Ubuntu 差异：xhci_pci/scsi_mod/virtio_pci/virtio/usbcore/ehci/ohci 为内核内建
+# （modules.builtin，无模块文件）；exfat/ntfs3 无模块（Kylin 4.19 未引入）；
+# usb-storage 为文件名（非 usb_storage）；vfat/fat 为模块（Kylin 退出写日志 U 盘 vfat
+# 挂载需要）。依赖链（ahci→libahci→libata、nvme→nvme-core→nvme-common、uas→usb-storage、
+# mpt3sas→raid_class+scsi_transport_sas、vfat→fat）由 dw_modules_kylin 按 modules.dep 解析
+DW_KYLIN_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat"
 # apt 构建依赖（幂等：已装自动跳过；grub-mkrescue 双引导需要 grub-pc-bin(BIOS) +
 # grub-efi-amd64-bin(UEFI)，mtools 提供 mformat 生成 EFI 镜像；
 # zstd：Ubuntu 24.04 generic 内核 CONFIG_MODULE_COMPRESS_ZSTD，模块全部 .ko.zst 压缩，
 # busybox 静态版无 zstd 解压能力 → 构建期统一解压为 .ko，见 dw_assemble_rootfs 2.3 步）
+# xz-utils：Kylin 4.19 模块为 .ko.xz 压缩（CONFIG_MODULE_COMPRESS_XZ），busybox 无 xz
+# 解压能力 → dw_modules_kylin 构建期统一 xz -d 解压为 .ko（xz-utils 提供 xz 命令）
 # parted：提供 /usr/sbin/partprobe（wipefs -a 后刷新内核分区视图，见下 2.2 步）
-DW_APT_PKGS="busybox-static xorriso mtools grub-pc-bin grub-efi-amd64-bin linux-image-generic zstd parted"
+DW_APT_PKGS="busybox-static xorriso mtools grub-pc-bin grub-efi-amd64-bin linux-image-generic zstd xz-utils parted"
 
 dw_fail() {
     echo "✗ $*" >&2
@@ -58,10 +81,115 @@ dw_build_deps() {
     echo "     依赖就绪：busybox=$(command -v busybox) isoinfo=$(command -v isoinfo)"
 }
 
+# ---------- 2.3k) Kylin 内核模块：按白名单 + modules.dep 依赖链提取（.ko.xz → .ko） ----------
+# v1.4.0 Kylin 模式专用。材料源：<proj>/kylin-src/modules/<kver>/（从目标 Kylin 服务器
+# 提取，与 /lib/modules/<kver> 同布局）。步骤：
+#   1) 按 DW_KYLIN_MODULES 白名单在 kylin-src/modules/<kver>/kernel/ 下定位 .ko.xz
+#      （缺失模块跳过、不中断——如个别白名单模块该内核无文件）；
+#   2) 一次 awk 读 modules.dep 建依赖图 + DFS 递归解析依赖链（ahci→libahci→libata、
+#      nvme→nvme-core→nvme-common、uas→usb-storage、mpt3sas→raid_class+scsi_transport_sas、
+#      vfat→fat），输出全部 .ko.xz 相对路径；
+#   3) 按相对路径拷入 rootfs/lib/modules/<kver>/（保持原布局，busybox modprobe 按
+#      modules.dep 路径解析）；
+#   4) 统一 xz -d 解压为 .ko（busybox 无 xz 解压能力，.ko.xz 加载必失败）；
+#   5) modules.dep/modules.alias/modules.builtin/modules.order/modules.symbols 等清单
+#      从 kylin-src/modules/<kver>/ 拷贝并 sed 's/\.ko\.xz/.ko/' 改后缀
+#      （busybox modprobe 依赖这些文本清单定位模块与依赖）；
+#   6) 固件：仅拷 amd-ucode（CPU 微码）到 rootfs/lib/firmware/（磁盘/网卡驱动所需
+#      固件缺失不阻塞——目标驱动已在 Kylin 服务器确认可用）。
+# 全部拷贝源为 /mnt/c 上世界可读文件，无需 sudo；kylin-src/ 不入库（git 忽略），
+# 由 kylin-kernel-export.sh 在 Kylin 服务器提取、kylin-src-<日期>.tar.gz 传回解压。
+dw_modules_kylin() {
+    rootfs="$1"; proj="$2"; kver="$3"
+    ksrc="$proj/kylin-src/modules/$kver"
+    [ -d "$ksrc/kernel" ] || { dw_fail "kylin-src 模块目录不存在：$ksrc/kernel（kylin-src 未解压/不完整？）"; return 1; }
+    [ -f "$ksrc/modules.dep" ] || { dw_fail "kylin-src 缺 modules.dep（Kylin 材料不完整？）"; return 1; }
+
+    # 1) 白名单定位 .ko.xz（find 全树按文件名匹配；缺失跳过不中断）
+    seeds=""
+    for m in $DW_KYLIN_MODULES; do
+        p=$(find "$ksrc/kernel" -name "$m.ko.xz" 2>/dev/null | head -n 1)
+        if [ -n "$p" ]; then
+            seeds="${seeds:+$seeds }${p#$ksrc/}"
+        else
+            echo "     Kylin 模块 $m 无 .ko.xz（该内核未提供，跳过；缺失不中断）"
+        fi
+    done
+    [ -n "$seeds" ] || { dw_fail "Kylin 白名单模块全部缺失（kylin-src 无效？）"; return 1; }
+
+    # 2) 依赖链解析（一次 awk：读 modules.dep 建「模块路径→依赖路径列表」图，DFS 收集
+    #    全部被引用模块；SEEDS 为白名单初始路径（经 -v 传入——gawk 管道 stdin 模式
+    #    下命令行 VAR=value 赋值不生效，实测为空）
+    mods="$(printf '%s\n' "$seeds" | awk -v depfile="$ksrc/modules.dep" -v SEEDS="$seeds" '
+        BEGIN {
+            while ((getline line < depfile) > 0) {
+                key = line
+                sub(/:.*/, "", key)
+                sub(/^[^:]*: ?/, "", line)
+                deps[key] = line
+            }
+            n = split(SEEDS, arr, " ")
+            for (i = 1; i <= n; i++) if (arr[i] != "") push(arr[i])
+            while (sp > 0) {
+                p = stack[sp--]
+                if (seen[p]) continue
+                seen[p] = 1
+                out[++o] = p
+                ds = deps[p]
+                m = split(ds, darr, " ")
+                for (i = 1; i <= m; i++) if (darr[i] != "") push(darr[i])
+            }
+            for (i = 1; i <= o; i++) print out[i]
+        }
+        function push(x) { stack[++sp] = x }
+    ')"
+    [ -n "$mods" ] || { dw_fail "Kylin 依赖链解析为空（modules.dep 无效？）"; return 1; }
+    echo "     Kylin 模块提取：白名单 + 依赖链共 $(printf '%s\n' "$mods" | wc -l) 个 .ko.xz"
+
+    # 3) 按相对路径拷入（保持原布局）
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        mkdir -p "$rootfs/lib/modules/$kver/$(dirname "$p")" || { dw_fail "mkdir 失败：$p"; return 1; }
+        cp "$ksrc/$p" "$rootfs/lib/modules/$kver/$p" || { dw_fail "拷贝 Kylin 模块 $p 失败"; return 1; }
+    done <<EOF
+$mods
+EOF
+
+    # 4) .ko.xz → .ko（xz -d 成功后默认删除源文件；busybox 无 xz 解压能力）
+    nxz=$(find "$rootfs/lib/modules/$kver" -name '*.ko.xz' 2>/dev/null | wc -l)
+    if [ "$nxz" -gt 0 ]; then
+        find "$rootfs/lib/modules/$kver" -name '*.ko.xz' -exec xz -d {} + \
+            || { dw_fail "解压 .ko.xz 内核模块失败（xz-utils 未安装？）"; return 1; }
+        echo "     已把 $nxz 个 .ko.xz 模块解压为 .ko（busybox 无 xz 解压能力）"
+    fi
+
+    # 5) manifest 清单：拷贝并 sed 改后缀（modules.dep/alias/symbols 引用 .ko.xz →
+    #    .ko，与解压后文件一致；modules.builtin 本身为 .ko 形态，sed 无影响）
+    for mf in modules.dep modules.alias modules.builtin modules.builtin.modinfo modules.order modules.symbols modules.softdep modules.devname; do
+        if [ -f "$ksrc/$mf" ]; then
+            sed 's/\.ko\.xz/.ko/g' "$ksrc/$mf" > "$rootfs/lib/modules/$kver/$mf" \
+                || { dw_fail "改写 Kylin $mf 失败"; return 1; }
+        fi
+    done
+    echo "     modules.dep/modules.alias 等已拷入并 sed 改后缀（.ko.xz → .ko）"
+
+    # 6) 固件：amd-ucode（CPU 微码，Kylin/海光 CPU 必要；体积小）；其余驱动固件
+    #    （amdgpu 等）不拷——initramfs 体积控制，缺失不阻塞已确认驱动
+    if [ -d "$proj/kylin-src/firmware/amd-ucode" ]; then
+        mkdir -p "$rootfs/lib/firmware" || return 1
+        cp -a "$proj/kylin-src/firmware/amd-ucode" "$rootfs/lib/firmware/" \
+            || { dw_fail "拷贝 amd-ucode 固件失败"; return 1; }
+        echo "     固件：amd-ucode CPU 微码已拷入 lib/firmware（$(du -sh "$rootfs/lib/firmware" | awk '{print $1}')）"
+    else
+        echo "     kylin-src 无 firmware/amd-ucode，跳过固件（微码缺失不阻塞已确认驱动）"
+    fi
+    echo "     Kylin 模块目录：$(du -sh "$rootfs/lib/modules/$kver" | awk '{print $1}')"
+}
+
 # ---------- 2) 组装 initramfs rootfs ----------
 dw_assemble_rootfs() {
-    rootfs="$1"; proj="$2"; kver="$3"
-    echo "==> [2/7] 组装 initramfs rootfs（内核 $kver）"
+    rootfs="$1"; proj="$2"; kver="$3"; mode="${4:-ubuntu}"
+    echo "==> [2/7] 组装 initramfs rootfs（内核 $kver，模式 $mode）"
     mkdir -p "$rootfs"/bin "$rootfs"/sbin "$rootfs"/usr/bin "$rootfs"/usr/sbin \
              "$rootfs"/lib "$rootfs"/lib64 "$rootfs"/etc "$rootfs"/dev "$rootfs"/proc \
              "$rootfs"/sys "$rootfs"/tmp || { dw_fail "创建 rootfs 目录骨架失败"; return 1; }
@@ -112,7 +240,13 @@ dw_assemble_rootfs() {
         || { dw_fail "partprobe 动态依赖不完整（chroot 运行失败）"; return 1; }
     echo "     wipefs/lsblk/blkid/partprobe 动态依赖完整（chroot 实测可运行）"
 
-    # 2.3 内核模块白名单：拷贝驱动目录（含依赖）+ depmod 生成 modules.dep。
+    # 2.3 内核模块白名单（Ubuntu/Kylin 两模式，见 dw_modules_kylin 注释）：
+    #   Ubuntu：从 WSL /lib/modules/<kver> 整目录拷贝白名单驱动族 + zstd 解压 + depmod；
+    #   Kylin：从 kylin-src/modules/<kver> 按白名单 + modules.dep 依赖链提取 .ko.xz →
+    #     xz 解压 → manifest 拷入并 sed 改后缀（无 depmod，直接用改写后的 modules.dep）。
+    if [ "$mode" = "kylin" ]; then
+        dw_modules_kylin "$rootfs" "$proj" "$kver" || return 1
+    else
     # /lib/modules 下模块文件需 root 可读（/boot、部分模块 0600），统一走 $DW_SUDO
     mkdir -p "$rootfs/lib/modules/$kver/kernel/drivers" || return 1
     for d in ata nvme scsi virtio; do
@@ -164,6 +298,7 @@ dw_assemble_rootfs() {
     fi
     depmod -b "$rootfs" "$kver" || { dw_fail "depmod 生成模块依赖失败"; return 1; }
     echo "     模块目录已拷入并生成 modules.dep：$(du -sh "$rootfs/lib/modules/$kver" | awk '{print $1}')"
+    fi
 
     # 2.4 src 四脚本。关键交接项：src/init 当前 mode 100644，必须 chmod +x——
     #    内核要求 /init 可执行（cpio 打包的是 0755 权限位）
@@ -195,13 +330,23 @@ dw_pack_initrd() {
 
 # ---------- 4) 写 grub.cfg + 放置内核/initrd 到 rootfs/boot ----------
 dw_write_bootfiles() {
-    rootfs="$1"; build_dir="$2"; kver="$3"; version="$4"
-    echo "==> [4/7] 写 boot/grub/grub.cfg + 放置 vmlinuz/initrd.img"
+    rootfs="$1"; build_dir="$2"; kver="$3"; version="$4"; proj="$5"; mode="${6:-ubuntu}"
+    echo "==> [4/7] 写 boot/grub/grub.cfg + 放置 vmlinuz/initrd.img（模式 $mode）"
     mkdir -p "$rootfs/boot/grub" || { dw_fail "mkdir boot/grub 失败"; return 1; }
+    if [ "$mode" = "kylin" ]; then
+        # Kylin 模式：vmlinuz 取自 kylin-src/boot/vmlinuz-<kver>（/mnt/c 上世界可读，无需 sudo）；
+        # 拷贝后 chmod 0644（与 ubuntu 模式一致，避免后续 xorriso 读取失败）
+        vmlinuz_src="$proj/kylin-src/boot/vmlinuz-$kver"
+        [ -f "$vmlinuz_src" ] || { dw_fail "kylin-src 缺 vmlinuz-$kver（Kylin 材料不完整？）"; return 1; }
+        cp "$vmlinuz_src" "$rootfs/boot/vmlinuz" || { dw_fail "拷贝 Kylin vmlinuz 失败"; return 1; }
+        chmod 0644 "$rootfs/boot/vmlinuz" || { dw_fail "chmod vmlinuz 失败"; return 1; }
+        echo "     vmlinuz：kylin-src/boot/vmlinuz-$kver（Kylin 4.19）"
+    else
     # /boot/vmlinuz-* 仅 root 可读（Ubuntu 24.04 默认 0600），须经 $DW_SUDO 拷贝；
     # 拷贝后 chmod 0644（源 0600 会令后续 xorriso 以普通用户身份读取失败）
     $DW_SUDO cp "/boot/vmlinuz-$kver" "$rootfs/boot/vmlinuz" || { dw_fail "拷贝 vmlinuz-$kver 失败"; return 1; }
     $DW_SUDO chmod 0644 "$rootfs/boot/vmlinuz" || { dw_fail "chmod vmlinuz 失败"; return 1; }
+    fi
     cp "$build_dir/initrd.img" "$rootfs/boot/initrd.img" || { dw_fail "拷贝 initrd.img 失败"; return 1; }
     cat > "$rootfs/boot/grub/grub.cfg" <<EOF
 set timeout=3
@@ -229,8 +374,8 @@ dw_mkrescue() {
 
 # ---------- 6) isoinfo 校验 ----------
 dw_verify_iso() {
-    iso="$1"; build_dir="$2"; proj="$3"
-    echo "==> [6/7] isoinfo 校验 iso"
+    iso="$1"; build_dir="$2"; proj="$3"; mode="${4:-ubuntu}"
+    echo "==> [6/7] isoinfo 校验 iso（模式 $mode）"
     echo "     卷信息：$(isoinfo -i "$iso" -d 2>/dev/null | grep -i '^Volume id' | head -n 1)"
 
     # 6.1 三个关键文件。isoinfo -R -l 为树形输出（"Directory listing of /boot/grub/" 段下
@@ -281,9 +426,31 @@ dw_verify_iso() {
     if find "$build_dir/initrdx/lib/modules" -name '*.ko.zst' 2>/dev/null | grep -q .; then
         dw_fail "initrd 内仍有 .ko.zst 模块（busybox 无法解压加载）"; return 1
     fi
+    # 6.5b Kylin 模式：.ko.xz 同样不可被 busybox 加载，必须已全部解压为 .ko
+    if find "$build_dir/initrdx/lib/modules" -name '*.ko.xz' 2>/dev/null | grep -q .; then
+        dw_fail "initrd 内仍有 .ko.xz 模块（busybox 无法解压加载）"; return 1
+    fi
     nko=$(find "$build_dir/initrdx/lib/modules" -name '*.ko' 2>/dev/null | wc -l)
     [ "$nko" -gt 0 ] || { dw_fail "initrd 内无任何未压缩 .ko 模块"; return 1; }
-    echo "     校验通过：initrd 内模块全部为未压缩 .ko（共 $nko 个，无 .ko.zst 残留）"
+    echo "     校验通过：initrd 内模块全部为未压缩 .ko（共 $nko 个，无 .ko.zst/.ko.xz 残留）"
+
+    # 6.6 Kylin 模式追加校验：iso 内 boot/vmlinuz 为 Kylin 4.19 内核（strings 版本串
+    #     4.19.90，bzImage 明文段含 "4.19.90-89.11.v2401.ky10.x86_64"）；initrd 内
+    #     关键模块（ahci/usb-storage/nvme）存在且为 .ko（非压缩后缀）
+    if [ "$mode" = "kylin" ]; then
+        isoinfo -R -i "$iso" -x /boot/vmlinuz > "$build_dir/vmlinuz.check" 2>/dev/null \
+            || { dw_fail "抽取 boot/vmlinuz 失败（Kylin 校验）"; return 1; }
+        if ! strings "$build_dir/vmlinuz.check" 2>/dev/null | grep -q '4.19.90'; then
+            dw_fail "boot/vmlinuz 非 Kylin 4.19 内核（strings 未见 4.19.90 版本串）"; return 1
+        fi
+        echo "     校验通过：boot/vmlinuz 为 Kylin 4.19 内核（strings 检出 4.19.90 版本串）"
+        for m in ahci usb-storage nvme; do
+            if ! find "$build_dir/initrdx/lib/modules" -name "$m.ko" 2>/dev/null | grep -q .; then
+                dw_fail "initrd 内缺少关键 Kylin 模块 $m.ko（应为未压缩 .ko）"; return 1
+            fi
+        done
+        echo "     校验通过：initrd 内关键模块 ahci/usb-storage/nvme 均为未压缩 .ko"
+    fi
 }
 
 # ---------- 主入口 ----------
@@ -300,14 +467,36 @@ dw_build_iso() {
     mkdir -p "$rootfs" || { dw_fail "创建 rootfs 失败"; return 1; }
 
     dw_build_deps       || { echo "✗ 构建中止。临时目录在 WSL /tmp 内（会话结束即失效，仅当次会话可排查）：$build_dir" >&2; return 1; }
-    kver="$(ls /boot/vmlinuz-*-generic 2>/dev/null | sed 's/.*vmlinuz-//' | sort -V | tail -n 1)"
-    [ -n "$kver" ] || { dw_fail "未找到 /boot/vmlinuz-*-generic（linux-image-generic 未安装？）"; rm -rf "$build_dir"; return 1; }
+    # 内核模式：auto（默认）——kylin-src/boot/vmlinuz-4.19* 存在即自动用 Kylin 内核
+    # （替换 WSL Ubuntu generic 内核）；显式 DW_KERNEL_MODE=ubuntu|kylin 可覆盖
+    # （build.sh 可选参数透传，见 build.sh）。
+    mode="${DW_KERNEL_MODE:-auto}"
+    case "$mode" in
+    auto)
+        if ls "$proj"/kylin-src/boot/vmlinuz-4.19* >/dev/null 2>&1; then
+            mode=kylin
+        else
+            mode=ubuntu
+        fi
+        ;;
+    ubuntu|kylin) ;;
+    *) dw_fail "DW_KERNEL_MODE 取值非法：$mode（应为 auto|ubuntu|kylin）"; rm -rf "$build_dir"; return 1 ;;
+    esac
+    echo "==> 内核模式：$mode（kylin = 使用 kylin-src 提取的 Kylin 4.19 内核，解决 Ubuntu 内核 USB 不兼容启动卡死）"
+    if [ "$mode" = "kylin" ]; then
+        # kylin-src/boot/vmlinuz-4.19.90-89.11.v2401.ky10.x86_64 → 推导 kver
+        kver="$(ls "$proj"/kylin-src/boot/vmlinuz-4.19* 2>/dev/null | sed 's/.*vmlinuz-//' | head -n 1)"
+        [ -n "$kver" ] || { dw_fail "无法从 kylin-src/boot/vmlinuz-4.19* 推导内核版本"; rm -rf "$build_dir"; return 1; }
+    else
+        kver="$(ls /boot/vmlinuz-*-generic 2>/dev/null | sed 's/.*vmlinuz-//' | sort -V | tail -n 1)"
+        [ -n "$kver" ] || { dw_fail "未找到 /boot/vmlinuz-*-generic（linux-image-generic 未安装？）"; rm -rf "$build_dir"; return 1; }
+    fi
     echo "==> 使用内核：$kver"
-    dw_assemble_rootfs "$rootfs" "$proj" "$kver" || { echo "✗ 构建中止。临时目录在 WSL /tmp 内（会话结束即失效）：$build_dir" >&2; return 1; }
+    dw_assemble_rootfs "$rootfs" "$proj" "$kver" "$mode" || { echo "✗ 构建中止。临时目录在 WSL /tmp 内（会话结束即失效）：$build_dir" >&2; return 1; }
     dw_pack_initrd      "$rootfs" "$build_dir" || { echo "✗ 构建中止。临时目录在 WSL /tmp 内（会话结束即失效）：$build_dir" >&2; return 1; }
-    dw_write_bootfiles  "$rootfs" "$build_dir" "$kver" "$version" || { echo "✗ 构建中止。临时目录在 WSL /tmp 内（会话结束即失效）：$build_dir" >&2; return 1; }
+    dw_write_bootfiles  "$rootfs" "$build_dir" "$kver" "$version" "$proj" "$mode" || { echo "✗ 构建中止。临时目录在 WSL /tmp 内（会话结束即失效）：$build_dir" >&2; return 1; }
     dw_mkrescue         "$rootfs" "$proj" "$iso" || { echo "✗ 构建中止。临时目录在 WSL /tmp 内（会话结束即失效）：$build_dir" >&2; return 1; }
-    dw_verify_iso       "$iso" "$build_dir" "$proj" || { echo "✗ 构建中止。临时目录在 WSL /tmp 内（会话结束即失效）：$build_dir" >&2; return 1; }
+    dw_verify_iso       "$iso" "$build_dir" "$proj" "$mode" || { echo "✗ 构建中止。临时目录在 WSL /tmp 内（会话结束即失效）：$build_dir" >&2; return 1; }
 
     # 模块经 $DW_SUDO 拷贝后属主为 root，清理须同样走 sudo
     $DW_SUDO rm -rf "$build_dir"

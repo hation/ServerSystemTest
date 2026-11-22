@@ -1,7 +1,11 @@
 #!/bin/sh
 # diskwipe-iso 一键构建入口（Windows Git Bash；构建逻辑在 WSL Ubuntu 内执行）。
-# 用法：bash diskwipe-iso/build.sh
-#
+# 用法：bash diskwipe-iso/build.sh [kylin|ubuntu|auto]
+#   可选参数指定内核模式（默认 auto）：
+#     auto   自动检测——diskwipe-iso/kylin-src/boot/vmlinuz-4.19* 存在即用 Kylin 内核
+#            （v1.4.0：Kylin 内核模式，解决 Ubuntu 内核与该海光服务器 USB 不兼容启动卡死）
+#     kylin  强制用 Kylin 内核（kylin-src/ 材料，须已解压于 diskwipe-iso/kylin-src/）
+#     ubuntu 强制用 WSL Ubuntu generic 内核
 # 流程：检测 WSL（wsl -l -v 含 Ubuntu；缺失则打印安装指引退出 1）→ 经
 #       `wsl -e bash -c` 加载 build-lib.sh 执行构建（apt 依赖→组装 rootfs→cpio
 #       initrd→grub.cfg→grub-mkrescue 双引导 iso→isoinfo 校验）
@@ -13,6 +17,14 @@
 set -u
 
 me_dir="$(cd "$(dirname "$0")" && pwd)" || { echo "✗ 无法定位脚本所在目录" >&2; exit 1; }
+
+# 可选内核模式参数（透传给 WSL 内 build-lib.sh 的 DW_KERNEL_MODE）
+mode="${1:-auto}"
+case "$mode" in
+auto|ubuntu|kylin) ;;
+*) echo "✗ 未知内核模式：$mode（应为 auto|ubuntu|kylin）" >&2; exit 1 ;;
+esac
+export DW_KERNEL_MODE="$mode"
 
 # 1) 检测 WSL Ubuntu（wsl -l -v 输出为 UTF-16，需先去除 NUL 再 grep）
 if ! wsl -l -v 2>/dev/null | tr -d '\0' | grep -qi ubuntu; then

@@ -30,6 +30,23 @@ export PATH="${INIT_PATH:-/bin:/sbin:/usr/bin:/usr/sbin}"
 # nls_iso8859-1/exfat/ntfs3：vfat 挂载需 iocharset 模块；exfat/ntfs3 为模块（Ventoy
 #   数据区/Windows U 盘退出写日志需要；无对应设备时加载亦无害）
 DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod usb_storage uas nls_iso8859-1 exfat ntfs3"
+# Kylin 4.19 内核（v1.4.0 起 uname -r 含 ky10 时切换）适配：
+#   - xhci_pci/usbcore/ehci/ohci/scsi_mod/virtio_pci/virtio 为内核内建（modules.builtin，
+#     无模块文件可加载——这正是 Kylin 内核在该海光服务器 USB 栈兼容的关键）；白名单剔除
+#     （modprobe 内建模块名可能告警，避免误进救援 shell）；
+#   - exfat/ntfs3：Kylin 4.19 未引入，无模块（剔除；缺失不中断——构建侧同样跳过）；
+#   - usb-storage：Kylin 模块文件名为 usb-storage.ko（busybox modprobe 按 modules.dep
+#     路径解析，usb_storage 与 usb-storage 均能命中，这里用文件名形态）；
+#   - vfat/fat：Kylin 中为模块（Ubuntu 24.04 为内建），退出写日志 U 盘 vfat 挂载需要
+#     （vfat 依赖 fat，busybox modprobe 按 modules.dep 自动带入）；
+#   - 依赖链（nvme→nvme-core→nvme-common、ahci→libahci→libata、uas→usb-storage、
+#     mpt3sas→raid_class+scsi_transport_sas）由 busybox modprobe 读 modules.dep 自动加载，
+#     构建侧 dw_modules_kylin 已按同一清单 + 依赖链提取对应 .ko 进 initramfs。
+case "$(uname -r 2>/dev/null)" in
+*ky10*)
+    DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat"
+    ;;
+esac
 
 # 启动失败：打印错误并停留在救援 shell（不 exec menu.sh，便于现场诊断）
 init_rescue() {

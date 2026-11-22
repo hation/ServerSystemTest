@@ -252,6 +252,25 @@ case "$1" in
                 printf "%s %s %s %s %s %s\n", name, type, mps, pk, pt[name], fl[name]
             }' "$ROOT/lsblk.table"
         ;;
+    NAME,TYPE,TRAN,PKNAME)
+        [ -f "$ROOT/lsblk.table" ] || exit 0
+        # 批量探测的 TRAN 过滤（v1.3.3：blkid 只带非 USB 盘作参数）；同 install_fakes 形态
+        awk 'BEGIN { print "NAME TYPE TRAN PKNAME" }
+            FNR==1 { next }
+            {
+                name=$1; type=$3
+                tran=""; t=NF
+                if ($NF ~ /^\//) t=NF-1
+                if (type == "disk" && t > 3 && $t ~ /^(sata|sas|nvme|usb|spi|ata|scsi|virtio|pcie)$/) tran=$t
+                pk=""
+                if (type != "disk") {
+                    pk=name
+                    if (pk ~ /p[0-9]+$/) sub(/p[0-9]+$/, "", pk)
+                    else while (pk ~ /[0-9]$/) pk=substr(pk,1,length(pk)-1)
+                }
+                print name, type, tran, pk
+            }' "$ROOT/lsblk.table"
+        ;;
     esac
     ;;
 -no)

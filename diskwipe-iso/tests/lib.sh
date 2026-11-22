@@ -123,10 +123,11 @@ case "$1" in
         ;;
     NAME,TYPE,TRAN,PKNAME)
         [ -f "$ROOT/lsblk.table" ] || exit 0
-        # 输出「名字 类型 TRAN PKNAME」（与真实 lsblk -o NAME,TYPE,TRAN,PKNAME -l 一致：
-        # TRAN 只出现在整盘行；分区行 TRAN 恒空、PKNAME 由名字推导——nvme0n1p1 去
+        # 输出表头 + 「名字 类型 TRAN PKNAME」（与真实 lsblk -o NAME,TYPE,TRAN,PKNAME -l 一致：
+        # 恒有表头、TRAN 只出现在整盘行；分区行 TRAN 恒空、PKNAME 由名字推导——nvme0n1p1 去
         # p+数字、sda1 去尾部数字）
-        awk '"'"'FNR==1 { next }
+        awk '"'"'BEGIN { print "NAME TYPE TRAN PKNAME" }
+            FNR==1 { next }
             {
                 name=$1; type=$3
                 tran=""; t=NF
@@ -161,11 +162,14 @@ esac
 exit 0'
     # 假 blkid：单设备形态 blkid -s TYPE|-s LABEL -o value <dev>（TYPE 按 $ROOT/blk.type、
     # LABEL 按 $ROOT/lsblk.labels 返回；无条目 → 无输出 rc 2 模拟无法探测）；
-    # 批量形态 blkid -c /dev/null -o full（无设备参数）→ 输出 设备: TYPE="类型" 逐行
-    # （util-linux 带设备名形态，供批量归并；无条目 → 空输出 rc 0）
+    # 批量形态 blkid -c /dev/null -o full → 输出 设备: TYPE="类型" 逐行
+    # （util-linux 带设备名形态，供批量归并；无条目 → 空输出 rc 0）。
+    # v1.3.3：批量形态**带分区设备参数**（-c /dev/null -o full /dev/sda1 ...）时只输出参数中
+    # 设备的条目（按 blk.type 键直接匹配；参数设备不在 blk.type → 无输出 rc 0）——模拟
+    # dw_scan_system_disks 只读非 USB 盘的分区（U 盘分区不在参数中则不读）。
     fake_bin blkid '#!/bin/sh
 [ -n "$ROOT" ] || exit 2
-dev=""; sel=""; fullmode=0
+dev=""; sel=""; fullmode=0; devlist=""
 for a in "$@"; do
     case "$a" in
     -s) : ;;
@@ -175,11 +179,18 @@ for a in "$@"; do
     full) fullmode=1 ;;
     TYPE) sel=type ;;
     LABEL) sel=label ;;
-    /dev/*) dev="${a#/dev/}" ;;
+    /dev/*) dev="${a#/dev/}"; devlist="$devlist ${a#/dev/}" ;;
     esac
 done
 if [ "$fullmode" = "1" ]; then
     [ -f "$ROOT/blk.type" ] || exit 0
+    if [ -n "$devlist" ]; then
+        awk -v dl="$devlist" '"'"'
+            BEGIN { n=split(dl, a, " "); for (i=1; i<=n; i++) want[a[i]]=1 }
+            ($1 in want) { print "/dev/" $1 ": TYPE=\"" $2 "\"" }
+        '"'"' "$ROOT/blk.type"
+        exit 0
+    fi
     awk '"'"'{ print "/dev/" $1 ": TYPE=\"" $2 "\"" }'"'"' "$ROOT/blk.type"
     exit 0
 fi

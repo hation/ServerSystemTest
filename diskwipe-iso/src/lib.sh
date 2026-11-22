@@ -18,8 +18,9 @@
 #                             lsblk 超时/失败 → 返回 1 且无输出（menu 据此降级重试，
 #                             不误判"仅启动介质"）
 #   dw_scan_system_disks       无参；stdout 每行「设备|类型码」0=数据盘 1=系统盘 2=未知；
-#                             批量一次 lsblk（含 PARTTYPENAME/PARTFLAGS 列）+ 一次 blkid
-#                             （-c /dev/null -o full 带设备名输出，awk 归并到父盘）；
+#                             批量两次 lsblk（全盘表含 PARTTYPENAME/PARTFLAGS 列 + TRAN 过滤
+#                             非 USB 盘）+ 一次 blkid（-c /dev/null -o full **只带非 USB 盘的
+#                             分区作设备参数**——U 盘不在参数中，blkid 不读 U 盘，awk 归并到父盘）；
 #                             任一次超时/失败 → 返回 1 且无输出（调用方将全部盘标 UNK）
 #   dw_format_disk_lines [码表]  stdin 枚举行 → stdout 每行「设备|容量|型号|TRAN大写|类型码」；
 #                             码表为 dw_scan_system_disks 输出（设备|类型码 逐行），缺失/空 →
@@ -182,19 +183,43 @@ dw_is_system_disk() {
 # 批量类型探测（替代 menu 逐盘 dw_is_system_disk，列盘循环零外部命令）：
 #   - 一次 lsblk 全盘表（NAME,TYPE,MOUNTPOINT,PKNAME,PARTTYPENAME,PARTFLAGS——树形前缀剥离、
 #     从右往左识别 PARTFLAGS(0x..)/PKNAME（设备名形态），其余非挂载点字段并入类型名）+ 一次
-#     blkid -c /dev/null -o full（带设备名输出「设备: TYPE="xxx"」，awk 归并到父盘）。
+#     lsblk 拿 TRAN（NAME,TYPE,TRAN,PKNAME -l，同 dw_save_log_to_usb 形态）过滤出非 USB
+#     白名单盘的分区列表 + 一次 blkid -c /dev/null -o full <非USB盘分区列表>（带分区设备参数
+#     输出「设备: TYPE="xxx"」，awk 归并到父盘）。
+#   - v1.3.3：blkid **只带非 USB 盘的分区作设备参数**——U 盘不在参数中，blkid 不读 U 盘
+#     （v1.3.2 真机「U 盘枚举完成（sdb: sdb1 sdb2）后菜单未出现」：全盘 blkid 读 U 盘，
+#     U 盘 I/O 阻塞为内核 D 状态不可中断，timeout（SIGTERM）无效 → blkid 卡死拖死菜单）；
+#     注意：blkid 带**整盘**参数只输出该盘 PTTYPE、不会探测其分区（实证 util-linux 行为），
+#     故必须以分区设备为参数才能拿到分区 TYPE；无非 USB 盘分区时跳过 blkid（dwsfs 为空）。
 #   - 探测口径与 dw_is_system_disk 一致：GPT/MBR ESP（类型名含 EFI，tolower 匹配）、
 #     MBR 活动 0x80、ntfs → 系统盘(1)；无 OS 迹象且全部已知 → 数据盘(0)；
 #     存在探测不到（blkid 无该分区条目）→ 未知(2)；无分区 → 数据盘(0)。
-#   - 两个外部调用均包 "$TIMEOUT_BIN" 3；任一次超时/失败 → 返回 1 且无输出，
+#   - 外部调用均包 "$TIMEOUT_BIN" 3；任一次超时/失败 → 返回 1 且无输出，
 #     调用方（menu）将全部盘标 UNK（类型仅提示，不影响清除）。
-#   - 批量表无 TRAN 列，无法排除 usb 盘——但本函数输出仅按设备名被 menu 查表引用，
-#     usb 盘不在枚举结果中，其类型码自然不被使用。
+#   - 批量表无 TRAN 列，无法排除 usb 盘——但本函数先经 TRAN 过滤掉 U 盘（blkid 不读），
+#     输出仍仅按设备名被 menu 查表引用（menu 枚举已排除 usb，双保险），U 盘类型码自然不被使用。
 dw_scan_system_disks() {
     dwsblk="$("$TIMEOUT_BIN" 3 "$LSBLK_BIN" -o NAME,TYPE,MOUNTPOINT,PKNAME,PARTTYPENAME,PARTFLAGS 2>/dev/null)"
     [ "$?" -eq 0 ] || return 1
-    dwsfs="$("$TIMEOUT_BIN" 3 "$BLKID_BIN" -c /dev/null -o full 2>/dev/null)"
+    # 非 USB 白名单盘的分区设备列表（带 /dev/ 前缀）——blkid 只扫这些分区，绝不读 U 盘
+    # （v1.3.3 根治点；TRAN 只出现在整盘行，分区行 TRAN 恒空、PKNAME 恒为末列，
+    # 同 dw_save_log_to_usb 的 lsblk 形态；blkid 整盘参数只出 PTTYPE，故参数取分区）
+    dwtran="$("$TIMEOUT_BIN" 3 "$LSBLK_BIN" -o NAME,TYPE,TRAN,PKNAME -l 2>/dev/null)"
     [ "$?" -eq 0 ] || return 1
+    dwnonusb="$(printf '%s\n' "$dwtran" | awk '
+        NR==1 { next }
+        $2 == "disk" && $3 != "usb" {
+            if ($1 ~ /^(sr|loop|ram)[0-9]/) next
+            if ($1 ~ /^sd[a-z]$/ || $1 ~ /^sd[a-z][a-z]$/ || $1 ~ /^nvme[0-9][0-9]*n[0-9][0-9]*$/ || $1 ~ /^vd[a-z]$/ || $1 ~ /^mmcblk[0-9][0-9]*$/) nonusb[$1]=1
+        }
+        $2 == "part" && ($NF in nonusb) { printf "/dev/%s\n", $1 }
+    ')"
+    dwsfs=""
+    if [ -n "$dwnonusb" ]; then
+        # 带分区设备参数（按空白拆词）——U 盘及其分区不在参数中 → blkid 不读 U 盘（v1.3.3 根治点）
+        dwsfs="$("$TIMEOUT_BIN" 3 "$BLKID_BIN" -c /dev/null -o full $dwnonusb 2>/dev/null)"
+        [ "$?" -eq 0 ] || return 1
+    fi
     printf '%s\n__DWS_END__\n%s\n' "$dwsfs" "$dwsblk" | awk '
         $0 == "__DWS_END__" { dsec=1; next }
         dsec != 1 {

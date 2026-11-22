@@ -14,6 +14,7 @@
 #       重试仍失败 → 打印错误+可安全重启提示；不出现 Only boot media found
 #   H8  清除流程 cmds.txt：wipefs/umount/partprobe 调用无 timeout 前缀
 #   H9  dw_disk_mountpoints 与退出写 U 盘（dw_save_log_to_usb）调用包 timeout 3（cmds.txt 断言）
+#   H10 U 盘存在时批量 blkid 排除 USB（v1.3.3：blkid 只带非 USB 盘作设备参数，不读 U 盘）
 # 运行：bash diskwipe-iso/tests/run-all.sh（或单独 bash diskwipe-iso/tests/t6_scan.sh）
 # 安全约束（用户强要求，测试绝不触碰本机真实块设备）：全部经假件注入（LSBLK_BIN/BLKID_BIN/
 #   TIMEOUT_BIN 接缝 + PATH 假件），脚本操作的"设备"全部来自假件输出的名字。
@@ -86,10 +87,11 @@ install_recording_timeout
 run_menu '0' "$OUTF"
 check_rc 0 '输入 0 应正常退出 0'
 check_out '/dev/sda' '列表应显示 sda'
-# 枚举 + 批量探测各 1 次 lsblk；退出时 dw_save_log_to_usb 再枚举 1 次（无 U 盘候选 → 降级）
-check_cmd_count 'timeout 3 lsblk' 3 '枚举 + 批量探测 + 退出写 U 盘枚举各 1 次 lsblk'
+# 枚举 1 + 批量探测（全盘表 + TRAN 过滤）2 + 退出写 U 盘枚举 1 = 4 次 lsblk；批量 blkid 仅 1 次
+check_cmd_count 'timeout 3 lsblk' 4 '枚举 + 批量探测（全盘表+TRAN）+ 退出写 U 盘枚举 lsblk 调用数'
 check_cmd_count 'timeout 3 blkid' 1 '批量 blkid 仅 1 次'
-check_not_cmds '/dev/sd' '列盘期间不得出现逐盘 lsblk/blkid（无设备参数调用）'
+check_cmds 'timeout 3 blkid -c /dev/null -o full /dev/sda1' '批量 blkid 仅带非 USB 盘分区参数（一次批量调用，非逐盘）'
+check_not_cmds 'timeout 3 blkid -s' '列盘期间不得出现逐盘 blkid（-s TYPE/-s LABEL 形态）'
 cleanup_case
 
 # ---------- H2：批量类型探测 ----------
@@ -119,10 +121,11 @@ check_out 'sdb|1' 'ntfs → SYS(1)'
 check_out 'sdc|0' 'ext4 无 0x80 标志 → DATA(0)'
 check_out 'sdd|2' 'blkid 探测不到 → UNK(2)'
 check_out 'sde|0' '无分区盘 → DATA(0)'
-check_cmd_count 'timeout 3 lsblk' 1 '批量 lsblk 仅 1 次'
+check_cmd_count 'timeout 3 lsblk' 2 '批量 lsblk 仅 2 次（全盘表 + TRAN 过滤）'
 check_cmd_count 'timeout 3 blkid' 1 '批量 blkid 仅 1 次'
 check_cmds 'timeout 3 lsblk -o NAME,TYPE,MOUNTPOINT,PKNAME,PARTTYPENAME,PARTFLAGS' '批量 lsblk 应带 PARTTYPENAME/PARTFLAGS 列'
-check_cmds 'timeout 3 blkid -c /dev/null -o full' '批量 blkid 应带 -c /dev/null -o full（含设备名输出形态）'
+check_cmds 'timeout 3 lsblk -o NAME,TYPE,TRAN,PKNAME -l' '批量 lsblk 应带 TRAN 列过滤非 USB 盘'
+check_cmds 'timeout 3 blkid -c /dev/null -o full /dev/sda1 /dev/sdb1 /dev/sdc1 /dev/sdd1' '批量 blkid 应带 -c /dev/null -o full + 非 USB 盘分区设备参数（含设备名输出形态）'
 cleanup_case
 
 # ---------- H3：批量探测超时 → 全部盘 UNK，菜单不挂死 ----------
@@ -327,6 +330,35 @@ check_cmds 'timeout 3 blkid -s TYPE -o value /dev/sdc1' '介质 blkid TYPE 应�
 check_cmds 'timeout 3 blkid -s LABEL -o value /dev/sdc1' '介质 blkid LABEL 应包 timeout 3'
 check_cmds 'timeout 3 mount /dev/sdc2 /diskwipe-log' 'mount 应包 timeout 3（I/O 阻塞时兜底）'
 check_cmds 'umount /diskwipe-log' '保存后应卸载'
+cleanup_case
+
+# ---------- H10：U 盘存在时批量 blkid 排除 USB（v1.3.3 根治「blkid 读 U 盘卡死」） ----------
+CASE="H10 U 盘存在时批量 blkid 排除 USB（不读 U 盘）"
+setup_case
+cat > "$ROOT/lsblk.table" <<'EOF'
+NAME SIZE TYPE MODEL TRAN MOUNTPOINT
+sda 500G disk DiskA sata
+sda1 512M part DiskA sata
+sdb 500G disk DiskB sata
+sdb1 100G part DiskB sata
+sdc 30G disk USB DISK 3.0 usb
+sdc1 32M part USB DISK 3.0 usb
+sdc2 8G part USB DISK 3.0 usb
+EOF
+add_blk_type sda1 vfat
+add_ptname sda1 "EFI System"
+add_blk_type sdb1 ntfs
+# U 盘分区也给类型条目——若 blkid 读到（回归），输出会混入 sdc 类型，以此反证未读
+add_blk_type sdc1 vfat
+install_recording_timeout
+run_dw "$OUTF" dw_scan_system_disks
+check_rc 0 '批量探测应退出 0'
+check_cmds 'timeout 3 blkid -c /dev/null -o full /dev/sda1 /dev/sdb1' 'blkid 仅带非 USB 盘分区设备参数（U 盘分区不在参数中）'
+check_not_cmds '/dev/sdc' 'cmds.txt 不得出现 U 盘设备（blkid 不读 U 盘）'
+check_out 'sda|1' '非 USB ESP 盘 → SYS(1)'
+check_out 'sdb|1' '非 USB ntfs 盘 → SYS(1)'
+check_cmd_count 'timeout 3 lsblk' 2 '批量 lsblk 仅 2 次（全盘表 + TRAN 过滤）'
+check_cmd_count 'timeout 3 blkid' 1 '批量 blkid 仅 1 次（带分区设备参数）'
 cleanup_case
 
 finish

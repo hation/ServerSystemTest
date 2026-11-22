@@ -64,7 +64,13 @@ DW_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk v
 # usb-storage 为文件名（非 usb_storage）；vfat/fat 为模块（Kylin 退出写日志 U 盘 vfat
 # 挂载需要）。依赖链（ahci→libahci→libata、nvme→nvme-core→nvme-common、uas→usb-storage、
 # mpt3sas→raid_class+scsi_transport_sas、vfat→fat）由 dw_modules_kylin 按 modules.dep 解析
-DW_KYLIN_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat"
+DW_KYLIN_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat ast mgag200 smifb bochs-drm cirrus virtio-gpu"
+# v1.5.4 追加显卡 DRM 种子模块（ast/mgag200/smifb/bochs-drm/cirrus/virtio-gpu，Kylin 模式）：
+# 解决 UEFI 真机 VGA 黑屏——内核 efifb 依赖 GRUB 传 framebuffer，而真机 GRUB 视频初始化
+# 失败无 framebuffer；改由 initrd 加载显卡驱动，内核自探测显卡硬件 → DRM → fbcon → tty0
+# 显示（不依赖 GRUB/EFI framebuffer）。依赖链（ttm、i2c-algo-bit、drm_kms_helper、drm、
+# fb_sys_fops、syscopyarea、sysfillrect、sysimgblt）由 dw_modules_kylin 按 modules.dep
+# 自动解析提取；无对应显卡的机型加载失败亦无害（src/init 静默跳过）。
 # apt 构建依赖（幂等：已装自动跳过）。
 # isolinux：提供 /usr/lib/ISOLINUX/isolinux.bin + isohdpfx.bin（v1.5.0 BIOS ISOLINUX
 #   引导与混合 MBR 必需；syslinux 为其依赖包，一并安装）

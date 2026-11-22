@@ -71,6 +71,13 @@ for im in $DRIVE_MODULES; do
 done
 echo "Disk driver modules loaded"
 
+# 2.5) v1.5.4 显卡驱动：内核自探测显卡硬件 → DRM → fbcon → tty0 显示（不依赖 GRUB framebuffer；
+# 真机 UEFI 下 GRUB 视频初始化失败无 framebuffer，靠显卡驱动重建显示）。
+# 加载失败无害（该机无对应显卡），仅静默跳过，不进入救援 shell。
+for gv in ast mgag200 smifb bochs-drm cirrus virtio-gpu; do
+    modprobe "$gv" 2>/dev/null
+done
+
 # 3) mdev -s 扫描并创建设备节点
 mdev -s || init_rescue "mdev -s device scan failed"
 echo "Device nodes scanned"

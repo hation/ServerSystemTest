@@ -8,7 +8,7 @@
 #     mmcblk[0-9]*；排除 TRAN=usb（启动 U 盘）与 sr* / loop* / ram*（光驱/循环/内存盘）。
 #   - 接缝变量：LSBLK_BIN / BLKID_BIN / WIPEFS_BIN / UMOUNT_BIN / PARTPROBE_BIN / TIMEOUT_BIN
 #     （默认系统命令，测试经 PATH 假件注入，绝不触碰真实块设备）。
-#     全部只读探测（枚举/批量类型/挂载点/日志介质）统一包 "$TIMEOUT_BIN" 3 兜底超时；
+#     全部只读探测（枚举/批量类型/挂载点/退出写 U 盘枚举）统一包 "$TIMEOUT_BIN" 3 兜底超时；
 #     清除操作（umount/wipefs/partprobe）不加 timeout（破坏性操作不能半途超时中断）。
 #
 # 接口（后续任务依赖的签名）：

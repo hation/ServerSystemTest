@@ -13,7 +13,7 @@
 #   H7  枚举假件超时（124）→ menu 打印 ERROR: disk scan timed out or failed 并重试一次；
 #       重试仍失败 → 打印错误+可安全重启提示；不出现 Only boot media found
 #   H8  清除流程 cmds.txt：wipefs/umount/partprobe 调用无 timeout 前缀
-#   H9  dw_disk_mountpoints 与 init 日志介质探测调用包 timeout 3（cmds.txt 断言）
+#   H9  dw_disk_mountpoints 与退出写 U 盘（dw_save_log_to_usb）调用包 timeout 3（cmds.txt 断言）
 # 运行：bash diskwipe-iso/tests/run-all.sh（或单独 bash diskwipe-iso/tests/t6_scan.sh）
 # 安全约束（用户强要求，测试绝不触碰本机真实块设备）：全部经假件注入（LSBLK_BIN/BLKID_BIN/
 #   TIMEOUT_BIN 接缝 + PATH 假件），脚本操作的"设备"全部来自假件输出的名字。
@@ -290,7 +290,7 @@ check_not_cmds 'timeout 3 wipefs' 'wipefs 不得包 timeout'
 check_not_cmds 'timeout 3 partprobe' 'partprobe 不得包 timeout'
 cleanup_case
 
-# ---------- H9：dw_disk_mountpoints 与日志介质探测包 timeout ----------
+# ---------- H9：dw_disk_mountpoints 与退出写 U 盘（dw_save_log_to_usb）包 timeout ----------
 CASE="H9 dw_disk_mountpoints 包 timeout"
 setup_case
 cat > "$ROOT/lsblk.table" <<'EOF'

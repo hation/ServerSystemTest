@@ -140,7 +140,7 @@ EOF
     printf '> '
     IFS= read -r mex || { echo; dw_log "Input ended, exiting (you may power off or reboot)."; dw_log_finish; exit 0; }
 
-    # 0 = 退出（打印可断电/重启提示，写文件尾并卸载日志介质）
+    # 0 = 退出（打印可断电/重启提示，写文件尾并尽力写 U 盘）
     case "$mex" in
     0)
         echo
@@ -225,7 +225,7 @@ EOF
     if [ "$myn" = "YES" ]; then
         echo
         dw_log "Wiping: umount -> wipefs -a -> partprobe -> wipefs -n verify..."
-        # 每盘结果（OK/FAIL）经 stdout 由 tee 同时落到屏幕与日志文件；日志介质已降级
+        # 每盘结果（OK/FAIL）经 stdout 由 tee 同时落到屏幕与日志文件；日志写已降级
         # （LOG_DEGRADED）时仅屏幕显示、不写盘（tee 不包 timeout——写管道超时可能
         # SIGPIPE 中断 wipe.sh，故降级检查代替超时；dw_log 前置写入失败即触发降级）
         if [ "${LOG_DEGRADED:-0}" = "1" ]; then

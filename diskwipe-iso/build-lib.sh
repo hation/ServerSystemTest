@@ -20,8 +20,8 @@
 # 任何一步失败 → 打印「✗ ...」并返回非 0（不静默，残留构建目录供排查）。
 
 # 模块白名单（与 src/init 的 DRIVE_MODULES 一致，见设计 §6.2）。
-# usb_storage/uas：U 盘日志介质需要（无 U 盘时加载亦无害；依赖 usbcore/scsi_mod/sd_mod 已在列）；
-# nls_iso8859-1/exfat/ntfs3：vfat 挂载 iocharset / exfat、ntfs3（模块）日志介质需要
+# usb_storage/uas：退出时日志写 U 盘需要（无 U 盘时加载亦无害；依赖 usbcore/scsi_mod/sd_mod 已在列）；
+# nls_iso8859-1/exfat/ntfs3：vfat 挂载 iocharset / exfat、ntfs3（模块）退出写日志 U 盘需要
 DW_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod usb_storage uas nls_iso8859-1 exfat ntfs3"
 # apt 构建依赖（幂等：已装自动跳过；grub-mkrescue 双引导需要 grub-pc-bin(BIOS) +
 # grub-efi-amd64-bin(UEFI)，mtools 提供 mformat 生成 EFI 镜像；
@@ -76,8 +76,8 @@ dw_assemble_rootfs() {
 
     # 2.2 util-linux 动态 wipefs/lsblk/blkid + parted 的 partprobe，统一 ldd 收集 .so
     #    依赖（按原绝对路径布局，动态 loader 运行）。
-    # blkid：busybox-static 无 blkid applet（实测 --list 不含）——日志介质文件系统探测
-    #       （dw_mount_log_media 的 vfat/exfat/ntfs 过滤）与系统盘判定（dw_is_system_disk）
+    # blkid：busybox-static 无 blkid applet（实测 --list 不含）——退出写 U 盘的可写分区
+    #       过滤（dw_save_log_to_usb 的 vfat/exfat/ntfs）与系统盘判定（dw_is_system_disk）
     #       都依赖它，必须随 util-linux 拷入
     # partprobe：wipefs -a 后刷新内核分区视图（lib.sh dw_wipe_disk 调用）。注意它来自
     #       GNU parted 包（非 util-linux，实测 dpkg -L util-linux 无 partprobe），随
@@ -133,12 +133,12 @@ dw_assemble_rootfs() {
     mkdir -p "$rootfs/lib/modules/$kver/kernel/drivers/usb" || return 1
     $DW_SUDO cp -a "/lib/modules/$kver/kernel/drivers/usb/host" "$rootfs/lib/modules/$kver/kernel/drivers/usb/" \
         || { dw_fail "拷贝 usb/host（xhci-pci）失败"; return 1; }
-    # usb/storage：usb_storage/uas 驱动（日志介质 U 盘需要；usbcore 通常内核内建无模块目录）
+    # usb/storage：usb_storage/uas 驱动（退出写日志 U 盘需要；usbcore 通常内核内建无模块目录）
     [ -d "/lib/modules/$kver/kernel/drivers/usb/storage" ] || { dw_fail "内核模块目录 kernel/drivers/usb/storage 不存在"; return 1; }
     $DW_SUDO cp -a "/lib/modules/$kver/kernel/drivers/usb/storage" "$rootfs/lib/modules/$kver/kernel/drivers/usb/" \
         || { dw_fail "拷贝 usb/storage（usb_storage/uas）失败"; return 1; }
     # fs/nls + fs/exfat + fs/ntfs3：vfat 挂载需 iocharset 模块（CONFIG_NLS_ISO8859_1=m，
-    #    缺失会报 "IO charset iso8859-1 not found" 导致日志介质 mount 失败）；exfat/ntfs3
+    #    缺失会报 "IO charset iso8859-1 not found" 导致退出写日志 mount 失败）；exfat/ntfs3
     #    为模块（Ventoy 数据区/Windows U 盘）。zstd 压缩由后续统一解压
     mkdir -p "$rootfs/lib/modules/$kver/kernel/fs" || return 1
     for fdir in nls exfat ntfs3; do

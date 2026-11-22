@@ -26,9 +26,9 @@ export PATH="${INIT_PATH:-/bin:/sbin:/usr/bin:/usr/sbin}"
 . "$(dirname "$0")/lib.sh"
 
 # 磁盘驱动模块白名单（按此字符串逐模块加载）。
-# usb_storage/uas：U 盘日志介质需要（无 U 盘时加载同样成功——驱动加载与设备存在无关）
+# usb_storage/uas：退出时日志写 U 盘需要（无 U 盘时加载同样成功——驱动加载与设备存在无关）
 # nls_iso8859-1/exfat/ntfs3：vfat 挂载需 iocharset 模块；exfat/ntfs3 为模块（Ventoy
-#   数据区/Windows U 盘日志介质需要；无对应设备时加载亦无害）
+#   数据区/Windows U 盘退出写日志需要；无对应设备时加载亦无害）
 DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod usb_storage uas nls_iso8859-1 exfat ntfs3"
 
 # 启动失败：打印错误并停留在救援 shell（不 exec menu.sh，便于现场诊断）

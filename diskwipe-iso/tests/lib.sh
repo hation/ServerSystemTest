@@ -246,7 +246,7 @@ while IFS= read -r f; do
     [ "$f" = "$dev" ] && exit 1
 done < "$ROOT/partprobe.fail"
 exit 0'
-    # 假 mount：记录调用到 cmds.txt（日志介质挂载/卸载测试用）；$ROOT/mount.fail
+    # 假 mount：记录调用到 cmds.txt（退出写 U 盘挂载/卸载测试用）；$ROOT/mount.fail
     # 逐行命中挂载点（末参数）时返回 1（模拟挂载失败）
     fake_bin mount '#!/bin/sh
 [ -n "$ROOT" ] || exit 0

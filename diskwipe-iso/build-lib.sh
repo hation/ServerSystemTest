@@ -357,6 +357,10 @@ set default=0
 set gfxmode=auto
 terminal_output console
 terminal_input console
+# 启动内核时不尝试视频模式（gfxpayload=text 用文本模式传递；gfxmode=text 避免
+# GRUB 在 boot 阶段再尝试 gfxterm 触发 "no suitable video mode found"）
+set gfxmode=text
+set gfxpayload=text
 menuentry "DiskWipe v$version" {
     linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8
     initrd /boot/initrd.img
@@ -367,13 +371,24 @@ EOF
 
 # ---------- 5) grub-mkrescue 生成 BIOS+UEFI 双引导 iso ----------
 dw_mkrescue() {
-    rootfs="$1"; proj="$2"; iso="$3"
+    rootfs="$1"; proj="$2"; iso="$3"; build_dir="$4"
     echo "==> [5/7] grub-mkrescue 生成 BIOS+UEFI 双引导 iso → $iso"
     mkdir -p "$proj/output" || { dw_fail "创建 output/ 失败"; return 1; }
     rm -f "$iso" || { dw_fail "清理旧 iso 失败"; return 1; }
+    # embedded 配置（grub-mkrescue -c 指定，写入 GRUB 核心镜像最先执行的配置）：
+    # 在 GRUB 尝试图形终端（gfxterm）之前强制文本终端——规避无合适视频模式服务器上
+    # "error: no suitable video mode found. Booting in blind mode" 后盲模式卡死。
+    # search -f 定位含 grub.cfg 的 iso 分区（不依赖 UUID，Ventoy/虚拟光驱均可靠）。
+    cat > "$build_dir/embedded.cfg" <<EOF
+search --no-floppy --set=root -f /boot/grub/grub.cfg
+set prefix=(\$root)/boot/grub
+terminal_output console
+terminal_input console
+configfile /boot/grub/grub.cfg
+EOF
     # 注：Ubuntu 24.04 grub 2.12 下「-- -V DISKWIPE rootfs」形式会被 xorriso 当命令拒绝
     #（实测 "Not a known command"），正确写法是 -V 置于源目录之前
-    grub-mkrescue -o "$iso" -V DISKWIPE "$rootfs" \
+    grub-mkrescue -c "$build_dir/embedded.cfg" -o "$iso" -V DISKWIPE "$rootfs" \
         || { dw_fail "grub-mkrescue 失败（见上方输出）"; return 1; }
     echo "     iso：$(ls -lh "$iso" | awk '{print $5}')"
 }
@@ -501,7 +516,7 @@ dw_build_iso() {
     dw_assemble_rootfs "$rootfs" "$proj" "$kver" "$mode" || { echo "✗ 构建中止。临时目录在 WSL /tmp 内（会话结束即失效）：$build_dir" >&2; return 1; }
     dw_pack_initrd      "$rootfs" "$build_dir" || { echo "✗ 构建中止。临时目录在 WSL /tmp 内（会话结束即失效）：$build_dir" >&2; return 1; }
     dw_write_bootfiles  "$rootfs" "$build_dir" "$kver" "$version" "$proj" "$mode" || { echo "✗ 构建中止。临时目录在 WSL /tmp 内（会话结束即失效）：$build_dir" >&2; return 1; }
-    dw_mkrescue         "$rootfs" "$proj" "$iso" || { echo "✗ 构建中止。临时目录在 WSL /tmp 内（会话结束即失效）：$build_dir" >&2; return 1; }
+    dw_mkrescue         "$rootfs" "$proj" "$iso" "$build_dir" || { echo "✗ 构建中止。临时目录在 WSL /tmp 内（会话结束即失效）：$build_dir" >&2; return 1; }
     dw_verify_iso       "$iso" "$build_dir" "$proj" "$mode" || { echo "✗ 构建中止。临时目录在 WSL /tmp 内（会话结束即失效）：$build_dir" >&2; return 1; }
 
     # 模块经 $DW_SUDO 拷贝后属主为 root，清理须同样走 sudo

@@ -381,21 +381,24 @@ dw_write_bootfiles() {
     fi
     cp "$build_dir/initrd.img" "$rootfs/boot/initrd.img" || { dw_fail "拷贝 initrd.img 失败"; return 1; }
 
-    # 4.1 UEFI 精简 GRUB 的 grub.cfg（文本终端，无 gfxterm 引用——v1.5.0 起不再有
-    #     视频模式概念；terminal_output console 强制文本输出，根治盲模式卡死）
+    # 4.1 UEFI 精简 GRUB 的 grub.cfg（无菜单直启——v1.5.3：不渲染菜单、无 timeout 倒计时，
+    #     加 serial 终端兜底（insmod serial + serial --unit=0 初始化 + terminal_output/input
+    #     serial console）——盲模式（无任何可用终端）下 GRUB 因 serial 至少有一个可用终端
+    #     而不会进入盲模式，照常执行 linux/initrd/boot，根治真机 UEFI+Ventoy+KVM VGA
+    #     盲模式卡死、内核未启动的问题。serial 行兼容 Ventoy grub（其 core 已含 serial 模块，
+    #     insmod 幂等；本 iso 的 BOOTX64.EFI core 亦内嵌 serial/terminal 模块）。
+    #     无 gfxterm/video 模块、无 gfxpayload=text（内核跳过 efifb 直接 fallback）
     cat > "$rootfs/boot/grub/grub.cfg" <<EOF
-set timeout=3
-set default=0
-# v1.5.0 UEFI 精简 GRUB（grub-mkimage 剔除 gfxterm/video 模块）：
-# terminal_output console 强制文本终端，无视频模式概念——根治真机
-# "error: no suitable video mode found. Booting in blind mode" 盲模式卡死
+# v1.5.3 UEFI 直启 + serial 终端兜底（消除盲模式卡死；无 gfxterm/video/gfxpayload）
+# 无菜单渲染：不等待终端、不渲染 menuentry；serial 保证至少一个可用终端 → 不进入盲模式
 # （v1.5.0 起 BIOS 走 ISOLINUX 不再经 GRUB，此配置仅 UEFI 路径使用）
-set gfxmode=text
-set gfxpayload=text
-menuentry "DiskWipe v$version" {
-    linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8 rdinit=/init
-    initrd /boot/initrd.img
-}
+insmod serial
+serial --unit=0 --speed=115200 --word=8 --parity=no --stop=1
+terminal_output serial console
+terminal_input serial console
+linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8 rdinit=/init
+initrd /boot/initrd.img
+boot
 EOF
 
     # 4.2 BIOS ISOLINUX（isolinux.bin 来自 isolinux 包 /usr/lib/ISOLINUX/；KERNEL/APPEND
@@ -419,25 +422,30 @@ PROMPT 1
 EOF
 
     # 4.3 UEFI 精简 GRUB 核心（grub-mkimage 手动打包 BOOTX64.EFI，模块列表剔除
-    #     gfxterm/video/video_fb/efi_gop/efi_uga；embedded 配置先 search 定位 iso 根再
-    #     加载 grub.cfg，terminal_output console 文本终端；iso9660 供 iso 内读文件，
-    #     part_gpt/part_msdos/fat/ext2 兜底 Ventoy/分区形态，memdisk 常规保留。
+    #     gfxterm/video/video_fb/efi_gop/efi_uga；embedded 配置先 insmod serial 再
+    #     search 定位 iso 根、serial --unit=0 初始化、terminal_output/input serial console
+    #     双终端（serial 优先——盲模式兜底：真机无视频模式时 serial 是唯一可用终端，
+    #     console 保留 OVMF ConOut/serial 输出兼容）再加载 grub.cfg；iso9660 供 iso 内
+    #     读文件，part_gpt/part_msdos/fat/ext2 兜底 Ventoy/分区形态，memdisk 常规保留。
     #     注：GRUB 2.12 的 initrd 命令已内建（无 initrd.mod），linux/initrd 命令随
-    #     linux 模块与 core 提供，无需单独模块）
+    #     linux 模块与 core 提供，无需单独模块；serial/terminal 模块内嵌于 core
+    #     （grub-mkimage 启动时自动加载，insmod serial 幂等，无需 iso 内 serial.mod）
     #     El Torito EFI 引导镜像必须是 FAT 卷（内含 EFI/BOOT/BOOTX64.EFI）——OVMF/主流
     #     固件对裸 PE 文件作 EFI 条目的 El Torito 引导实测报 "failed to load ... Not
     #     Found"（grub-mkrescue 亦用此 FAT 镜像方案；真机 v1.4.x UEFI 引导正常即基于此）
     mkdir -p "$rootfs/EFI/BOOT" || { dw_fail "mkdir EFI/BOOT 失败"; return 1; }
     cat > "$build_dir/embedded-efi.cfg" <<EOF
+insmod serial
 search --no-floppy --set=root -f /boot/grub/grub.cfg
 set prefix=(\$root)/boot/grub
-terminal_output console
-terminal_input console
+serial --unit=0 --speed=115200 --word=8 --parity=no --stop=1
+terminal_output serial console
+terminal_input serial console
 configfile /boot/grub/grub.cfg
 EOF
     grub-mkimage -o "$rootfs/EFI/BOOT/BOOTX64.EFI" -O x86_64-efi -p /boot/grub \
         -c "$build_dir/embedded-efi.cfg" \
-        iso9660 linux normal search search_fs_file configfile part_gpt part_msdos fat ext2 boot fshelp memdisk \
+        iso9660 linux normal search search_fs_file configfile part_gpt part_msdos fat ext2 boot fshelp memdisk serial terminal \
         || { dw_fail "grub-mkimage 生成 BOOTX64.EFI 失败（grub-efi-amd64-bin 未安装？）"; return 1; }
     # 封入 FAT efi.img（El Torito EFI 引导镜像；mtools 的 mcopy 不自动建目录，先 mmd 建
     # ::/EFI/BOOT；BOOTX64.EFI 源为刚生成的 rootfs 内文件）

@@ -30,18 +30,9 @@ setup_stub() {
     setup_tmp
     mkdir -p "$ROOT/stub"
     cp "$INIT_SH" "$ROOT/stub/init"
-    # init 现在会 source 同目录 lib.sh（dw_mount_log_media 等），必须一并拷入 stub
+    # init 会 source 同目录 lib.sh（定义 dw_version 等函数），必须一并拷入 stub；
+    # v1.3.2 起 init 阶段零 U 盘 I/O（不探测/不挂载日志介质），故无需 lsblk/blkid/timeout 假件
     cp "$LIB_SH" "$ROOT/stub/lib.sh"
-    # 空 lsblk/blkid 假件：init 的 dw_mount_log_media 需要 lsblk/blkid 枚举日志介质；
-    # stub 环境无 U 盘 → 返回空，走 DW_LOG_MEDIA=none 分支（防真实 lsblk 触碰本机设备）
-    fake_bin lsblk '#!/bin/sh
-exit 0'
-    fake_bin blkid '#!/bin/sh
-exit 2'
-    # 假 timeout：只读探测超时兜底接缝（透明转执行，不记录——保持 cmds.txt 断言不变）
-    fake_bin timeout '#!/bin/sh
-shift
-"$@"'
     # 假 mount：记录调用到 cmds.txt；$ROOT/mount.fail 命中挂载点（末参数）时返回 1
     fake_bin mount '#!/bin/sh
 [ -n "$ROOT" ] || exit 0
@@ -102,9 +93,10 @@ check_cmds 'mount -t proc proc /proc' '应挂载 /proc'
 check_cmds 'mount -t sysfs sysfs /sys' '应挂载 /sys'
 check_cmds 'mount -t devtmpfs devtmpfs /dev' '应挂载 /dev'
 check_cmds 'mdev -s' '应执行 mdev -s 扫描设备'
-# USB 存储设备异步枚举：init 在 sleep 后进入重试循环（每轮 mdev -s + 探测）；
-# stub 环境假 lsblk 恒空（无 U 盘）→ 3 轮重试 + 首扫 = mdev -s 共 4 次
-check_cmd_count 'mdev -s' 4 '设备扫描应执行 4 次（首扫 1 + 日志介质重试 3 轮）'
+# USB 存储设备异步枚举：init 在 sleep 后进入重试循环（每轮 mdev -s 补建节点）；
+# v1.3.2 起循环不再探测/挂载日志介质（零 U 盘 I/O）——首扫 + 3 轮重试 = mdev -s 共 4 次
+check_cmd_count 'mdev -s' 4 '设备扫描应执行 4 次（首扫 1 + 节点补建重试 3 轮）'
+check_not_cmds 'mount /dev/' 'init 阶段零 U 盘挂载（不再挂载日志介质）'
 for m in $DRIVE_MODULES; do
     check_cmds "modprobe $m" "应加载模块 $m"
 done

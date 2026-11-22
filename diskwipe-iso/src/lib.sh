@@ -31,8 +31,8 @@
 #                             非0=失败（输出 FAIL 行 + 英文 reason）
 #   dw_version                 echo 版本号（读 /diskwipe.version，缺失回退 unknown）
 #   dw_log <msg>               echo "$msg" | tee -a "${LOG_FILE:-/dev/null}"（屏幕+文件双写）
-#   dw_mount_log_media         探测并挂载 U 盘可写分区到 /diskwipe-log（跳过 VTOYEFI）；
-#                             导出 DW_LOG_MEDIA=usb|none（失败仅提示，不阻断）
+#   dw_save_log_to_usb <file>  会话收尾尽力把日志文件写到 U 盘可写分区（跳过 VTOYEFI）；
+#                             0=已保存 / 1=无候选或全部失败（调用方打印降级提示，不阻断）
 
 # ---------- 接缝变量（默认系统命令，测试可覆盖） ----------
 LSBLK_BIN="${LSBLK_BIN:-lsblk}"
@@ -44,8 +44,6 @@ PARTPROBE_BIN="${PARTPROBE_BIN:-partprobe}"
 TIMEOUT_BIN="${TIMEOUT_BIN:-timeout}"
 # 版本文件路径（构建期拷入 rootfs；测试可覆盖指向临时文件）
 DW_VERSION_FILE="${DW_VERSION_FILE:-/diskwipe.version}"
-# 日志介质写测试探测文件路径（默认挂在挂载点下；测试可覆盖指向临时目录）
-DW_LOG_PROBE="${DW_LOG_PROBE:-/diskwipe-log/.dwlogtest}"
 
 # 设备名白名单校验（代码层护栏，从源头杜绝误操作）
 dw_dev_ok() {
@@ -369,9 +367,9 @@ dw_version() {
 
 # 日志双写：屏幕 + 追加到日志文件（LOG_FILE 未设置/为空 → tee 到 /dev/null，仅屏幕）。
 # tee 写失败仅提示、不阻断调用方（清理逻辑不因日志失败受影响）。
-# v1.3.1：写 U 盘包 timeout 2——介质 I/O 阻塞时 2 秒超时即降级 LOG_DEGRADED=1
-#   （后续 dw_log 仅屏幕 + 一次性 WARN 提示），绝不拖住菜单/清理；日志写失败与
-#   LOG_DEGRADED 判定均基于管道末命令（timeout）返回码。
+# v1.3.2：日志文件位于内存（menu 用 LOG_DIR=/tmp/diskwipe-log，initramfs rootfs 即
+#   tmpfs），tee 写内存几乎不可能阻塞——包 timeout 2 仅为防御（LOG_DEGRADED 兜底保留：
+#   写失败后后续 dw_log 仅屏幕 + 一次性 WARN 提示，绝不拖住菜单/清理）。
 dw_log() {
     if [ "${LOG_DEGRADED:-0}" = "1" ]; then
         echo "$1"
@@ -380,27 +378,25 @@ dw_log() {
     echo "$1" | "$TIMEOUT_BIN" 2 tee -a "${LOG_FILE:-/dev/null}"
     if [ "$?" -ne 0 ]; then
         LOG_DEGRADED=1
-        echo "WARN: cleanup log media failed; log is screen-only." >&2
+        echo "WARN: cleanup log file write failed; log is screen-only." >&2
     fi
 }
 
-# 探测并挂载日志介质（U 盘可写分区）：
-#   - 枚举 TRAN=usb 的 TYPE=part 分区（父盘即 U 盘；lsblk -o NAME,TYPE,TRAN,LABEL）
+# 会话收尾尽力把日志文件写到 U 盘（v1.3.2：init/menu 全程零 U 盘 I/O，仅退出时一次尽力写）：
+#   - 枚举 TRAN=usb 的 TYPE=part 分区（父盘即 U 盘；lsblk -o NAME,TYPE,TRAN,PKNAME -l）
 #   - 过滤可写文件系统（blkid TYPE ∈ vfat|exfat|ntfs）
 #   - 跳过卷标 VTOYEFI（Ventoy 32MB 启动分区，优先数据区）
-#   - 逐个 mount 到 /diskwipe-log + 1 字节写测试（探测文件写入并删除）验证可写
-#   - 首个成功 → DW_LOG_MEDIA=usb；全败/无候选 → DW_LOG_MEDIA=none（均 export）
-# 挂载失败静默降级（提示在 menu.sh）；写测试路径经 DW_LOG_PROBE 可覆盖。
-# 只挂载一个可写分区（按上述优先级首个成功者），不挂多个；绝不参与清除（U 盘仍被
-# dw_enum_disks 排除，见设计 §4.1）。全部只读探测（lsblk/blkid）包 "$TIMEOUT_BIN" 3 兜底：
-# 超时/失败 → 返回 1（DW_LOG_MEDIA=none），绝不拖住 init 启动；mount 不加 timeout。
-dw_mount_log_media() {
-    DW_LOG_MEDIA=none
-    export DW_LOG_MEDIA
+#   - 逐个 "$TIMEOUT_BIN" 3 mount 到 /diskwipe-log → cp 日志文件 → umount（失败仅提示）
+#   - 首个成功返回 0；全败/无候选返回 1（调用方打印降级提示，不阻断退出）
+# 全部只读探测（lsblk/blkid）与 mount 均包 "$TIMEOUT_BIN" 3 兜底；若 U 盘 I/O 阻塞
+# （内核 D 状态不可中断，timeout 亦会挂起）导致卡住——此时清理已完成，属可接受：
+# 提示可抄录日志后断电。
+dw_save_log_to_usb() {
+    dwlogf="$1"
+    [ -n "$dwlogf" ] && [ -f "$dwlogf" ] || return 1
     # 1) 枚举 U 盘可写分区候选（分区名，逐行）。真实 lsblk 的 TRAN 只出现在整盘行、
     #    分区行 TRAN 恒空（字段右移）——先收集 TRAN=usb 的整盘，再收其分区
-    #    （PKNAME 恒为末列；-l 列表模式免树形前缀）。卷标不依赖 lsblk（实测 guest 内
-    #    lsblk LABEL 探测不可靠），改由 blkid LABEL 逐分区读（见下）
+    #    （PKNAME 恒为末列；-l 列表模式免树形前缀）。卷标经 blkid LABEL 逐分区读
     dwraw="$("$TIMEOUT_BIN" 3 "$LSBLK_BIN" -o NAME,TYPE,TRAN,PKNAME -l 2>/dev/null)"
     [ "$?" -eq 0 ] || return 1
     dwcands="$(printf '%s\n' "$dwraw" | awk '
@@ -408,12 +404,12 @@ dw_mount_log_media() {
         $2 == "disk" && $3 == "usb" { isusb[$1] = 1; next }
         $2 == "part" && ($NF in isusb) { print $1 }
     ')"
-    [ -n "$dwcands" ] || return 0
-    # 挂载点不存在则创建（失败不阻断：mount 会失败，由循环降级 none）
+    [ -n "$dwcands" ] || return 1
+    # 挂载点不存在则创建（失败不阻断：mount 会失败，由循环降级返回 1）
     mkdir -p /diskwipe-log 2>/dev/null || :
     # 2) 逐候选：可写文件系统过滤（blkid TYPE ∈ vfat|exfat|ntfs）→ 跳过卷标 VTOYEFI
-    #    （blkid LABEL）→ mount → 写测试；失败卸载换下一个（POSIX 无 local，
-    #    函数内部变量统一 dw_ 前缀）
+    #    （blkid LABEL）→ timeout 3 mount → cp 日志文件 → umount；失败卸载换下一个
+    #    （POSIX 无 local，函数内部变量统一 dw_ 前缀）
     while IFS= read -r dwpart; do
         [ -n "$dwpart" ] || continue
         dwtype="$("$TIMEOUT_BIN" 3 "$BLKID_BIN" -s TYPE -o value "/dev/$dwpart" 2>/dev/null)"
@@ -423,20 +419,17 @@ dw_mount_log_media() {
         esac
         dwlab="$("$TIMEOUT_BIN" 3 "$BLKID_BIN" -s LABEL -o value "/dev/$dwpart" 2>/dev/null)"
         [ "$dwlab" != "VTOYEFI" ] || continue
-        if ! mount "/dev/$dwpart" /diskwipe-log >/dev/null 2>&1; then
+        if ! "$TIMEOUT_BIN" 3 mount "/dev/$dwpart" /diskwipe-log >/dev/null 2>&1; then
             continue
         fi
-        # v1.3.1：写测试（含删）包 timeout 3——U 盘写 I/O 阻塞时 3 秒超时即放弃该
-        # 候选（继续/降级 none），init 启动不被坏介质拖死（仅只读探测与写测试超时；
-        # mount 不加 timeout）。
-        if "$TIMEOUT_BIN" 3 sh -c 'printf x > "$1" && rm -f "$1"' sh "$DW_LOG_PROBE" 2>/dev/null; then
-            DW_LOG_MEDIA=usb
-            export DW_LOG_MEDIA
+        if cp "$dwlogf" /diskwipe-log/ >/dev/null 2>&1; then
+            "$UMOUNT_BIN" /diskwipe-log >/dev/null 2>&1 \
+                || echo "WARN: failed to unmount USB after log save (unmount later manually)"
             return 0
         fi
         "$UMOUNT_BIN" /diskwipe-log >/dev/null 2>&1
     done <<EOF
 $dwcands
 EOF
-    return 0
+    return 1
 }

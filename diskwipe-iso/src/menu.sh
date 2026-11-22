@@ -1,10 +1,12 @@
 #!/bin/sh
 # diskwipe-iso 交互菜单：列盘（编号/设备/容量/型号/类型）→ 默认全选、输入编号排除、
 # 回车=全部 → 打印将清除清单 → 输入大写 YES 才执行（调 wipe.sh）→ 循环；0 退出。
-# 清理日志（持久化落盘）：DW_LOG_MEDIA=usb 时生成 /diskwipe-log/diskwipe-<时间戳>.log
-#   （一次启动会话一份，多轮清理追加；文件头=版本/会话开始/介质状态），关键行经
-#   dw_log 落日志，wipe.sh 每盘结果经 tee 双写；0 退出写文件尾并尽力 umount。
-#   DW_LOG_MEDIA=none 时仅屏幕提示，不阻断清理。
+# 清理日志（v1.3.2 起全程写内存，零 U 盘 I/O）：LOG_DIR 默认 /tmp/diskwipe-log
+#   （initramfs rootfs 即 tmpfs = 内存，不受 U 盘 I/O 阻塞影响），启动时无条件
+#   mkdir -p + 创建 diskwipe-<时间戳>.log（一次启动会话一份，多轮清理追加；文件头=
+#   版本/会话开始/介质状态），关键行经 dw_log 落日志，wipe.sh 每盘结果经 tee 双写；
+#   0 退出写文件尾后由 dw_save_log_to_usb 尽力写 U 盘一次（成功打印 saved / 失败
+#   打印 WARN + 内存路径，提示可抄录后断电），不阻断退出。
 #
 # 硬约束：
 #   - POSIX/ash 兼容（initramfs 运行时只有 busybox ash；禁止 [[ ]]、数组、${var:0:3}
@@ -23,33 +25,32 @@
 
 WIPE_SH="$(dirname "$0")/wipe.sh"
 
-# ---- 日志初始化（一次启动会话一份文件，会话内多轮清理追加；无介质仅屏幕不阻断）----
-# init 已探测并导出 DW_LOG_MEDIA（usb/none）；直接运行 menu.sh 时默认 none。
-# LOG_DIR 可经环境覆盖（生产固定 /diskwipe-log，测试指向临时目录）。
-DW_LOG_MEDIA="${DW_LOG_MEDIA:-none}"
-LOG_DIR="${LOG_DIR:-/diskwipe-log}"
+# ---- 日志初始化（v1.3.2：无条件写内存；一次启动会话一份文件，会话内多轮清理追加）----
+# LOG_DIR 默认 /tmp/diskwipe-log（initramfs rootfs 即 tmpfs = 内存，menu 启动不依赖
+# U 盘探测/挂载——根治真机"init 挂 U 盘日志介质后 I/O 阻塞菜单进不去"）；测试可覆盖
+# LOG_DIR 指向临时目录。
+LOG_DIR="${LOG_DIR:-/tmp/diskwipe-log}"
 LOG_FILE=""
-if [ "$DW_LOG_MEDIA" = "usb" ]; then
-    mkdir -p "$LOG_DIR" 2>/dev/null || :
-    LOG_FILE="$LOG_DIR/diskwipe-$(date +%Y%m%d-%H%M%S).log"
-    # 文件头：版本 / 会话开始 / 介质状态（日志行同为英文 ASCII，与屏幕一致）
-    dw_log "=============================================="
-    dw_log "  diskwipe-iso cleanup log"
-    dw_log "  version: $(dw_version)"
-    dw_log "  session start: $(date '+%Y-%m-%d %H:%M:%S')"
-    dw_log "  log media: usb ($LOG_DIR)"
-    dw_log "=============================================="
-else
-    echo "No writable log media found; log will be screen-only."
-fi
+mkdir -p "$LOG_DIR" 2>/dev/null || :
+LOG_FILE="$LOG_DIR/diskwipe-$(date +%Y%m%d-%H%M%S).log"
+# 文件头：版本 / 会话开始 / 介质状态（日志行同为英文 ASCII，与屏幕一致）
+dw_log "=============================================="
+dw_log "  diskwipe-iso cleanup log"
+dw_log "  version: $(dw_version)"
+dw_log "  session start: $(date '+%Y-%m-%d %H:%M:%S')"
+dw_log "  log media: memory ($LOG_DIR)"
+dw_log "=============================================="
 
-# 会话收尾（0 退出路径）：写文件尾（会话结束时间）；有日志介质则打印日志路径并尽力
-# 卸载 /diskwipe-log（卸载失败仅提示，不阻断退出）
+# 会话收尾（全部退出路径）：写文件尾 → 打印内存日志路径 → 尽力写 U 盘一次
+# （dw_save_log_to_usb 成功打印 saved；失败/无 U 盘打印 WARN + 内存路径，提示
+# 可抄录后断电；U 盘 I/O 阻塞时 mount 可能卡住——清理已完成，属可接受，不阻断退出）
 dw_log_finish() {
     dw_log "== session end [$(date '+%Y-%m-%d %H:%M:%S')] =="
-    if [ "$DW_LOG_MEDIA" = "usb" ]; then
-        echo "Cleanup log saved: $LOG_FILE"
-        "$UMOUNT_BIN" /diskwipe-log >/dev/null 2>&1 || echo "WARN: failed to unmount log media (you may unmount it manually later)"
+    echo "Log kept in memory: $LOG_FILE"
+    if dw_save_log_to_usb "$LOG_FILE"; then
+        echo "Cleanup log saved to USB"
+    else
+        echo "WARN: could not write log to USB (disk I/O blocked or no USB); log kept in memory: $LOG_FILE"
     fi
 }
 

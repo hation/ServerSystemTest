@@ -258,22 +258,22 @@ while IFS= read -r f; do
     [ "$f" = "$mp" ] && exit 1
 done < "$ROOT/mount.fail"
 exit 0'
+    # 假 cp：记录调用到 cmds.txt，并把文件复制到 $ROOT/mnt/（模拟日志写到 U 盘挂载点，
+    # 全部落在用例临时目录，绝不触碰真实文件系统/块设备）。
+    # 注意：内部用绝对路径 /usr/bin/cp 调真实 cp——若写裸 cp 会经 PATH 再次命中本假件
+    # （无限递归）；Git Bash 环境 /usr/bin/cp.exe 恒存在
+    fake_bin cp '#!/bin/sh
+[ -n "$ROOT" ] || exit 0
+printf "cp %s\n" "$*" >> "$ROOT/cmds.txt"
+mkdir -p "$ROOT/mnt"
+/usr/bin/cp "$@" "$ROOT/mnt/"
+exit 0'
     # 假 timeout：模拟超时包装——去掉秒数参数后转执行剩余命令（测试内命令立即返回、
     # 不真等 3s）；不记录 cmds.txt（避免影响既有 check_no_cmds/check_cmds 断言）。
     # 需断言 timeout 调用形态/次数的用例（T6 H1/H2/H4/H8/H9）自行覆写为记录版本。
-    # v1.3.1 开关：timeout.writetest 存在 → 写测试（sh -c 含 "printf x >"）返回 124；
-    #              timeout.tee 存在 → tee 返回 124（模拟日志介质写阻塞超时）。
     fake_bin timeout '#!/bin/sh
 [ -n "$ROOT" ] || exit 0
 shift
-if [ -f "$ROOT/timeout.writetest" ]; then
-    case "$*" in
-    *"printf x >"*) exit 124 ;;
-    esac
-fi
-if [ -f "$ROOT/timeout.tee" ] && [ "$1" = "tee" ]; then
-    exit 124    # 模拟日志介质写超时（管道末命令返回 124 → dw_log 判定失败降级）
-fi
 "$@"'
 }
 

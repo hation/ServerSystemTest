@@ -36,7 +36,7 @@ shift
 "$@"'
 }
 
-# 运行 menu.sh：stdin 用管道喂入（模拟交互）；额外环境（DW_LOG_MEDIA/LOG_DIR 等）经 "$@" 传入 env
+# 运行 menu.sh：stdin 用管道喂入（模拟交互）；额外环境（LOG_DIR 等）经 "$@" 传入 env
 run_menu() {
     local input="$1" outf="$2"
     shift 2
@@ -50,14 +50,13 @@ run_menu() {
     return 0
 }
 
-# 运行 dw_mount_log_media 并 echo DW_LOG_MEDIA（同 t4 run_mount；探测文件指向临时目录）
-run_mount() {
-    local outf="$1"
-    shift
+# 运行 dw_save_log_to_usb 并 echo 返回码（同 t4 run_save；日志文件为用例临时文件）
+run_save() {
+    local outf="$1" logf="$2"
+    shift 2
     PATH="$FAKE_BIN:$PATH" \
     LSBLK_BIN=lsblk BLKID_BIN=blkid WIPEFS_BIN=wipefs UMOUNT_BIN=umount \
-    DW_LOG_PROBE="$ROOT/probe" \
-    bash -c ". \"$LIB_SH\"; dw_mount_log_media; echo \"DW_LOG_MEDIA=\$DW_LOG_MEDIA\"" > "$outf" 2>&1
+    bash -c ". \"$LIB_SH\"; dw_save_log_to_usb \"$logf\"; echo \"RC=\$?\"" > "$outf" 2>&1
     LAST_RC=$?
     return 0
 }
@@ -87,7 +86,8 @@ install_recording_timeout
 run_menu '0' "$OUTF"
 check_rc 0 '输入 0 应正常退出 0'
 check_out '/dev/sda' '列表应显示 sda'
-check_cmd_count 'timeout 3 lsblk' 2 '枚举 + 批量探测各 1 次 lsblk（其后列盘零新增命令）'
+# 枚举 + 批量探测各 1 次 lsblk；退出时 dw_save_log_to_usb 再枚举 1 次（无 U 盘候选 → 降级）
+check_cmd_count 'timeout 3 lsblk' 3 '枚举 + 批量探测 + 退出写 U 盘枚举各 1 次 lsblk'
 check_cmd_count 'timeout 3 blkid' 1 '批量 blkid 仅 1 次'
 check_not_cmds '/dev/sd' '列盘期间不得出现逐盘 lsblk/blkid（无设备参数调用）'
 cleanup_case
@@ -236,7 +236,7 @@ EOF
 add_blk_type sda1 vfat
 add_ptname sda1 "EFI System"
 mkdir -p "$ROOT/logdir"
-run_menu $'\nYES\n0\n' "$OUTF" DW_LOG_MEDIA=usb LOG_DIR="$ROOT/logdir"
+run_menu $'\nYES\n0\n' "$OUTF" LOG_DIR="$ROOT/logdir"
 check_rc 0 '日志流程应正常退出 0'
 check_out 'Scanning disks... (please wait)' '枚举后屏幕应含进度提示'
 logf=$(ls "$ROOT/logdir"/diskwipe-*.log 2>/dev/null | head -n 1)
@@ -261,7 +261,10 @@ check_rc 1 '枚举超时且重试仍失败应退出 1'
 check_out 'ERROR: disk scan timed out or failed' '应打印枚举超时错误'
 check_out 'You may power off or reboot safely' '应打印可安全重启提示'
 check_not_out 'Only boot media found' '不得误判仅启动介质'
+# 枚举 2 次（首次 + 重试）；本用例假 timeout 恒 124 → 日志文件从未创建（tee 未执行），
+# 退出时 dw_save_log_to_usb 因日志文件不存在直接返回 1（WARN），不新增枚举
 check_cmd_count 'timeout 3 lsblk' 2 '枚举应自动重试一次（共 2 次）'
+check_out 'WARN: could not write log to USB' '退出应打印写 U 盘降级提示'
 cleanup_case
 
 # ---------- H8：清除流程不带 timeout 前缀 ----------
@@ -302,7 +305,7 @@ check_out '/mnt' '应输出挂载点'
 check_cmds 'timeout 3 lsblk -o NAME,TYPE,MOUNTPOINT,PKNAME /dev/sda' 'dw_disk_mountpoints 的 lsblk 应包 timeout 3'
 cleanup_case
 
-CASE="H9b init 日志介质探测包 timeout"
+CASE="H9b 退出写 U 盘（dw_save_log_to_usb）包 timeout"
 setup_case
 cat > "$ROOT/lsblk.table" <<'EOF'
 NAME SIZE TYPE MODEL TRAN MOUNTPOINT
@@ -315,13 +318,15 @@ add_label sdc1 VTOYEFI
 add_blk_type sdc1 vfat
 add_blk_type sdc2 exfat
 install_recording_timeout
-run_mount "$OUTF"
-check_rc 0 '日志介质探测应正常返回'
-check_out 'DW_LOG_MEDIA=usb' '应挂载到数据区 sdc2'
+echo "test log" > "$ROOT/dummylog"
+run_save "$OUTF" "$ROOT/dummylog"
+check_rc 0 '退出写 U 盘应正常返回'
+check_out 'RC=0' 'U 盘候选可写应保存成功'
 check_cmds 'timeout 3 lsblk -o NAME,TYPE,TRAN,PKNAME -l' '介质枚举 lsblk 应包 timeout 3'
 check_cmds 'timeout 3 blkid -s TYPE -o value /dev/sdc1' '介质 blkid TYPE 应包 timeout 3'
 check_cmds 'timeout 3 blkid -s LABEL -o value /dev/sdc1' '介质 blkid LABEL 应包 timeout 3'
-check_cmds 'mount /dev/sdc2 /diskwipe-log' 'mount 调用无 timeout 前缀（整行精确匹配）'
+check_cmds 'timeout 3 mount /dev/sdc2 /diskwipe-log' 'mount 应包 timeout 3（I/O 阻塞时兜底）'
+check_cmds 'umount /diskwipe-log' '保存后应卸载'
 cleanup_case
 
 finish

@@ -221,9 +221,9 @@ cmd_monitor_loop() {
                     local label
                     label=$(dmesg_io_label "$line" "$dir/devices.txt")
                     if [ -n "$dev_re" ] && ! printf '%s\n' "$line" | grep -qiE "$dev_re"; then
-                        echo "[$(now)] dmesg io 未归因${label}: $line" >> "$dir/error-unattributed.log"
+                        echo "[$(now)] dmesg io 未归因:${label} $line" >> "$dir/error-unattributed.log"
                     else
-                        echo "[$(now)] dmesg io${label}: $line" >> "$dir/error.log"
+                        echo "[$(now)] dmesg io:${label} $line" >> "$dir/error.log"
                         io_seen=1
                     fi
                     continue

@@ -208,7 +208,7 @@ sudo bash disk-mount.sh clean --dry-run              # 只打印执行计划，�
 
 `stress-test.sh review` 生成 `summary.txt`，首行按以下**优先级**给出 `结论:`（后者不覆盖前者）：
 
-1. **内核 I/O 错误 → 异常**：`dmesg` 增量命中 `EXT4-fs error`、`I/O error`、`Buffer I/O error`、`blk_update_request`、`critical medium error`、`ata`/`nvme` 错误等即判 `异常（内核 I/O 错误，见 error.log）`，**即使 `status.txt` 为 `OK` 也不覆盖**；错误按设备归因（`devices.txt` 记录本任务分区名 + 整盘名 + `lsblk` KNAME），报错行带 SN 标注 `dmesg io (dev=nvme2n1 SN=SH231801357): <原始行>`（SN 经 sysfs 零依赖采集），其他盘的报错进入 `error-unattributed.log`（未归因日志同样标注 `dmesg io 未归因 (dev=X SN=Y): <行>`；无 SN 时保持原样），只计数、不污染本盘结论（summary 中显示 `未归因内核 I/O 错误 N 条`）；每次 `start` 还会在结果目录生成 `disk-map.txt`（全机数据盘定位表，每行 `设备名 | SN | 挂载点`），供按 SN 定位物理盘；
+1. **内核 I/O 错误 → 异常**：`dmesg` 增量命中 `EXT4-fs error`、`I/O error`、`Buffer I/O error`、`blk_update_request`、`critical medium error`、`ata`/`nvme` 错误等即判 `异常（内核 I/O 错误，见 error.log）`，**即使 `status.txt` 为 `OK` 也不覆盖**；错误按设备归因（`devices.txt` 记录本任务分区名 + 整盘名 + `lsblk` KNAME），报错行带 SN 标注 `dmesg io: (dev=nvme2n1 SN=SH231801357) <原始行>`（SN 经 sysfs 零依赖采集），其他盘的报错进入 `error-unattributed.log`（未归因日志同样标注 `dmesg io 未归因: (dev=X SN=Y) <行>`；无 SN 时保持原样），只计数、不污染本盘结论（summary 中显示 `未归因内核 I/O 错误 N 条`）；每次 `start` 还会在结果目录生成 `disk-map.txt`（全机数据盘定位表，每行 `设备名 | SN | 挂载点`），供按 SN 定位物理盘；
 2. **ENOSPC → 空间不足（非磁盘故障）**：命中 `No space left on device` 时结论为 `异常（空间不足 ENOSPC，非磁盘故障）`，与磁盘硬件故障区分；
 3. 其他 `error.log` 命中（`检测到 stress` / `dmesg`）→ 异常；否则按 `status.txt`（`OK` 正常 / `FAILED` 异常 / `ABORTED` 按原因 / `STOPPED` 已手动停止）。
 4. **执行一致性**：`review` 会把 `run-config.txt` 的计划值与 `actual-params.txt` 的实际 CPU/VM worker、`--vm-keep`、hdd 进程数、cwd、RSS 逐项对拍，输出 `== 执行一致性 ==` 的 PASS/FAIL/UNKNOWN。UNKNOWN（旧目录、缺字段、只有 start/60s 快照）不改变结论；FAIL 只在原结论为“正常”时改为“异常（执行与计划不一致）”，I/O/ENOSPC/STOPPED 优先级不变。

@@ -23,12 +23,13 @@ Kylin V10 SP3 服务器 **CPU / 内存 / 硬盘** 压力测试操作手册（适
 准备步骤（先把整个 `offline-stress-pkg` 目录拷到服务器，在包目录内执行；拷贝方式见同目录 README.md）：
 
 ```bash
-sudo bash install.sh   # 安装 stress 与 dmidecode（已是 root 可直接 bash install.sh；已装同版本会提示"已安装"）
-bash verify.sh         # 验证：版本检查 + 10 秒冒烟压测 + dmidecode 可用性
+sudo bash install.sh   # 安装 stress、dmidecode 与 nvme-cli（已是 root 可直接 bash install.sh；已装同版本会提示"已安装"）
+bash verify.sh         # 验证：版本检查 + 10 秒冒烟压测 + dmidecode/nvme-cli 可用性
 ```
 
-- `verify.sh` 检查 A/B 为版本校验、检查 C 为 10 秒冒烟压测、检查 D 为 dmidecode 可用性（缺失只 WARN）；若机器正在跑业务不想跑冒烟压测，可 `VERIFY_SKIP_SMOKE=1 bash verify.sh`。
+- `verify.sh` 检查 A/B 为版本校验、检查 C 为 10 秒冒烟压测、检查 D 为 dmidecode 可用性（缺失只 WARN）、检查 E 为 nvme-cli 可用性（缺失只 WARN）；若机器正在跑业务不想跑冒烟压测，可 `VERIFY_SKIP_SMOKE=1 bash verify.sh`。
 - 离线包已内置 `rpms/dmidecode-3.2-10.el8.x86_64.rpm`，`install.sh` 会一并安装，装好后 `start mem/combo` 可直接自动探测内存条根数。
+- 离线包已内置 `rpms/nvme-cli-1.14-3.el8.x86_64.rpm`，`install.sh` 会一并安装，供 `check-nvme-health.sh` 读取 NVMe SMART（`nvme smart-log` / `nvme list`）。
 - **EDAC 不是可安装的软件**：它是内核 sysfs 接口（`/sys/devices/system/edac/mc`），取决于内核是否加载 `edac_core` 等模块，无法打进离线包；dmidecode 不可用时脚本才回退到它。
 - 两个压测脚本无需安装，直接 `bash stress-test.sh …` / `bash disk-mount.sh …` 调用（在包目录内执行，或给脚本绝对路径）。
 - 所有压测数据默认落在 `/root/stress-test/`（可用环境变量 `STRESS_TEST_ROOT` 改）。
@@ -316,6 +317,7 @@ bash stress-test.sh stop
 │   ├── error.log / error-HDDxx.log / error-SYSDISK.log  # stress stderr 与内核 I/O/OOM 报错（空=无错误；I/O 报错带 `dmesg io:` 前缀）
 │   ├── error-unattributed.log  # 无法归因到本盘的 I/O 报错条数来源（只计数，不计入本盘结论）
 │   ├── devices.txt        # 本任务压测盘设备名（分区名 + 整盘名 + lsblk KNAME，用于 I/O 报错归因）
+│   ├── disk-map.txt       # 全机数据盘定位表（每行 `设备名 | SN | 挂载点`，SN 经 sysfs 零依赖采集，供按 SN 定位物理盘）
 │   ├── status.txt         # 运行状态（state=OK/FAILED/ABORTED/STOPPED、oom、io 等）
 │   ├── stress.pids / monitor.pid   # 进程记录（脚本内部使用）
 │   └── summary.txt        # review 生成的复盘总结（见第 5 节）
@@ -343,7 +345,7 @@ bash stress-test.sh review --dir /root/stress-test/20261113-143000-cpu  # 指定
 | 3 | `error.log` 命中 `检测到 stress` / `dmesg` | `异常（压测进程/内核报错，见 error.log）` |
 | 4 | 按 `status.txt` | `OK` → 正常；`FAILED` → 异常（退出码非 0）；`ABORTED` → 按原因；`STOPPED` → 已手动停止 |
 
-- **I/O 错误即异常**：内核 I/O 报错优先于 `status=OK`；报错按设备归因，`devices.txt` 记录本任务的分区名与整盘名（如 `sdb1`、`sdb`、`dm-0`），只有本盘设备的报错写入 `error.log`；
+- **I/O 错误即异常**：内核 I/O 报错优先于 `status=OK`；报错按设备归因，`devices.txt` 记录本任务的分区名与整盘名（如 `sdb1`、`sdb`、`dm-0`），只有本盘设备的报错写入 `error.log`；报错行带 SN 标注（`dmesg io (dev=nvme2n1 SN=SH231801357): <原始行>`，SN 经 sysfs 零依赖采集）；
 - **未归因条数含义**：无法归因到本盘（或 `devices.txt` 缺失，如同机其他盘报错）的 I/O 报错写入 `error-unattributed.log`，`summary.txt` 显示 `未归因内核 I/O 错误 N 条（error-unattributed.log，不计入本盘结论）`——不改变本盘结论，但说明整机存在其他 I/O 报错，需人工核查；
 - **ENOSPC 与盘故障区分**：`No space left on device` 表示写入量超过可用空间（如首分区小于 `--hdd-bytes`），结论单独标注"非磁盘故障"，不要按坏盘处理；
 - **系统盘口径**：系统盘任务的 `run-config.txt` 与 `summary.txt` 回显 `压测对象: 系统盘（根文件系统压测）` 与 `覆盖边界: 不覆盖 /boot、/boot/efi、swap、未分配空间；LVM/RAID 下写入可能跨多个物理盘`。
@@ -365,6 +367,7 @@ bash stress-test.sh review --dir /root/stress-test/20261113-143000-cpu  # 指定
 | `error.log` / `error-HDDxx.log` / `error-SYSDISK.log` | stress stderr 与内核 I/O/OOM 报错（I/O 报错带 `dmesg io:` 前缀） |
 | `error-unattributed.log` | 无法归因到本盘的 I/O 报错（只计数，不改本盘结论） |
 | `devices.txt` | 本任务压测盘设备名（分区名 + 整盘名 + lsblk KNAME） |
+| `disk-map.txt` | 全机数据盘定位表（设备名 \| SN \| 挂载点，SN 经 sysfs 零依赖采集） |
 | `status.txt` | 运行状态（`state=`、`oom=`、`io=` 等） |
 | `mount.log` | 挂载/格式化步骤日志（hdd 流程） |
 | `operations.log` | start/stop 操作历史 |

@@ -2,13 +2,13 @@
 
 ## 1. 背景与适用环境
 
-- 当前包版本：v1.1.2（打包时按语义化递增：修复/小改动补丁号+1，新增功能次版本号+1，破坏性变更主版本号+1）
+- 当前包版本：v1.3.0（打包时按语义化递增：修复/小改动补丁号+1，新增功能次版本号+1，破坏性变更主版本号+1）
 - 本包用于在**无网络**的服务器上离线安装 Linux 压测工具 `stress`（1.0.4）。
 
 - 适用系统：Kylin V10 SP3 2403 **x86_64**
 - 传输方式：通过 **U 盘**拷贝到服务器
 - 参考服务器配置：Hygon 7380 双路 CPU（**64 物理核**）、**1024 GB 内存**（仅第 8 节的手工 `stress` 示例基于该配置；`stress-test.sh` 的正式压测参数按本机实测推导）
-- 软件包：`stress-1.0.4-24.el8.x86_64.rpm`、`dmidecode-3.2-10.el8.x86_64.rpm`（含 SHA256 完整性校验；dmidecode 用于自动探测内存条根数）
+- 软件包：`stress-1.0.4-24.el8.x86_64.rpm`、`dmidecode-3.2-10.el8.x86_64.rpm`、`nvme-cli-1.14-3.el8.x86_64.rpm`（含 SHA256 完整性校验；dmidecode 用于自动探测内存条根数；nvme-cli 用于 check-nvme-health.sh 健康检查）
 
 ## 2. 包结构说明
 
@@ -16,10 +16,10 @@
 offline-stress-pkg/
 ├── README.md                      本说明文档
 ├── install.sh                     安装脚本（含 root 检查、SHA256 校验、已装同版本检测）
-├── verify.sh                      验证脚本（检查安装版本 + 10 秒冒烟压测 + dmidecode 可用性）
+├── verify.sh                      验证脚本（检查安装版本 + 10 秒冒烟压测 + dmidecode/nvme-cli 可用性）
 ├── stress-test.sh                 压测主控脚本入口（CPU/内存/硬盘压测：start/status/stop/review/snapshot）
 ├── stress-lib-common.sh           stress 公共子模块（工具/CPU 探测/DIMM 推导/参数解析）
-├── stress-lib-devices.sh          stress 设备子模块（devices.txt 写入/设备名解析）
+├── stress-lib-devices.sh          stress 设备子模块（devices.txt 写入/设备名解析/disk-map.txt 生成）
 ├── stress-lib-snapshot.sh         stress 快照子模块（运行时证据快照/实际参数解析）
 ├── stress-lib-monitor.sh          stress 监控子模块（monitor-loop/状态与结束落盘）
 ├── stress-lib-commands.sh         stress 命令子模块（cmd_start/status/stop/review/snapshot 实现）
@@ -40,7 +40,8 @@ offline-stress-pkg/
 ├── operation-manual.md            压测操作手册（三类机型 CPU/内存/硬盘实操）
 └── rpms/
     ├── stress-1.0.4-24.el8.x86_64.rpm      stress RPM 安装包
-    └── dmidecode-3.2-10.el8.x86_64.rpm     dmidecode RPM（自动探测内存条根数）
+    ├── dmidecode-3.2-10.el8.x86_64.rpm     dmidecode RPM（自动探测内存条根数）
+    └── nvme-cli-1.14-3.el8.x86_64.rpm      nvme-cli RPM（check-nvme-health.sh 健康检查）
 ```
 
 拷贝时请**保持整个目录结构不变**：各入口脚本通过 `source` 加载同目录的 `*-lib-*.sh` 子模块，**整个目录（含全部 14 个 lib 子模块）必须整体拷贝**，缺失任一 lib 文件入口脚本会提示"缺少模块文件"并退出；脚本另按相对路径 `rpms/` 定位 RPM 文件。
@@ -82,8 +83,8 @@ sudo bash install.sh
 
 - 已是 root 用户时直接执行 `bash install.sh` 即可；
 - **非 root 且未加 sudo 时，脚本会提示并退出**（提示：请以 root 运行：sudo bash install.sh）；
-- 脚本会自动完成：root 检查 → RPM 文件存在性检查 → SHA256 完整性校验 → 已安装同版本检测（已装则提示"已安装"并跳过）→ 逐个 `rpm -Uvh` 安装 `stress` 与 `dmidecode`；
-- 安装成功输出 `stress 安装成功：stress-1.0.4-24.el8.x86_64` 与 `dmidecode 安装成功：dmidecode-3.2-10.el8.x86_64`，退出码 0。
+- 脚本会自动完成：root 检查 → RPM 文件存在性检查 → SHA256 完整性校验 → 已安装同版本检测（已装则提示"已安装"并跳过）→ 逐个 `rpm -Uvh` 安装 `stress`、`dmidecode` 与 `nvme-cli`；
+- 安装成功输出 `stress 安装成功：stress-1.0.4-24.el8.x86_64`、`dmidecode 安装成功：dmidecode-3.2-10.el8.x86_64` 与 `nvme-cli 安装成功：nvme-cli-1.14-3.el8.x86_64`，退出码 0。
 - 若目标机不允许安装 dmidecode，`stress-test.sh` 仍可通过 EDAC 或手动 `--vm` 完成内存压测（见操作手册边界说明）。
 
 ### 4.1 一键压测（推荐）
@@ -207,7 +208,7 @@ sudo bash disk-mount.sh clean --dry-run              # 只打印执行计划，�
 
 `stress-test.sh review` 生成 `summary.txt`，首行按以下**优先级**给出 `结论:`（后者不覆盖前者）：
 
-1. **内核 I/O 错误 → 异常**：`dmesg` 增量命中 `EXT4-fs error`、`I/O error`、`Buffer I/O error`、`blk_update_request`、`critical medium error`、`ata`/`nvme` 错误等即判 `异常（内核 I/O 错误，见 error.log）`，**即使 `status.txt` 为 `OK` 也不覆盖**；错误按设备归因（`devices.txt` 记录本任务分区名 + 整盘名 + `lsblk` KNAME），其他盘的报错进入 `error-unattributed.log`，只计数、不污染本盘结论（summary 中显示 `未归因内核 I/O 错误 N 条`）；
+1. **内核 I/O 错误 → 异常**：`dmesg` 增量命中 `EXT4-fs error`、`I/O error`、`Buffer I/O error`、`blk_update_request`、`critical medium error`、`ata`/`nvme` 错误等即判 `异常（内核 I/O 错误，见 error.log）`，**即使 `status.txt` 为 `OK` 也不覆盖**；错误按设备归因（`devices.txt` 记录本任务分区名 + 整盘名 + `lsblk` KNAME），报错行带 SN 标注 `dmesg io (dev=nvme2n1 SN=SH231801357): <原始行>`（SN 经 sysfs 零依赖采集），其他盘的报错进入 `error-unattributed.log`（未归因日志同样标注 `dmesg io 未归因 (dev=X SN=Y): <行>`；无 SN 时保持原样），只计数、不污染本盘结论（summary 中显示 `未归因内核 I/O 错误 N 条`）；每次 `start` 还会在结果目录生成 `disk-map.txt`（全机数据盘定位表，每行 `设备名 | SN | 挂载点`），供按 SN 定位物理盘；
 2. **ENOSPC → 空间不足（非磁盘故障）**：命中 `No space left on device` 时结论为 `异常（空间不足 ENOSPC，非磁盘故障）`，与磁盘硬件故障区分；
 3. 其他 `error.log` 命中（`检测到 stress` / `dmesg`）→ 异常；否则按 `status.txt`（`OK` 正常 / `FAILED` 异常 / `ABORTED` 按原因 / `STOPPED` 已手动停止）。
 4. **执行一致性**：`review` 会把 `run-config.txt` 的计划值与 `actual-params.txt` 的实际 CPU/VM worker、`--vm-keep`、hdd 进程数、cwd、RSS 逐项对拍，输出 `== 执行一致性 ==` 的 PASS/FAIL/UNKNOWN。UNKNOWN（旧目录、缺字段、只有 start/60s 快照）不改变结论；FAIL 只在原结论为“正常”时改为“异常（执行与计划不一致）”，I/O/ENOSPC/STOPPED 优先级不变。
@@ -224,11 +225,12 @@ sudo bash disk-mount.sh clean --dry-run              # 只打印执行计划，�
 bash verify.sh
 ```
 
-- 共 4 项检查：
+- 共 5 项检查：
   - 检查 A：`rpm -q stress` 输出精确匹配 `stress-1.0.4-24.el8.x86_64`
   - 检查 B：`stress --version` 输出包含 `1.0.4`
   - 检查 C：10 秒冒烟压测（`stress --cpu 2 --vm 1 --vm-bytes 256M --timeout 10`）
   - 检查 D：`dmidecode` 是否可用（缺失只输出 `WARN`，不影响 PASS/退出码）
+  - 检查 E：`nvme-cli` 是否可用（缺失只输出 `WARN`，不影响 PASS/退出码）
 - 全部通过输出 `PASS`，退出码 0；任一 `FAIL` 输出 `FAIL`，退出码 1。
 
 **跳过冒烟压测**：若不想运行 10 秒冒烟压测（例如机器正在跑业务），可跳过：
@@ -256,6 +258,7 @@ warning: rpms/stress-1.0.4-24.el8.x86_64.rpm: Header V4 RSA/SHA256 Signature, ke
 ```bash
 rpm -e stress
 rpm -e dmidecode   # 可选：仅在不需要自动探测内存条根数时卸载
+rpm -e nvme-cli    # 可选：仅在不需要 check-nvme-health.sh 健康检查时卸载
 ```
 
 卸载后可用 `rpm -q stress` 确认（输出"未安装"即卸载成功）。

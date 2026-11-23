@@ -1,5 +1,5 @@
 #!/bin/bash
-# install.sh —— 离线安装脚本（stress + dmidecode，Kylin V10 SP3，服务器无网络）
+# install.sh —— 离线安装脚本（stress + dmidecode + nvme-cli，Kylin V10 SP3，服务器无网络）
 # 用法：sudo bash install.sh
 # 退出码：0=成功（含已装同版本）；1=失败（非 root / 校验失败 / 安装失败）
 # 测试接缝：INSTALL_SKIP_ROOT_CHECK=1 跳过 root 检查（仅本地测试用）
@@ -10,9 +10,11 @@ cd "$SCRIPT_DIR"
 
 # 2. 安装清单：rpm 路径 | 锁定 SHA256 | 包名 | 已安装判定串（顺序即安装顺序）
 #    dmidecode 用于自动探测内存条根数（/sys 与 EDAC 都不可用时仍可手动 --vm）
+#    nvme-cli 用于 check-nvme-health.sh 健康检查（nvme smart-log / nvme list）
 RPM_LIST=(
     "rpms/stress-1.0.4-24.el8.x86_64.rpm|0090571FD05C307DBE894E0FCF1E9804DBB27EA64D11A6D0248FFA61AE93EFDA|stress|stress-1.0.4-24.el8.x86_64"
     "rpms/dmidecode-3.2-10.el8.x86_64.rpm|CD2F140BD1718B4403AD66568155264B69231748A3C813E2FEAAC1B704DA62C6|dmidecode|dmidecode"
+    "rpms/nvme-cli-1.14-3.el8.x86_64.rpm|691F4B28D1E1668CABD38A01952F6E877FBFE0D53491E49790808C8878703FA0|nvme-cli|nvme-cli"
 )
 
 # 3. root 检查（非 root 且未跳过时退出）

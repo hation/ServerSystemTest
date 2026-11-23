@@ -49,7 +49,14 @@ else
     echo "WARN 检查D：未找到 dmidecode，start mem/combo 将回退 EDAC，仍不可用时会给出手动 --vm 的建议命令"
 fi
 
-# 6. 汇总：全部 PASS → 输出 PASS 退出 0；任一 FAIL → 输出 FAIL 退出 1
+# 6. 检查 E：nvme-cli 可用性（check-nvme-health.sh 依赖；缺失只告警，不判 FAIL）
+if command -v nvme >/dev/null 2>&1; then
+    echo "PASS 检查E：nvme-cli 可用（$(nvme version 2>/dev/null || echo 版本未知)）"
+else
+    echo "WARN 检查E：未找到 nvme 命令（nvme-cli 包安装后二进制为 /usr/sbin/nvme），install.sh 已含 nvme-cli，请重跑 install.sh 或手动安装"
+fi
+
+# 7. 汇总：全部 PASS → 输出 PASS 退出 0；任一 FAIL → 输出 FAIL 退出 1
 if [ "$ALL_PASS" -eq 1 ]; then
     echo "PASS"
     exit 0

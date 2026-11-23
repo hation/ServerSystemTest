@@ -597,6 +597,10 @@ cmd_start() {
         write_devices_file "$dir/devices.txt" "${dev_sources[@]}"
     fi
 
+    # 写盘定位基础表（全部 type 均生成）：全机数据盘（设备名 | SN | 挂载点），
+    # SN 经 sysfs 零依赖采集；供复盘/日志按 SN 定位物理盘
+    write_disk_map "$dir/disk-map.txt"
+
     {
         echo "==== lscpu ===="
         lscpu 2>&1

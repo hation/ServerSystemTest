@@ -4,6 +4,7 @@
 - hardware_info.ini：CPU / 内存 / PCIe 卡 / 网卡 / 电源 / 背板 / BaseBoard 等分段信息
 - firmware_version.ini：BIOS / HDM / CPLD 固件版本
 - FruInfo.ini：[BaseBoard] 段的产品名称 / 序列号 / 产品部件号
+- nvme_info.ini：NVMe 盘表（SN/槽位/剩余寿命/链路状态）
 - bios.json / hdm.json：machine information 对象，作为 machine / firmware 的补充来源
   （主来源优先，主来源缺字段时才补充）
 
@@ -51,6 +52,7 @@ class InventoryData:
     nics:      网卡端口列表（port/location/mac/product_name/link_state）
     backplanes:背板列表（name/part_number/board_type/health_status）
     psus:      电源列表（id/model/sn/power_status）
+    nvme_disks:NVMe 盘列表（sn/phy_slot/pcie_slot/pd_status/remaining_life/link_state/temperature）
     """
 
     machine: dict = field(default_factory=lambda: {
@@ -66,6 +68,7 @@ class InventoryData:
     nics: list = field(default_factory=list)
     backplanes: list = field(default_factory=list)
     psus: list = field(default_factory=list)
+    nvme_disks: list = field(default_factory=list)
 
 
 def _read_ini(path: str | None) -> dict:
@@ -235,6 +238,80 @@ def _parse_boards(sections: dict) -> tuple:
     return cpus, memories, pcie_cards, nics, psus, backplanes
 
 
+def parse_nvme_disks(path: str | None) -> list:
+    """解析 nvme_info.ini，返回 NVMe 盘列表。
+
+    每块盘一个 dict：sn / phy_slot / pcie_slot / pd_status / remaining_life /
+    link_state / temperature。专用手工解析器（样本含 'NVMe WEB Information'、
+    '----' 等无 ':' 的裸行，ConfigParser 默认 allow_no_value=False 会解析失败），
+    按 '[NVME: NVMe #N]' 段切分并过滤垃圾行。link_state 从 BIT 行描述判定
+    （first port's PCIe link is down → 'down' / is up → 'up'），不读 Status
+    Flags 十六进制；缺 BIT 行 → 'unknown'。空 / 缺 / 损坏文件返回空列表，绝不抛异常。
+    """
+    if not path:
+        return []
+    try:
+        text = read_text_file(path)
+    except OSError:
+        return []
+    if not text.strip():
+        return []
+    disks = []
+    current = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # 段头：仅 '[NVME: ...]' 开启新盘，其余段结束当前盘（防止后续行串入）
+        if stripped.startswith('[') and stripped.endswith(']'):
+            if stripped.lower().startswith('[nvme:'):
+                current = {}
+                disks.append(current)
+            else:
+                current = None
+            continue
+        # 过滤垃圾行：无 ':' 的行（'NVMe WEB Information' / '----' 等）
+        if current is None or ':' not in stripped:
+            continue
+        key, _, value = stripped.partition(':')
+        key = key.strip().lower()
+        value = value.strip()
+        if not key or not value:
+            continue
+        if key.startswith('bit'):
+            # BIT 行描述（如 'BIT3:The first port's PCIe link is down'）→ link_state
+            desc = value.lower()
+            if 'first port' in desc and 'link is down' in desc:
+                current['link_state'] = 'down'
+            elif 'first port' in desc and 'link is up' in desc:
+                current['link_state'] = 'up'
+            continue
+        if key in ('sn', 'serial number'):
+            current['sn'] = value
+        elif key == 'phy slot':
+            current['phy_slot'] = value
+        elif key == 'pcie slot':
+            current['pcie_slot'] = value
+        elif key == 'pd status':
+            current['pd_status'] = value
+        elif key == 'remaining life':
+            current['remaining_life'] = value
+        elif key == 'composite temperature':
+            current['temperature'] = value
+    return [
+        {
+            'sn': disk.get('sn', ''),
+            'phy_slot': disk.get('phy_slot', ''),
+            'pcie_slot': disk.get('pcie_slot', ''),
+            'pd_status': disk.get('pd_status', ''),
+            'remaining_life': disk.get('remaining_life', ''),
+            'link_state': disk.get('link_state', 'unknown'),
+            'temperature': disk.get('temperature', ''),
+        }
+        for disk in disks
+    ]
+
+
 def parse_inventory(files: dict) -> InventoryData:
     """解析硬件清单，返回 InventoryData。
 
@@ -256,6 +333,7 @@ def parse_inventory(files: dict) -> InventoryData:
     machine = _parse_machine(sections_fru, json_machine, sections_hw)
     firmware = _parse_firmware(sections_fw, sections_hw, json_machine)
     cpus, memories, pcie_cards, nics, psus, backplanes = _parse_boards(sections_hw)
+    nvme_disks = parse_nvme_disks(files.get('nvme_info_ini'))
     return InventoryData(
         machine=machine,
         firmware=firmware,
@@ -265,4 +343,5 @@ def parse_inventory(files: dict) -> InventoryData:
         nics=nics,
         backplanes=backplanes,
         psus=psus,
+        nvme_disks=nvme_disks,
     )

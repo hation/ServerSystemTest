@@ -25,7 +25,7 @@ from sds_ai import build_ai_payload, call_ai
 from sds_extract import SDSNotTarError, cleanup, extract_sds, read_text_file
 from sds_events import EventRecord, parse_event_csv, parse_sbe, parse_visible_log
 from sds_health import ComponentHealth, _field_status, assess_health, build_suggestions
-from sds_inventory import InventoryData, parse_inventory
+from sds_inventory import InventoryData, parse_inventory, parse_nvme_disks
 from sds_sensors import SensorReading, parse_sensors
 
 
@@ -425,6 +425,148 @@ def test_inventory_empty_files():
         inv4 = parse_inventory({})
         assert inv4.psus == []
         assert inv4.firmware['HDM'] is None
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _nvme_sample_text() -> str:
+    """内嵌 nvme_info.ini 最小样本片段：6 块盘，NVMe #3（Front slot 19）链路 down。"""
+
+    def sec(num, pcie, phy, sn, temp, link):
+        return (
+            f'[NVME: NVMe #{num}]\n'
+            'NVMe WEB Information\n'
+            '------------------------------------------------------------------------\n'
+            f'PCIe Slot                     : {pcie}\n'
+            'Pd Status                     : Normal\n'
+            'Remaining Life                : 100%\n'
+            f'SN                            : {sn}\n'
+            f'Phy Slot                      : {phy}\n'
+            'NVMe SMD Common Information\n'
+            '------------------------------------------------------------------------\n'
+            'Length of Status              : 0x6\n'
+            'Status Flags                  : 0xbb\n'
+            '                                BIT6:Drive is ready\n'
+            f"                                BIT3:The first port's PCIe link is {link}\n"
+            "                                BIT2:The second port's PCIe link is down\n"
+            f'Composite Temperature         : {temp}\n'
+            f'Serial Number                 : {sn}\n'
+        )
+
+    return (
+        sec(1, 'Slot 37', 'Front slot 17', 'SH223001526', '0x23', 'up')
+        + sec(2, 'Slot 38', 'Front slot 18', 'SH232701428', '0x26', 'up')
+        + sec(3, 'Slot 39', 'Front slot 19', 'SH231801357', '0x20', 'down')
+        + sec(4, 'Slot 40', 'Front slot 20', 'SH232701361', '0x27', 'up')
+        + sec(5, 'Slot 41', 'Front slot 21', 'SH241110705', '0x25', 'up')
+        + sec(6, 'Slot 42', 'Front slot 22', 'SH242817011', '0x24', 'up')
+    )
+
+
+def test_nvme_parse_full_sample():
+    """6 块盘解析、字段名齐全；Front slot 19 链路 down、其余含 is up 的段为 up。"""
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        path = os.path.join(tmp_dir, 'nvme_info.ini')
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(_nvme_sample_text())
+        disks = parse_nvme_disks(path)
+        # 1) 6 块盘、字段名齐全
+        assert len(disks) == 6
+        for d in disks:
+            for key in ('sn', 'phy_slot', 'pcie_slot', 'pd_status',
+                        'remaining_life', 'link_state', 'temperature'):
+                assert key in d, f'应含字段 {key}'
+        # 字段值抽查
+        assert disks[0]['sn'] == 'SH223001526'
+        assert disks[0]['pcie_slot'] == 'Slot 37'
+        assert disks[0]['phy_slot'] == 'Front slot 17'
+        assert disks[0]['pd_status'] == 'Normal'
+        assert disks[0]['remaining_life'] == '100%'
+        assert disks[0]['temperature'] == '0x23'
+        # 2) Front slot 19（Status Flags 0xb3）→ 'down'；3) 其余含 is up 的段 → 'up'
+        by_phy = {d['phy_slot']: d for d in disks}
+        assert by_phy['Front slot 19']['link_state'] == 'down'
+        assert by_phy['Front slot 17']['link_state'] == 'up'
+        assert by_phy['Front slot 22']['link_state'] == 'up'
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_nvme_parse_missing_fields():
+    """缺字段的段 → 对应 key 为空串、无 BIT 行 → link_state 'unknown'，不抛异常。"""
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        path = os.path.join(tmp_dir, 'nvme_info.ini')
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(
+                '[NVME: NVMe #1]\n'
+                'NVMe WEB Information\n'
+                '----------------------------------------\n'
+                'Pd Status                     : Normal\n'
+                'SN                            : SN-ONLY\n'
+                '[NVME: NVMe #2]\n'
+                'Phy Slot                      : Front slot 3\n'
+                'Remaining Life                : 80%\n'
+            )
+        disks = parse_nvme_disks(path)
+        assert len(disks) == 2
+        d0 = disks[0]
+        assert d0['sn'] == 'SN-ONLY'
+        assert d0['pd_status'] == 'Normal'
+        assert d0['phy_slot'] == ''
+        assert d0['pcie_slot'] == ''
+        assert d0['remaining_life'] == ''
+        assert d0['temperature'] == ''
+        assert d0['link_state'] == 'unknown'
+        d1 = disks[1]
+        assert d1['phy_slot'] == 'Front slot 3'
+        assert d1['remaining_life'] == '80%'
+        assert d1['sn'] == ''
+        assert d1['link_state'] == 'unknown'
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_nvme_parse_empty():
+    """缺文件（None）/空文件/无 NVMe 段/不存在路径 → 空列表，绝不抛异常。"""
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        assert parse_nvme_disks(None) == []
+        empty = os.path.join(tmp_dir, 'empty.ini')
+        with open(empty, 'w', encoding='utf-8') as f:
+            f.write('')
+        assert parse_nvme_disks(empty) == []
+        # 仅非 NVMe 段 + 垃圾行 → 空列表
+        other = os.path.join(tmp_dir, 'other.ini')
+        with open(other, 'w', encoding='utf-8') as f:
+            f.write('[Other Section]\nKey : Value\n----\nNVMe WEB Information\n')
+        assert parse_nvme_disks(other) == []
+        assert parse_nvme_disks(os.path.join(tmp_dir, 'missing.ini')) == []
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_nvme_parse_integration():
+    """parse_inventory 接入：files 含 nvme_info_ini → nvme_disks 有数据；缺键 → 默认空列表。"""
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        nvme = os.path.join(tmp_dir, 'nvme_info.ini')
+        with open(nvme, 'w', encoding='utf-8') as f:
+            f.write(
+                '[NVME: NVMe #1]\n'
+                'Pd Status                     : Normal\n'
+                'SN                            : SN-1\n'
+                "                                BIT3:The first port's PCIe link is up\n"
+            )
+        inv = parse_inventory({'nvme_info_ini': nvme})
+        assert len(inv.nvme_disks) == 1
+        assert inv.nvme_disks[0]['sn'] == 'SN-1'
+        assert inv.nvme_disks[0]['link_state'] == 'up'
+        # 缺键 / None → 默认空列表，不破坏现有用例
+        assert InventoryData().nvme_disks == []
+        assert parse_inventory({}).nvme_disks == []
+        assert parse_inventory({'nvme_info_ini': None}).nvme_disks == []
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

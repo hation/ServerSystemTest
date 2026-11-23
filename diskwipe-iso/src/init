@@ -2,10 +2,10 @@
 # diskwipe-iso initramfs 启动脚本（PID 1 入口）：
 #   挂载 /proc /sys /dev → busybox modprobe 白名单磁盘驱动 → mdev -s 扫描设备
 #   → sleep 2 等待设备稳定 → 重试循环（每轮 mdev -s 补建节点）→ exec menu.sh（交互菜单）。
-# v1.5.5 语义：每步打印进度（fbcon 激活后 VGA 可见，真机定位卡点）+ timeout 5 兜底
-#   （用户态挂起自动跳过）——仅挂载失败进入救援 shell；模块加载/mdev 失败仅 WARN 继续
-#   （驱动缺失由 menu 盘列表体现）。注意：内核 D 状态（不可中断 I/O）用户态 timeout 无效，
-#   若仍卡则靠进度行定位卡点模块。
+# v1.5.6 语义：进度走 /dev/kmsg（内核 printk 通道，与内核日志混排，真机 KVM 屏幕最后几行
+#   可见）+ timeout 5 兜底（用户态挂起自动跳过）——仅挂载失败进入救援 shell；模块加载/mdev
+#   失败仅 WARN 继续（驱动缺失由 menu 盘列表体现）。注意：内核 D 状态（不可中断 I/O）用户态
+#   timeout 无效，若仍卡则靠 kmsg 进度行定位卡点模块。
 #
 # v1.3.2 关键设计：init 阶段**零 U 盘 I/O**——不挂载日志介质、不写测试、不做 U 盘探测。
 # 真机实测 U 盘 I/O 阻塞（内核 D 状态，timeout 亦杀不掉）会导致 init 卡死、菜单永不出现；
@@ -23,6 +23,10 @@
 
 # PATH 兜底：内核 exec PID 1 时不保证 PATH，显式设置；测试可用 INIT_PATH 覆盖注入假件
 export PATH="${INIT_PATH:-/bin:/sbin:/usr/bin:/usr/sbin}"
+
+# v1.5.6：进度走 /dev/kmsg（内核 printk 通道）——与内核日志混排，真机 KVM 屏幕
+# 最后几行可见（普通 echo 到 /dev/console 在 fbcon 切换前的输出被丢弃/滚动覆盖）。
+dw_progress() { echo "diskwipe-init: $*" > /dev/kmsg 2>/dev/null; }
 
 # 加载共享库（dw_version 等；接缝变量 LSBLK_BIN/BLKID_BIN/UMOUNT_BIN 随 PATH 解析）
 . "$(dirname "$0")/lib.sh"
@@ -67,27 +71,26 @@ echo "Mounted /sys"
 mount -t devtmpfs devtmpfs /dev || init_rescue "mount /dev failed"
 echo "Mounted /dev"
 
-# 2) 逐模块加载磁盘驱动白名单（v1.5.5：带进度 echo + timeout 5 兜底；失败仅 WARN 继续——
+# 2) 逐模块加载磁盘驱动白名单（v1.5.6：进度走 kmsg + timeout 5 兜底；失败仅 WARN 继续——
 #    不再 init_rescue，保证到菜单，驱动缺失由 menu 盘列表体现；原 rescue 语义仅保留给 mount）
 for im in $DRIVE_MODULES; do
-    echo "loading module $im"
+    dw_progress "loading module $im"
     timeout 5 modprobe "$im" 2>/dev/null || echo "WARN: module $im load failed/timed out"
 done
-echo "Disk driver modules loaded"
+dw_progress "Disk driver modules loaded"
 
 # 2.5) v1.5.4 显卡驱动：内核自探测显卡硬件 → DRM → fbcon → tty0 显示（不依赖 GRUB framebuffer；
 # 真机 UEFI 下 GRUB 视频初始化失败无 framebuffer，靠显卡驱动重建显示）。
-# v1.5.5：加进度 echo + timeout 兜底（驱动探测挂起时 5s 后跳过）；加载失败无害（该机无对应
-# 显卡），仅静默跳过，不进入救援 shell。
-for gv in ast mgag200 smifb bochs-drm cirrus virtio-gpu; do
-    echo "loading video module $gv"
-    timeout 5 modprobe "$gv" 2>/dev/null
-done
+# v1.5.6：显卡循环只加载 ast（真机 AST2500）。mgag200/smifb/bochs-drm/cirrus/
+# virtio-gpu 在无对应硬件时 modprobe 可能内核 D 状态挂起（用户态 timeout 无效），
+# 导致 init 卡死（真机实证 sdb 枚举后无输出）；需要时按机器单独加入白名单。
+dw_progress "loading video module ast"
+timeout 5 modprobe ast 2>/dev/null
 
-# 3) mdev -s 扫描并创建设备节点（v1.5.5：timeout 5 + 进度；失败仅 WARN，不 rescue）
-echo "device scan (mdev -s)"
+# 3) mdev -s 扫描并创建设备节点（v1.5.6：timeout 5 + kmsg 进度；失败仅 WARN，不 rescue）
+dw_progress "device scan (mdev -s)"
 timeout 5 mdev -s || echo "WARN: mdev scan failed/timed out"
-echo "Device nodes scanned"
+dw_progress "Device nodes scanned"
 
 # 4) 等待设备稳定 + 重试补建设备节点（最多 3 轮，每轮间隔 2s）。
 #    为什么重试：USB 存储设备在 usb-storage 模块加载后才异步枚举/绑定（qemu 实测

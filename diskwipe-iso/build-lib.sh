@@ -64,11 +64,11 @@ DW_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk v
 # usb-storage 为文件名（非 usb_storage）；vfat/fat 为模块（Kylin 退出写日志 U 盘 vfat
 # 挂载需要）。依赖链（ahci→libahci→libata、nvme→nvme-core→nvme-common、uas→usb-storage、
 # mpt3sas→raid_class+scsi_transport_sas、vfat→fat）由 dw_modules_kylin 按 modules.dep 解析
-DW_KYLIN_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat ast mgag200 smifb bochs-drm cirrus virtio-gpu"
-# v1.5.4 追加显卡 DRM 种子模块（ast/mgag200/smifb/bochs-drm/cirrus/virtio-gpu，Kylin 模式）：
-# 解决 UEFI 真机 VGA 黑屏——内核 efifb 依赖 GRUB 传 framebuffer，而真机 GRUB 视频初始化
-# 失败无 framebuffer；改由 initrd 加载显卡驱动，内核自探测显卡硬件 → DRM → fbcon → tty0
-# 显示（不依赖 GRUB/EFI framebuffer）。依赖链（ttm、i2c-algo-bit、drm_kms_helper、drm、
+DW_KYLIN_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat ast"
+# v1.5.6 显卡种子只保留 ast（Kylin 模式）：真机为 AST2500；mgag200/smifb/bochs-drm/cirrus/
+# virtio-gpu 在无对应硬件时 modprobe 可能内核 D 状态挂起（用户态 timeout 无效）导致 init
+# 卡死（真机实证 sdb 枚举后无输出）——initrd 不再打包这些模块（构建体积减小、init 无法
+# 加载它们），需要时按机器单独加入。依赖链（ttm、i2c-algo-bit、drm_kms_helper、drm、
 # fb_sys_fops、syscopyarea、sysfillrect、sysimgblt）由 dw_modules_kylin 按 modules.dep
 # 自动解析提取；无对应显卡的机型加载失败亦无害（src/init 静默跳过）。
 # apt 构建依赖（幂等：已装自动跳过）。

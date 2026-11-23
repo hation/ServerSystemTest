@@ -4,6 +4,8 @@
 #       dw_log 写内存（LOG_DEGRADED 不触发）/ dw_save_log_to_usb（U 盘候选枚举、
 #       跳过 VTOYEFI、挂载失败返回 1、成功路径 mount+cp+umount）/ init 零 U 盘 I/O
 #       （src 中 dw_mount_log_media 已删除；init 无 U 盘挂载调用）。
+# v1.5.7 适配：init 去掉设备重试扫描（mdev -s 轮询）——dw_save_log_to_usb 开头补建
+#       U 盘设备节点（"$TIMEOUT_BIN" 5 mdev -s 2>/dev/null），L3 成功路径断言 mdev 调用。
 # 运行：bash diskwipe-iso/tests/run-all.sh（或单独 bash diskwipe-iso/tests/t4_log.sh）
 # 安全约束（用户强要求，测试绝不触碰本机真实块设备/真实挂载）：
 #   假 lsblk/blkid/wipefs/umount/mount/cp 全部经接缝变量/PATH 注入，绝不真挂载/真清除；
@@ -142,9 +144,16 @@ add_label sdc2 数据区
 add_blk_type sdc1 vfat
 add_blk_type sdc2 exfat
 echo "test log content" > "$ROOT/dummylog"
+# v1.5.7：写日志前补建 U 盘节点——装假 mdev（记录调用到 cmds.txt）断言 dw_save_log_to_usb
+# 开头的 "$TIMEOUT_BIN" 5 mdev -s 已执行（init 已不再重试 mdev，节点由这里补建）
+fake_bin mdev '#!/bin/sh
+[ -n "$ROOT" ] || exit 0
+printf "mdev %s\n" "$*" >> "$ROOT/cmds.txt"
+exit 0'
 run_save "$OUTF" "$ROOT/dummylog"
 check_rc 0 'dw_save_log_to_usb 应正常返回'
 check_out 'RC=0' '应返回 0（保存成功）'
+check_cmds 'mdev -s' '写日志前应先补建 U 盘设备节点（mdev -s）'
 check_cmds 'mount /dev/sdc2 /diskwipe-log' '应挂载数据区 sdc2 到 /diskwipe-log'
 check_cmds "cp $ROOT/dummylog /diskwipe-log/" '应复制日志到挂载点'
 check_cmds 'umount /diskwipe-log' '保存后应卸载'

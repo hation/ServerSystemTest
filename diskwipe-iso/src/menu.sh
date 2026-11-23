@@ -23,6 +23,10 @@
 
 . "$(dirname "$0")/lib.sh"
 
+# v1.5.7：menu 入口 kmsg 进度（写 /dev/kmsg，与内核日志混排、屏幕最后几行可见；
+# 万一 menu 内卡住，靠这些进度行定位卡点阶段）
+dw_progress "menu.sh started"
+
 WIPE_SH="$(dirname "$0")/wipe.sh"
 
 # ---- 日志初始化（v1.3.2：无条件写内存；一次启动会话一份文件，会话内多轮清理追加）----
@@ -47,6 +51,7 @@ dw_log "=============================================="
 dw_log_finish() {
     dw_log "== session end [$(date '+%Y-%m-%d %H:%M:%S')] =="
     echo "Log kept in memory: $LOG_FILE"
+    dw_progress "saving log to USB"
     if dw_save_log_to_usb "$LOG_FILE"; then
         echo "Cleanup log saved to USB"
     else
@@ -69,6 +74,7 @@ while :; do
     # 枚举全部可清盘（lib.sh 内 lsblk 包 "$TIMEOUT_BIN" 3 兜底；超时/失败 → 返回 1 且输出空）。
     # 枚举失败（超时等）→ 打印错误并自动重试一次；仍失败 → 打印错误 + 可安全重启提示，
     # 绝不误判"仅启动介质"退出；枚举成功但为空（仅 usb+光驱）才走"仅启动介质"路径。
+    dw_progress "enumerating disks (lsblk)"
     ml="$(dw_enum_disks)"
     if [ "$?" -ne 0 ]; then
         echo "ERROR: disk scan timed out or failed"
@@ -93,6 +99,7 @@ while :; do
     # 批量类型探测 + 列盘字段预计算（一次 lsblk + 一次 blkid，均包 timeout；批量超时 →
     # 全部盘标 UNK，类型仅提示不影响清除）。先打印进度提示，批量探测耗时用户可见而非假死。
     echo "Scanning disks... (please wait)"
+    dw_progress "scanning disk types (blkid)"
     mcodes="$(dw_scan_system_disks)"
     mtab="$(printf '%s\n' "$ml" | dw_format_disk_lines "$mcodes")"
     # 枚举结果落日志（数量 + 设备清单；一次 dw_log，不进列盘循环）
@@ -225,6 +232,7 @@ EOF
     if [ "$myn" = "YES" ]; then
         echo
         dw_log "Wiping: umount -> wipefs -a -> partprobe -> wipefs -n verify..."
+        dw_progress "wiping disks"
         # 每盘结果（OK/FAIL）经 stdout 由 tee 同时落到屏幕与日志文件；日志写已降级
         # （LOG_DEGRADED）时仅屏幕显示、不写盘（tee 不包 timeout——写管道超时可能
         # SIGPIPE 中断 wipe.sh，故降级检查代替超时；dw_log 前置写入失败即触发降级）

@@ -1,11 +1,14 @@
 #!/bin/sh
 # diskwipe-iso initramfs 启动脚本（PID 1 入口）：
 #   挂载 /proc /sys /dev → busybox modprobe 白名单磁盘驱动 → mdev -s 扫描设备
-#   → sleep 2 等待设备稳定 → 重试循环（每轮 mdev -s 补建节点）→ exec menu.sh（交互菜单）。
+#   → sleep 3 等待设备稳定（v1.5.7：去掉重试 mdev 轮询）→ exec menu.sh（交互菜单）。
 # v1.5.6 语义：进度走 /dev/kmsg（内核 printk 通道，与内核日志混排，真机 KVM 屏幕最后几行
 #   可见）+ timeout 5 兜底（用户态挂起自动跳过）——仅挂载失败进入救援 shell；模块加载/mdev
 #   失败仅 WARN 继续（驱动缺失由 menu 盘列表体现）。注意：内核 D 状态（不可中断 I/O）用户态
 #   timeout 无效，若仍卡则靠 kmsg 进度行定位卡点模块。
+# v1.5.7 语义：去掉设备重试扫描（真机 U 盘枚举后重试 mdev 触发 U 盘 I/O 阻塞——内核 D 状态
+#   不可中断、用户态 timeout 无效——致 init 卡死、menu 永不启动）；改为仅 sleep 等待设备稳定，
+#   U 盘设备节点由 menu 退出写日志前 dw_save_log_to_usb 内 mdev -s 补建（失败降级 WARN）。
 #
 # v1.3.2 关键设计：init 阶段**零 U 盘 I/O**——不挂载日志介质、不写测试、不做 U 盘探测。
 # 真机实测 U 盘 I/O 阻塞（内核 D 状态，timeout 亦杀不掉）会导致 init 卡死、菜单永不出现；
@@ -92,18 +95,12 @@ dw_progress "device scan (mdev -s)"
 timeout 5 mdev -s || echo "WARN: mdev scan failed/timed out"
 dw_progress "Device nodes scanned"
 
-# 4) 等待设备稳定 + 重试补建设备节点（最多 3 轮，每轮间隔 2s）。
-#    为什么重试：USB 存储设备在 usb-storage 模块加载后才异步枚举/绑定（qemu 实测
-#    绑定后 SCSI 枚举需 ~2s），首个 mdev -s 扫描时尚未生成 /dev/sdX；且 initramfs
-#    无 hotplug 事件自动补建节点，故每轮再 mdev -s 补建（设备节点仍需）。
-#    v1.3.2：不再做任何 U 盘探测/挂载（零 U 盘 I/O，根治 I/O 阻塞卡死）；日志全程
-#    写内存，退出时由 menu 尽力写 U 盘。
-#    v1.5.5：重试 mdev 同样包 timeout 5 兜底（挂起自动跳过，不阻塞启动）。
-sleep 2
-for dwtry in 1 2 3; do
-    timeout 5 mdev -s
-    sleep 2
-done
+# 4) 等待设备稳定（v1.5.7：去掉设备重试扫描（mdev -s 轮询）——真机 U 盘枚举后重试
+#    mdev 触发 U 盘 I/O 阻塞（内核 D 状态，用户态 timeout 无效）致 init 卡死。改为仅
+#    sleep 等待设备稳定；U 盘设备节点由 menu 退出写日志前 dw_save_log_to_usb 内
+#    mdev -s 补建（失败降级）。
+dw_progress "device settle wait (sleep)"
+sleep 3
 
 # 5) 进入交互菜单（exec 替换自身，menu.sh 读 stdin 写 /dev/console）
 exec "$(dirname "$0")/menu.sh"

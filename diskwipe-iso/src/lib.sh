@@ -35,6 +35,10 @@
 #   dw_save_log_to_usb <file>  会话收尾尽力把日志文件写到 U 盘可写分区（跳过 VTOYEFI）；
 #                             0=已保存 / 1=无候选或全部失败（调用方打印降级提示，不阻断）
 
+# ---------- kmsg 进度（v1.5.7：init/menu/lib 共用；写 /dev/kmsg 内核 printk 通道，
+# 与内核日志混排、真机 KVM 屏幕最后几行可见，用于定位启动/菜单内卡点；写失败静默） ----------
+dw_progress() { echo "diskwipe-init: $*" > /dev/kmsg 2>/dev/null; }
+
 # ---------- 接缝变量（默认系统命令，测试可覆盖） ----------
 LSBLK_BIN="${LSBLK_BIN:-lsblk}"
 BLKID_BIN="${BLKID_BIN:-blkid}"
@@ -419,6 +423,9 @@ dw_log() {
 dw_save_log_to_usb() {
     dwlogf="$1"
     [ -n "$dwlogf" ] && [ -f "$dwlogf" ] || return 1
+    # v1.5.7：清盘完成后写日志前补建 U 盘设备节点（init 已不再重试 mdev；此时若 mdev
+    # 卡住属可接受——清盘已完成，下方降级提示抄录后断电）
+    "$TIMEOUT_BIN" 5 mdev -s 2>/dev/null
     # 1) 枚举 U 盘可写分区候选（分区名，逐行）。真实 lsblk 的 TRAN 只出现在整盘行、
     #    分区行 TRAN 恒空（字段右移）——先收集 TRAN=usb 的整盘，再收其分区
     #    （PKNAME 恒为末列；-l 列表模式免树形前缀）。卷标经 blkid LABEL 逐分区读

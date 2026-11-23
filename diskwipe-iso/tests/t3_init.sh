@@ -1,7 +1,7 @@
 #!/bin/bash
 # T3：diskwipe-iso initramfs 启动脚本（src/init）假件单测
 # 覆盖：src/init 的启动编排——挂载 /proc /sys /dev → busybox modprobe 白名单磁盘驱动 →
-#       mdev -s 扫描设备 → sleep 2 → exec menu.sh。
+#       mdev -s 扫描设备 → sleep 3（v1.5.7：去掉重试 mdev 轮询）→ exec menu.sh。
 # v1.5.6 语义：进度走 /dev/kmsg（dw_progress 写内核 printk 通道，与内核日志混排）+
 #   timeout 5 兜底（假件转执行）；显卡循环只加载 ast（mgag200/smifb/bochs-drm/cirrus/
 #   virtio-gpu 在无对应硬件时 modprobe 可能内核 D 状态挂起导致 init 卡死，真机实证）；
@@ -125,9 +125,10 @@ check_cmds 'mount -t proc proc /proc' '应挂载 /proc'
 check_cmds 'mount -t sysfs sysfs /sys' '应挂载 /sys'
 check_cmds 'mount -t devtmpfs devtmpfs /dev' '应挂载 /dev'
 check_cmds 'mdev -s' '应执行 mdev -s 扫描设备'
-# USB 存储设备异步枚举：init 在 sleep 后进入重试循环（每轮 mdev -s 补建节点）；
-# v1.3.2 起循环不再探测/挂载日志介质（零 U 盘 I/O）——首扫 + 3 轮重试 = mdev -s 共 4 次
-check_cmd_count 'mdev -s' 4 '设备扫描应执行 4 次（首扫 1 + 节点补建重试 3 轮）'
+# v1.5.7：去掉设备重试扫描（真机 U 盘枚举后重试 mdev 触发 U 盘 I/O 阻塞——内核 D 状态
+# 不可中断、用户态 timeout 无效——致 init 卡死）；mdev -s 仅首扫 1 次，随后仅 sleep 等待
+# 设备稳定（U 盘节点由 menu 退出写日志前 dw_save_log_to_usb 内 mdev -s 补建）
+check_cmd_count 'mdev -s' 1 '设备扫描应仅执行 1 次（v1.5.7 去掉重试轮）'
 check_not_cmds 'mount /dev/' 'init 阶段零 U 盘挂载（不再挂载日志介质）'
 for m in $DRIVE_MODULES; do
     check_cmds "modprobe $m" "应加载模块 $m"
@@ -151,6 +152,7 @@ check_kmsg 'diskwipe-init: Disk driver modules loaded' 'kmsg 磁盘循环完成�
 check_kmsg 'diskwipe-init: loading video module ast' 'kmsg 显卡进度行（只加载 ast）'
 check_kmsg 'diskwipe-init: device scan (mdev -s)' 'kmsg mdev 扫描进度行'
 check_kmsg 'diskwipe-init: Device nodes scanned' 'kmsg 设备节点扫描完成行'
+check_kmsg 'diskwipe-init: device settle wait (sleep)' 'kmsg 设备稳定等待进度行（v1.5.7 去掉重试轮）'
 # v1.5.6 显卡循环只留 ast：modprobe 调用含 ast、不含其余 5 个显卡驱动
 check_cmds 'modprobe ast' '应加载 ast（显卡循环白名单唯一）'
 for gv in mgag200 smifb bochs-drm cirrus virtio-gpu; do
@@ -173,7 +175,7 @@ check_not_out 'RESCUE_SHELL_MARKER' '不得进入救援 shell'
 check_cmds 'modprobe mpt3sas' '应尝试加载失败模块（记录在 cmds.txt）'
 check_cmds 'modprobe virtio_blk' '失败后继续加载后续模块（v1.5.5 不再中断）'
 check_kmsg 'diskwipe-init: Disk driver modules loaded' '循环结束 kmsg 行应出现（失败继续到循环末尾）'
-check_cmd_count 'mdev -s' 4 '模块失败后仍执行 mdev 首扫 + 3 轮重试'
+check_cmd_count 'mdev -s' 1 '模块失败后仍执行 mdev 首扫（v1.5.7 无重试轮）'
 check_out 'MENU_EXEC_MARKER' '最终应 exec menu.sh（失败不再 rescue）'
 cleanup_case
 

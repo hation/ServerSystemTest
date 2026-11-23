@@ -298,8 +298,30 @@ def render_summary(inv, health, ai_markdown=None) -> str:
     ])
 
 
+def _render_nvme_table(inv) -> str:
+    """附录小节：### NVMe 盘表（SN / Phy Slot / PCIe Slot / 状态 / 链路 / 剩余寿命）。
+
+    link_state == 'down' 的盘链路列标注 `down ⚠️` 醒目标记；无数据时优雅
+    输出（无 NVMe 盘数据），绝不抛异常。
+    """
+    disks = getattr(inv, 'nvme_disks', None) or []
+    lines = ['### NVMe 盘表', '']
+    if not disks:
+        lines.append('（无 NVMe 盘数据）')
+        return '\n'.join(lines)
+    lines.append('| SN | Phy Slot | PCIe Slot | 状态(Pd Status) | 链路 | 剩余寿命 |')
+    lines.append('| --- | --- | --- | --- | --- | --- |')
+    for d in disks:
+        link = d.get('link_state', 'unknown')
+        link_cell = 'down ⚠️' if link == 'down' else _fmt(link)
+        lines.append(f'| {_fmt(d.get("sn"))} | {_fmt(d.get("phy_slot"))} '
+                     f'| {_fmt(d.get("pcie_slot"))} | {_fmt(d.get("pd_status"))} '
+                     f'| {link_cell} | {_fmt(d.get("remaining_life"))} |')
+    return '\n'.join(lines)
+
+
 def _render_appendix(inv, sensors, health, events, visible_lines) -> str:
-    """## 附录：操作日志摘录 / 其他事件 / 固件版本 / 传感器概要。"""
+    """## 附录：操作日志摘录 / 其他事件 / 固件版本 / NVMe 盘表 / 传感器概要。"""
     lines = ['## 附录', '']
 
     # 1) 操作日志摘录（visible.log，展示最近 N 行）
@@ -359,7 +381,11 @@ def _render_appendix(inv, sensors, health, events, visible_lines) -> str:
         lines.append(f'| {key} | {_fmt(firmware.get(key))} |')
     lines.append('')
 
-    # 4) 传感器概要（重点传感器优先，其次按名称排序）
+    # 4) NVMe 盘表（SN / Phy Slot / PCIe Slot / 状态 / 链路 / 剩余寿命）
+    lines.append(_render_nvme_table(inv))
+    lines.append('')
+
+    # 5) 传感器概要（重点传感器优先，其次按名称排序）
     lines.append('### 传感器概要')
     lines.append('')
     readings = list(sensors or [])

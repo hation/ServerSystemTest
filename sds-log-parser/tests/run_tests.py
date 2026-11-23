@@ -1028,6 +1028,58 @@ def test_report_ai_hint_when_no_ai():
     assert '## AI 解读提示' not in with_ai, '有 AI 章节（--ai 后端）时不显示引导'
 
 
+def _nvme_disks_sample() -> list:
+    """NVMe 盘表用例样本：2 块盘，第 2 块（Front slot 19）链路 down。"""
+    return [
+        {'sn': 'SH223001526', 'phy_slot': 'Front slot 17', 'pcie_slot': 'Slot 37',
+         'pd_status': 'Normal', 'remaining_life': '100%', 'link_state': 'up',
+         'temperature': '0x23'},
+        {'sn': 'SH231801357', 'phy_slot': 'Front slot 19', 'pcie_slot': 'Slot 39',
+         'pd_status': 'Normal', 'remaining_life': '80%', 'link_state': 'down',
+         'temperature': '0x20'},
+    ]
+
+
+def test_report_nvme_table():
+    """nvme_disks 非空 → 报告含 `### NVMe 盘表`、各盘 SN；link_state='down' 的盘链路列醒目标记 down ⚠️。"""
+    from sds_report import render_report
+    inv = InventoryData()
+    inv.nvme_disks = _nvme_disks_sample()
+    health = [ComponentHealth(name='A0', category='内存', status='正常', evidence=[], suggestions=[])]
+    out = render_report(inv, [], health, [], [], None, '2026-11-23 12:00:00')
+    assert '### NVMe 盘表' in out, '报告应含 NVMe 盘表小节'
+    assert 'SH223001526' in out and 'SH231801357' in out, '盘表应含各盘 SN'
+    assert 'down ⚠️' in out, '链路 down 的盘应醒目标记'
+    assert 'Front slot 19' in out, '盘表应含 Phy Slot'
+    assert '链路' in out and '剩余寿命' in out, '盘表应含链路/寿命列'
+
+
+def test_report_nvme_table_empty():
+    """nvme_disks 为空 → 报告不抛异常，输出（无 NVMe 盘数据）。"""
+    from sds_report import render_report
+    out = render_report(InventoryData(), [], [], [], [], None, '2026-11-23 12:00:00')
+    assert '（无 NVMe 盘数据）' in out, '无数据时应优雅提示且不抛异常'
+
+
+def test_ai_nvme_table():
+    """build_ai_payload 含 `## NVMe 盘表`、各盘 SN 与链路字段；down 盘行尾加 ⚠️；
+    章节位于组件健康清单之后、事件时间线之前。"""
+    inv = InventoryData()
+    inv.nvme_disks = _nvme_disks_sample()
+    payload = build_ai_payload(inv, [], [])
+    assert '## NVMe 盘表' in payload, '材料包应含 NVMe 盘表章节'
+    assert 'SH223001526' in payload and 'SH231801357' in payload, '应含各盘 SN'
+    assert '链路=up' in payload, '应含链路字段（up）'
+    assert '链路=down' in payload and '⚠️' in payload, 'down 盘行尾应加 ⚠️'
+    assert payload.index('## NVMe 盘表') > payload.index('## 组件健康清单'), \
+        'NVMe 盘表应位于组件健康清单之后'
+    assert payload.index('## NVMe 盘表') < payload.index('## 事件时间线'), \
+        'NVMe 盘表应位于事件时间线之前'
+    # 空数据 → 优雅输出
+    empty = build_ai_payload(InventoryData(), [], [])
+    assert '（无 NVMe 盘数据）' in empty, '无数据时应优雅提示'
+
+
 def test_summary_sections():
     """render_summary 输出 `## 0. 分析汇总` 与三要点；整机概览含机型/序列号/固件版本；
     健康总览计数 正常 1 · 异常 1 · 提示 1；核心结论为规则结论（含 Disk_F23_Status）。"""

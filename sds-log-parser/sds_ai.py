@@ -35,7 +35,8 @@ def build_ai_payload(inv, health, events) -> str:
     """把解析结果整理为「事实 + 任务指令」文本块（中文，Markdown 风格纯文本）。
 
     事实先行：机器信息 → 组件健康清单（组件/状态/证据事件原文/建议）→
-    事件时间线（sbe 来源标注"尽力而为"）；末尾附固定分析任务指令。
+    NVMe 盘表（SN/槽位/状态/链路/寿命，link down 醒目标记）→ 事件时间线
+    （sbe 来源标注"尽力而为"）；末尾附固定分析任务指令。
     同一份文本双模式复用（落盘材料包 / API 请求 content）。
     """
     lines = ['# HDM SDS 体检 AI 分析材料包', '']
@@ -71,6 +72,19 @@ def build_ai_payload(inv, health, events) -> str:
             lines.append('  修复建议:')
             for s in suggestions:
                 lines.append(f'    - {s}')
+    lines.append('')
+
+    # 二点五、NVMe 盘表（组件健康清单之后、事件时间线之前；link down 的盘行尾加 ⚠️）
+    lines.append('## NVMe 盘表')
+    disks = getattr(inv, 'nvme_disks', None) or []
+    if not disks:
+        lines.append('- （无 NVMe 盘数据）')
+    for d in disks:
+        link = d.get('link_state', 'unknown')
+        marker = ' ⚠️' if link == 'down' else ''
+        lines.append(f"- SN={d.get('sn', '') or '未知'} | Phy Slot={d.get('phy_slot', '') or '未知'} "
+                     f"| PCIe Slot={d.get('pcie_slot', '') or '未知'} | 状态={d.get('pd_status', '') or '未知'} "
+                     f"| 链路={link} | 寿命={d.get('remaining_life', '') or '未知'}{marker}")
     lines.append('')
 
     # 三、事件时间线（按时间排序，供"异常链路推断"按时间线串联参考）

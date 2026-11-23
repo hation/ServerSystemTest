@@ -1,19 +1,24 @@
 #!/bin/bash
 # T3：diskwipe-iso initramfs 启动脚本（src/init）假件单测
 # 覆盖：src/init 的启动编排——挂载 /proc /sys /dev → busybox modprobe 白名单磁盘驱动 →
-#       mdev -s 扫描设备 → sleep 2 → exec menu.sh；任一步失败（挂载/模块加载）打印错误
-#       并停留在救援 shell（不 exec menu.sh，便于现场诊断），与设计 §6.3 一致。
+#       mdev -s 扫描设备 → sleep 2 → exec menu.sh。
+# v1.5.5 语义：每步打印进度行（loading module / loading video module / device scan）+
+#   timeout 5 兜底（假件转执行）；仅挂载失败进入救援 shell；模块加载/mdev 失败仅 WARN 继续
+#   （不 rescue，保证到菜单，驱动缺失由 menu 盘列表体现）。
 # 运行：bash diskwipe-iso/tests/run-all.sh（或单独 bash diskwipe-iso/tests/t3_init.sh）
 # 安全约束（用户强要求，测试绝不触碰本机真实块设备/真实挂载）：
 #   假 mount/modprobe/mdev 只把调用参数记录到 $ROOT/cmds.txt、绝不真挂载/真加载模块；
 #   stub 环境里的 menu.sh 为假件（打印标记证明 exec 到了交互菜单）；init 经 INIT_PATH
 #   接缝变量注入假件 PATH。
 # 用例：
-#   I1  正常：假 mount/modprobe/mdev 全部成功 → 输出含挂载 /proc /sys /dev；
+#   I1  正常：假 mount/modprobe/mdev 全部成功 → 输出含挂载 /proc /sys /dev + 每模块进度行
+#       "loading module <name>" / "loading video module <name>" / "device scan (mdev -s)"；
 #       modprobe 调用覆盖 DRIVE_MODULES 全部模块名；最后 exec menu.sh（假 menu.sh 打标记）
-#   I2  modprobe 某模块（mpt3sas）失败 → 打印错误、停留在救援 shell（假 sh 打标记）、
-#       不 exec menu.sh、不继续加载后续模块
+#   I2  modprobe 某模块（mpt3sas）失败 → 打印 WARN 继续加载后续模块、不 rescue、
+#       最终 exec menu.sh（v1.5.5：失败不再 init_rescue）
 #   I3  挂载 /sys 失败 → 打印错误、停留在救援 shell、不 exec menu.sh、不加载模块
+#       （init_rescue 语义仅保留给 mount）
+#   I4  mdev -s 失败 → 打印 WARN 继续（不 rescue）、最终 exec menu.sh
 set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 trap 'rc=$?; cleanup_case; exit "$rc"' EXIT
@@ -53,11 +58,18 @@ while IFS= read -r f; do
     [ "$f" = "$1" ] && exit 1
 done < "$ROOT/modprobe.fail"
 exit 0'
-    # 假 mdev：记录调用到 cmds.txt
+    # 假 mdev：记录调用到 cmds.txt；$ROOT/mdev.fail 存在时返回 1（模拟 mdev 扫描失败）
     fake_bin mdev '#!/bin/sh
 [ -n "$ROOT" ] || exit 0
 printf "mdev %s\n" "$*" >> "$ROOT/cmds.txt"
+[ -f "$ROOT/mdev.fail" ] && exit 1
 exit 0'
+    # 假 timeout：模拟超时包装——去掉秒数参数后转执行剩余命令（测试内命令立即返回、
+    # 不真等 5s）；不记录 cmds.txt（避免影响既有 check_no_cmds/check_cmds 断言）
+    fake_bin timeout '#!/bin/sh
+[ -n "$ROOT" ] || exit 0
+shift
+"$@"'
     # 假 sh（救援 shell）：打印标记后退出（模拟"停留 shell"，不真进入交互）
     fake_bin sh '#!/bin/sh
 echo "RESCUE_SHELL_MARKER"
@@ -112,21 +124,30 @@ else
 fi
 check_out 'MENU_EXEC_MARKER' '最后应 exec menu.sh（假 menu.sh 打标记）'
 check_not_out 'failed' '正常路径不应出现失败提示'
+# v1.5.5 进度行必现（真机靠它定位卡点；fbcon 激活后 VGA 可见）
+check_out 'loading module ahci' '输出应包含磁盘模块加载进度行'
+check_out 'loading module mpt3sas' '输出应包含磁盘模块加载进度行（全部模块）'
+check_out 'Disk driver modules loaded' '输出应包含磁盘模块加载完成行'
+check_out 'loading video module bochs-drm' '输出应包含显卡模块加载进度行'
+check_out 'device scan (mdev -s)' '输出应包含 mdev 扫描进度行'
+check_out 'Device nodes scanned' '输出应包含设备节点扫描完成行'
 cleanup_case
 
-# ---------- I2：modprobe 某模块失败 ----------
+# ---------- I2：modprobe 某模块失败（v1.5.5：WARN 继续，不 rescue） ----------
 CASE="I2 模块加载失败"
 setup_stub
 printf 'mpt3sas\n' > "$ROOT/modprobe.fail"
 run_init "$OUTF"
-check_rc 0 '失败后进入救援 shell，shell 退出后进程正常结束'
-check_out 'ERROR: failed to load kernel module mpt3sas' '应打印模块加载失败错误'
-check_out 'rescue shell' '应提示停留在救援 shell'
-check_out 'RESCUE_SHELL_MARKER' '应进入救援 shell（假 sh 打标记）'
-check_not_out 'MENU_EXEC_MARKER' '失败时不得 exec menu.sh'
+check_rc 0 '模块失败 WARN 继续，最终 exec menu.sh 正常结束'
+check_out 'loading module mpt3sas' '失败模块仍打印进度行（定位卡点）'
+check_out 'WARN: module mpt3sas load failed/timed out' '应打印模块加载失败警告'
+check_not_out 'ERROR' '模块失败不再进入救援 shell（v1.5.5 语义）'
+check_not_out 'RESCUE_SHELL_MARKER' '不得进入救援 shell'
 check_cmds 'modprobe mpt3sas' '应尝试加载失败模块（记录在 cmds.txt）'
-check_not_cmds 'modprobe virtio_blk' '失败后不得继续加载后续模块'
-check_cmd_count 'mdev' 0 '模块加载失败后不得执行 mdev'
+check_cmds 'modprobe virtio_blk' '失败后继续加载后续模块（v1.5.5 不再中断）'
+check_out 'Disk driver modules loaded' '循环结束行应出现（失败继续到循环末尾）'
+check_cmd_count 'mdev -s' 4 '模块失败后仍执行 mdev 首扫 + 3 轮重试'
+check_out 'MENU_EXEC_MARKER' '最终应 exec menu.sh（失败不再 rescue）'
 cleanup_case
 
 # ---------- I3：挂载失败 ----------
@@ -140,6 +161,20 @@ check_out 'RESCUE_SHELL_MARKER' '应进入救援 shell（假 sh 打标记）'
 check_not_out 'MENU_EXEC_MARKER' '失败时不得 exec menu.sh'
 check_cmd_count 'modprobe' 0 '挂载失败后不得加载模块'
 check_cmd_count 'mdev' 0 '挂载失败后不得执行 mdev'
+cleanup_case
+
+# ---------- I4：mdev -s 失败（v1.5.5：WARN 继续，不 rescue） ----------
+CASE="I4 mdev 扫描失败"
+setup_stub
+: > "$ROOT/mdev.fail"
+run_init "$OUTF"
+check_rc 0 'mdev 失败 WARN 继续，最终 exec menu.sh 正常结束'
+check_out 'device scan (mdev -s)' '应打印 mdev 扫描进度行（定位卡点）'
+check_out 'WARN: mdev scan failed/timed out' '应打印 mdev 扫描失败警告'
+check_not_out 'ERROR' 'mdev 失败不再进入救援 shell（v1.5.5 语义）'
+check_not_out 'RESCUE_SHELL_MARKER' '不得进入救援 shell'
+check_out 'Device nodes scanned' 'WARN 后继续打印完成行（不 rescue）'
+check_out 'MENU_EXEC_MARKER' '最终应 exec menu.sh（失败不再 rescue）'
 cleanup_case
 
 finish

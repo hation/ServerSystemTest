@@ -60,6 +60,35 @@ dmesg_max_ts() {
         END { if (n > 0) printf "%.6f", m }'
 }
 
+# dmesg io 行命中设备名：逐名遍历 devices.txt（每行按空白分列取 token，兼容多列），
+# 取首个按单词边界命中该行的设备名（边界口径与 dev_re 一致：(^|[^[:alnum:]])<名>([^[:alnum:]]|$)）；
+# 无命中/无 devices.txt 输出空串
+dmesg_hit_dev() {
+    local line="$1" devs_file="$2" name tok
+    [ -s "$devs_file" ] || return 0
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        for tok in $name; do
+            tok=$(printf '%s' "$tok" | awk '{gsub(/[^0-9A-Za-z_.-]/, "", $0); print $0}')
+            [ -n "$tok" ] || continue
+            if printf '%s\n' "$line" | grep -qiE "(^|[^[:alnum:]])${tok}([^[:alnum:]]|\$)"; then
+                printf '%s\n' "$tok"
+                return 0
+            fi
+        done
+    done < "$devs_file"
+}
+
+# dmesg io 行命中设备的 SN 标注文本（含前导空格）；无命中/无 SN/无 devices.txt 输出空串
+dmesg_io_label() {
+    local line="$1" devs_file="$2" dev sn
+    dev=$(dmesg_hit_dev "$line" "$devs_file")
+    [ -n "$dev" ] || return 0
+    sn=$(sn_of_dev "$dev")
+    [ -n "$sn" ] || return 0
+    printf ' (dev=%s SN=%s)' "$dev" "$sn"
+}
+
 cmd_monitor_loop() {
     local dir="$1"
     [ -n "$dir" ] || { echo "用法: stress-test.sh monitor-loop <结果目录>"; exit 1; }
@@ -189,10 +218,12 @@ cmd_monitor_loop() {
             while IFS= read -r line; do
                 [ -n "$line" ] || continue
                 if printf '%s\n' "$line" | grep -qiE "$DMESG_IO_RE"; then
+                    local label
+                    label=$(dmesg_io_label "$line" "$dir/devices.txt")
                     if [ -n "$dev_re" ] && ! printf '%s\n' "$line" | grep -qiE "$dev_re"; then
-                        echo "[$(now)] dmesg io 未归因: $line" >> "$dir/error-unattributed.log"
+                        echo "[$(now)] dmesg io 未归因${label}: $line" >> "$dir/error-unattributed.log"
                     else
-                        echo "[$(now)] dmesg io: $line" >> "$dir/error.log"
+                        echo "[$(now)] dmesg io${label}: $line" >> "$dir/error.log"
                         io_seen=1
                     fi
                     continue

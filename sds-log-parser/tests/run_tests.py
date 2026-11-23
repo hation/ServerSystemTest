@@ -779,6 +779,29 @@ def test_health_disk_hba():
     assert any('F23' in c.name and c.status == '异常' for c in disks), '盘 F23 组件应判异常'
 
 
+def test_health_nvme_link_down():
+    """nvme_disks 含 link_state='down' → 产出 NVMe_<sn> 提示组件（status='提示'、category='硬盘'）。"""
+    inv = InventoryData(nvme_disks=[{'sn': 'SH231801357', 'link_state': 'down'}])
+    health = assess_health(inv, [], [])
+    nvme = [c for c in health if c.name == 'NVMe_SH231801357']
+    assert len(nvme) == 1, '应产出 NVMe_SH231801357 组件'
+    assert nvme[0].category == '硬盘', 'category 应为硬盘'
+    assert nvme[0].status == '提示', '链路 down 应为提示而非异常'
+    assert any('link down' in e for e in nvme[0].evidence), 'evidence 应含 link down'
+    assert nvme[0].suggestions, '应含兜底建议文案'
+
+
+def test_health_nvme_link_up_no_alert():
+    """nvme_disks 含 up/unknown 盘 → 不产出新增 NVMe 组件（空输入时 health 为空列表）。"""
+    inv = InventoryData(nvme_disks=[
+        {'sn': 'SN-UP', 'link_state': 'up'},
+        {'sn': 'SN-UNK', 'link_state': 'unknown'},
+    ])
+    health = assess_health(inv, [], [])
+    assert health == [], 'up/unknown 盘不应产出任何组件'
+    assert not any(c.name.startswith('NVMe_') for c in health), '不应产出 NVMe_ 组件'
+
+
 def test_health_psu():
     """PSU input lost 事件 → 电源组件判异常，修复建议含 AC 相关词。"""
     events = [

@@ -328,6 +328,15 @@ def assess_health(inv, sensors, events, raid_bp_text: str | None = None) -> list
         else:
             _upsert('背板', 'BackPlane', '提示', bp_evidence, bp_suggestion)
 
+    # 3.6) NVMe 盘第一端口 PCIe link down → 提示（仅 down 触发，up/unknown 不产出；
+    #      状态为提示非异常，防误报；无 nvme_disks 时自然无产出）
+    for nvme in inv.nvme_disks:
+        sn = (nvme.get('sn') or '').strip()
+        if sn and (nvme.get('link_state') or '').strip().lower() == 'down':
+            _upsert('硬盘', f'NVMe_{sn}', '提示',
+                    f'NVMe 盘 {sn} 第一端口 PCIe link down',
+                    [_SUGGESTION_FALLBACK])
+
     # 4) 组装输出（evidence 最多 5 条；按类别稳定排序）
     order = {cat: i for i, cat in enumerate(_CATEGORY_ORDER)}
 

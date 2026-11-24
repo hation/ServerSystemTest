@@ -66,7 +66,10 @@ DW_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk v
 # mpt3sas→raid_class+scsi_transport_sas、vfat→fat）由 dw_modules_kylin 按 modules.dep 解析
 # v1.5.8 去掉 uas：UAS 驱动绑定 U 盘（ASolid USB 盘）若协议响应异常会内核 D 状态卡死
 # （真机实证：uas 注册后 sleep 结束前的 exec 未发生）；usb-storage 已足够枚举 U 盘
-DW_KYLIN_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage nls_iso8859-1 vfat fat ast"
+# v1.5.9 去掉 usb-storage——真机 U 盘绑定后读盘触发内核 I/O 阻塞致系统整体停滞
+# （>30s 无调度）；U 盘不绑定则内核不读盘、系统正常启动；USB 键盘走内建 usbhid
+# 不受影响；退出写日志 U 盘降级留内存（既有 WARN 提示）——initrd 不再打包 usb-storage
+DW_KYLIN_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod nls_iso8859-1 vfat fat ast"
 # v1.5.6 显卡种子只保留 ast（Kylin 模式）：真机为 AST2500；mgag200/smifb/bochs-drm/cirrus/
 # virtio-gpu 在无对应硬件时 modprobe 可能内核 D 状态挂起（用户态 timeout 无效）导致 init
 # 卡死（真机实证 sdb 枚举后无输出）——initrd 不再打包这些模块（构建体积减小、init 无法
@@ -592,7 +595,8 @@ dw_verify_iso() {
 
     # 6.6 Kylin 模式追加校验：iso 内 boot/vmlinuz 为 Kylin 4.19 内核（strings 版本串
     #     4.19.90，bzImage 明文段含 "4.19.90-89.11.v2401.ky10.x86_64"）；initrd 内
-    #     关键模块（ahci/usb-storage/nvme）存在且为 .ko（非压缩后缀）
+    #     关键模块（ahci/nvme）存在且为 .ko（非压缩后缀）；usb-storage 反向断言——
+    #     v1.5.9 起不再打包（U 盘不绑定根治真机系统停滞）
     if [ "$mode" = "kylin" ]; then
         isoinfo -R -i "$iso" -x /boot/vmlinuz > "$build_dir/vmlinuz.check" 2>/dev/null \
             || { dw_fail "抽取 boot/vmlinuz 失败（Kylin 校验）"; return 1; }
@@ -600,12 +604,16 @@ dw_verify_iso() {
             dw_fail "boot/vmlinuz 非 Kylin 4.19 内核（strings 未见 4.19.90 版本串）"; return 1
         fi
         echo "     校验通过：boot/vmlinuz 为 Kylin 4.19 内核（strings 检出 4.19.90 版本串）"
-        for m in ahci usb-storage nvme; do
+        for m in ahci nvme; do
             if ! find "$build_dir/initrdx/lib/modules" -name "$m.ko" 2>/dev/null | grep -q .; then
                 dw_fail "initrd 内缺少关键 Kylin 模块 $m.ko（应为未压缩 .ko）"; return 1
             fi
         done
-        echo "     校验通过：initrd 内关键模块 ahci/usb-storage/nvme 均为未压缩 .ko"
+        echo "     校验通过：initrd 内关键模块 ahci/nvme 均为未压缩 .ko"
+        if find "$build_dir/initrdx/lib/modules" -name 'usb-storage.ko' 2>/dev/null | grep -q .; then
+            dw_fail "initrd 内不应再含 usb-storage.ko（v1.5.9 去掉，U 盘不绑定）"; return 1
+        fi
+        echo "     校验通过：initrd 内无 usb-storage.ko（v1.5.9 去掉，U 盘不绑定）"
     fi
 }
 

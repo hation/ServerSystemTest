@@ -55,7 +55,10 @@ case "$(uname -r 2>/dev/null)" in
 *ky10*)
     # v1.5.8 去掉 uas：UAS 驱动绑定 U 盘（ASolid USB 盘）若协议响应异常会内核 D 状态
     # 卡死（真机实证：uas 注册后 sleep 结束前的 exec 未发生）；usb-storage 已足够枚举 U 盘
-    DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage nls_iso8859-1 vfat fat"
+    # v1.5.9 去掉 usb-storage——真机 U 盘绑定后读盘触发内核 I/O 阻塞致系统整体停滞
+    # （>30s 无调度）；U 盘不绑定则内核不读盘、系统正常启动；USB 键盘走内建 usbhid
+    # 不受影响；退出写日志 U 盘降级留内存（既有 WARN 提示）
+    DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod nls_iso8859-1 vfat fat"
     ;;
 esac
 

@@ -9,6 +9,9 @@
 #   仅挂载失败进入救援 shell；模块加载/mdev 失败仅 WARN 继续（不 rescue，保证到菜单）。
 # v1.5.8 适配：Kylin ky10 分支去掉 uas（I5 用例：uas 不得加载；usb-storage 仍加载）；
 #   exec 段诊断（I1 断言 exec menu.sh 进度行；I6 用例：exec 失败兜底救援 shell）。
+# v1.5.9 适配：Kylin ky10 分支再去掉 usb-storage（I5 用例：usb-storage 不得加载——
+#   真机 U 盘绑定后读盘触发内核 I/O 阻塞致系统整体停滞；U 盘不绑定则系统正常启动，
+#   USB 键盘走内建 usbhid 不受影响；退出写日志 U 盘降级留内存）。
 # kmsg 进度断言方式：本机 Git Bash 的 /dev 为 MSYS 虚拟只读目录，无法创建 /dev/kmsg
 #   假件（写失败静默——恰是生产"写失败不中断启动"语义）；用 `bash -x` + BASH_XTRACEFD=3
 #   把 xtrace 分流到 $ROOT/xtrace.txt，正向断言 dw_progress 调用与 kmsg 载荷
@@ -32,7 +35,8 @@
 #       （init_rescue 语义仅保留给 mount）
 #   I4  mdev -s 失败 → 打印 WARN 继续（不 rescue）、最终 exec menu.sh
 #   I5  Kylin ky10 模式（假 uname 返回 4.19.90 ...ky10）：走 *ky10* 分支白名单——
-#       uas 不得加载（v1.5.8 去掉）、usb-storage/vfat/fat 等 ky10 清单模块加载、exec 正常
+#       uas 不得加载（v1.5.8 去掉）、usb-storage 不得加载（v1.5.9 去掉）、vfat/fat 等
+#       ky10 清单模块加载、exec 正常
 #   I6  exec menu.sh 失败（假 menu.sh 去掉执行位）：POSIX 语义下 exec 失败 shell 直接
 #       以 126 退出（|| 兜底不可达——bash/dash/busybox ash 实证一致）；断言 exec 前的
 #       kmsg 诊断行已先打（定位"exec 前卡住"才是诊断价值所在）
@@ -216,8 +220,8 @@ check_kmsg 'diskwipe-init: Device nodes scanned' 'WARN 后继续打 kmsg 完成�
 check_out 'MENU_EXEC_MARKER' '最终应 exec menu.sh（失败不再 rescue）'
 cleanup_case
 
-# ---------- I5：Kylin ky10 模式（v1.5.8：白名单去掉 uas） ----------
-CASE="I5 Kylin ky10 模式去掉 uas"
+# ---------- I5：Kylin ky10 模式（v1.5.8 去掉 uas；v1.5.9 再去掉 usb-storage） ----------
+CASE="I5 Kylin ky10 模式去掉 uas/usb-storage"
 setup_stub
 # 假 uname：返回 Kylin 4.19 ky10 版本串 → init 的 case *ky10* 分支生效
 fake_bin uname '#!/bin/sh
@@ -225,11 +229,12 @@ echo "4.19.90-89.11.v2401.ky10.x86_64"'
 run_init "$OUTF"
 check_rc 0 'ky10 模式正常启动应退出 0'
 check_out 'MENU_EXEC_MARKER' 'ky10 模式最终应 exec menu.sh'
-# ky10 白名单（文件名形态 usb-storage；virtio_pci/xhci_pci/scsi_mod/exfat/ntfs3 为内建/无模块，不加载）
-for m in ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage nls_iso8859-1 vfat fat; do
+# ky10 白名单（v1.5.9 起不含 usb-storage；virtio_pci/xhci_pci/scsi_mod/exfat/ntfs3 为内建/无模块，不加载）
+for m in ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod nls_iso8859-1 vfat fat; do
     check_cmds "modprobe $m" "ky10 模式应加载模块 $m"
 done
 check_not_cmds 'modprobe uas' 'ky10 模式不得加载 uas（v1.5.8：UAS 绑定 U 盘可能 D 状态卡死）'
+check_not_cmds 'modprobe usb-storage' 'ky10 模式不得加载 usb-storage（v1.5.9：U 盘绑定读盘触发内核 I/O 阻塞致系统整体停滞）'
 check_not_cmds 'modprobe virtio_pci' 'ky10 模式不得加载 virtio_pci（Kylin 内核内建）'
 check_not_cmds 'modprobe xhci_pci' 'ky10 模式不得加载 xhci_pci（Kylin 内核内建）'
 check_kmsg 'diskwipe-init: exec menu.sh' 'ky10 模式 exec menu.sh 诊断行（v1.5.8）'

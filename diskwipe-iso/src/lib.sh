@@ -31,7 +31,8 @@
 #   dw_wipe_disk <dev>         0=OK（umount 全部→wipefs -a→partprobe→wipefs -n 验证）/
 #                             非0=失败（输出 FAIL 行 + 英文 reason）
 #   dw_version                 echo 版本号（读 /diskwipe.version，缺失回退 unknown）
-#   dw_log <msg>               echo "$msg" | tee -a "${LOG_FILE:-/dev/null}"（屏幕+文件双写）
+#   dw_log <msg>               echo "$msg" | tee -a "${LOG_FILE:-/dev/null}"（屏幕+文件双写，
+#                             v1.5.8 起另镜像到 /dev/kmsg：console 不可见时 kmsg 通道可读）
 #   dw_save_log_to_usb <file>  会话收尾尽力把日志文件写到 U 盘可写分区（跳过 VTOYEFI）；
 #                             0=已保存 / 1=无候选或全部失败（调用方打印降级提示，不阻断）
 
@@ -399,7 +400,10 @@ dw_version() {
 # v1.3.2：日志文件位于内存（menu 用 LOG_DIR=/tmp/diskwipe-log，initramfs rootfs 即
 #   tmpfs），tee 写内存几乎不可能阻塞——包 timeout 2 仅为防御（LOG_DEGRADED 兜底保留：
 #   写失败后后续 dw_log 仅屏幕 + 一次性 WARN 提示，绝不拖住菜单/清理）。
+# v1.5.8：加 kmsg 镜像（菜单界面大量走 dw_log——若真机 /dev/console（tty0）输出不可见，
+#   kmsg 通道保证屏幕可读可操作；写 /dev/kmsg 失败静默，不中断）。
 dw_log() {
+    echo "diskwipe-init: $1" > /dev/kmsg 2>/dev/null
     if [ "${LOG_DEGRADED:-0}" = "1" ]; then
         echo "$1"
         return 0

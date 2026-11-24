@@ -21,6 +21,9 @@
 #     枚举超时/失败 → 打印 ERROR 并重试一次（不误判"仅启动介质"）；清除操作无 timeout。
 #   - 设备白名单/umount/wipefs/partprobe/验证全部由 lib.sh/wipe.sh 保证，本脚本不重复实现。
 
+# v1.5.8：exec 后立即打点（不依赖 lib.sh 的 dw_progress，证明 menu 已被 exec 执行）
+echo "diskwipe-init: menu.sh argv0=$0" > /dev/kmsg 2>/dev/null
+
 . "$(dirname "$0")/lib.sh"
 
 # v1.5.7：menu 入口 kmsg 进度（写 /dev/kmsg，与内核日志混排、屏幕最后几行可见；
@@ -94,8 +97,12 @@ while :; do
     fi
 
     echo "=============================================="
+    # v1.5.8 界面双通道：关键界面行 echo 到 console + dw_progress 镜像到 kmsg
+    # （真机 /dev/console（tty0）输出不可见时 kmsg 通道保证屏幕可读可操作）
+    dw_progress "=============================================="
     dw_log "  DiskWipe Tool $(dw_version) - Reset disks to uninitialized"
     echo "=============================================="
+    dw_progress "=============================================="
     # 批量类型探测 + 列盘字段预计算（一次 lsblk + 一次 blkid，均包 timeout；批量超时 →
     # 全部盘标 UNK，类型仅提示不影响清除）。先打印进度提示，批量探测耗时用户可见而非假死。
     echo "Scanning disks... (please wait)"
@@ -115,7 +122,9 @@ $mtab
 EOF
     dw_log "Disks found: $mi ($msum)"
     echo "  #     Device  Size  Model/Status  Type"
+    dw_progress "  #     Device  Size  Model/Status  Type"
     echo "  ---------------------------------------------------"
+    dw_progress "  ---------------------------------------------------"
     # 列盘（编号从 1 起；类型码来自预计算查表行「设备|容量|型号|TRAN大写|类型码」，
     # 循环内仅 shell 字符串切分 + disk_type_label 纯 shell case —— 零外部命令）
     mi=0
@@ -138,13 +147,18 @@ EOF
         fi
         mtype="$(disk_type_label "$mtcode")"
         printf '  %d    /dev/%s  %s   %s  %s\n' "$mi" "$mdev" "$msize" "$mshow" "$mtype"
+        dw_progress "  $mi    /dev/$mdev  $msize   $mshow  $mtype"
     done <<EOF
 $mtab
 EOF
     echo "  ---------------------------------------------------"
+    dw_progress "  ---------------------------------------------------"
     echo "  Default: all selected. Enter exclusions (e.g. 1,2; empty = all)"
+    dw_progress "  Default: all selected. Enter exclusions (e.g. 1,2; empty = all)"
     echo "  0 = exit (power off or reboot after done)"
+    dw_progress "  0 = exit (power off or reboot after done)"
     printf '> '
+    dw_progress "> "
     IFS= read -r mex || { echo; dw_log "Input ended, exiting (you may power off or reboot)."; dw_log_finish; exit 0; }
 
     # 0 = 退出（打印可断电/重启提示，写文件尾并尽力写 U 盘）
@@ -152,6 +166,7 @@ EOF
     0)
         echo
         echo "Exited. You may power off or reboot after done."
+        dw_progress "Exited. You may power off or reboot after done."
         dw_log_finish
         exit 0
         ;;
@@ -228,6 +243,7 @@ EOF
 $mtab
 EOF
     printf '> '
+    dw_progress "> "
     IFS= read -r myn || { echo; dw_log "Cancelled (YES not entered)."; continue; }
     if [ "$myn" = "YES" ]; then
         echo
@@ -236,11 +252,16 @@ EOF
         # 每盘结果（OK/FAIL）经 stdout 由 tee 同时落到屏幕与日志文件；日志写已降级
         # （LOG_DEGRADED）时仅屏幕显示、不写盘（tee 不包 timeout——写管道超时可能
         # SIGPIPE 中断 wipe.sh，故降级检查代替超时；dw_log 前置写入失败即触发降级）
+        # v1.5.8：每盘结果行加 kmsg 镜像（console 不可见时 kmsg 通道可读；逐行读改写，
+        # 屏幕顺序不变，交互逻辑零改动）
         if [ "${LOG_DEGRADED:-0}" = "1" ]; then
             "$WIPE_SH" $msel 2>&1
         else
             "$WIPE_SH" $msel 2>&1 | tee -a "${LOG_FILE:-/dev/null}"
-        fi
+        fi | while IFS= read -r wline; do
+            echo "diskwipe-init: $wline" > /dev/kmsg 2>/dev/null
+            printf '%s\n' "$wline"
+        done
         echo
         continue
     fi

@@ -48,12 +48,14 @@ DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_bl
 #     路径解析，usb_storage 与 usb-storage 均能命中，这里用文件名形态）；
 #   - vfat/fat：Kylin 中为模块（Ubuntu 24.04 为内建），退出写日志 U 盘 vfat 挂载需要
 #     （vfat 依赖 fat，busybox modprobe 按 modules.dep 自动带入）；
-#   - 依赖链（nvme→nvme-core→nvme-common、ahci→libahci→libata、uas→usb-storage、
+#   - 依赖链（nvme→nvme-core→nvme-common、ahci→libahci→libata、
 #     mpt3sas→raid_class+scsi_transport_sas）由 busybox modprobe 读 modules.dep 自动加载，
 #     构建侧 dw_modules_kylin 已按同一清单 + 依赖链提取对应 .ko 进 initramfs。
 case "$(uname -r 2>/dev/null)" in
 *ky10*)
-    DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat"
+    # v1.5.8 去掉 uas：UAS 驱动绑定 U 盘（ASolid USB 盘）若协议响应异常会内核 D 状态
+    # 卡死（真机实证：uas 注册后 sleep 结束前的 exec 未发生）；usb-storage 已足够枚举 U 盘
+    DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage nls_iso8859-1 vfat fat"
     ;;
 esac
 
@@ -102,5 +104,10 @@ dw_progress "Device nodes scanned"
 dw_progress "device settle wait (sleep)"
 sleep 3
 
-# 5) 进入交互菜单（exec 替换自身，menu.sh 读 stdin 写 /dev/console）
-exec "$(dirname "$0")/menu.sh"
+# 5) 进入交互菜单（exec 替换自身；v1.5.8 加诊断：exec 前后进度，失败兜底救援 shell）
+dw_progress "exec menu.sh"
+exec "$(dirname "$0")/menu.sh" || {
+    dw_progress "exec menu.sh FAILED"
+    dw_progress "argv0=$0 dirname=$(dirname "$0")"
+    exec sh
+}

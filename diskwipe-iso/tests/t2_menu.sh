@@ -326,4 +326,26 @@ check_not_out '7K6000 (7K6000)' '不得出现 TRAN 占位误判'
 check_no_cmds '仅列盘不得执行清除'
 cleanup_case
 
+# ---------- M10：界面 kmsg 双通道（v1.5.8：argv0 诊断 + 关键界面行镜像） ----------
+# 真机 /dev/console（tty0）输出不可见时 kmsg 通道保证屏幕可读可操作；本机 Git Bash
+# /dev/kmsg 写失败静默，用 `bash -x` + BASH_XTRACEFD=3 分流 xtrace 正向断言 kmsg 载荷
+# （`+ echo 'diskwipe-init: ...' > /dev/kmsg` 行即 dw_progress/直接 echo 的 kmsg 镜像）。
+CASE="M10 界面 kmsg 双通道"
+setup_case
+std_table
+printf '%s\n' '0' | PATH="$FAKE_BIN:$PATH" \
+    LSBLK_BIN=lsblk BLKID_BIN=blkid WIPEFS_BIN=wipefs UMOUNT_BIN=umount \
+    PARTPROBE_BIN=partprobe \
+    BASH_XTRACEFD=3 \
+    bash -x "$MENU_SH" 3> "$ROOT/xtrace.txt" > "$OUTF" 2>&1
+LAST_RC=${PIPESTATUS[1]}
+check_rc 0 '输入 0 应正常退出 0'
+check_out 'power off' '屏幕输出不受镜像影响（0 退出提示仍在）'
+check_file "$ROOT/xtrace.txt" 'diskwipe-init: menu.sh argv0=' '头部 argv0 kmsg 诊断（exec 后立即打点，不依赖 lib.sh）'
+check_file "$ROOT/xtrace.txt" 'diskwipe-init: > ' '输入提示 >  的 kmsg 镜像'
+check_file "$ROOT/xtrace.txt" 'diskwipe-init:   Default: all selected' '排除输入提示行 kmsg 镜像'
+check_file "$ROOT/xtrace.txt" '/dev/sda  894G   HGST 7K6000 (SATA)  SYS' '盘列表行 kmsg 镜像（行内容与屏幕一致）'
+check_file "$ROOT/xtrace.txt" 'diskwipe-init: Exited. You may power off' 'Exited. 行 kmsg 镜像'
+cleanup_case
+
 finish

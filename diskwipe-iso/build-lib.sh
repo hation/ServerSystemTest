@@ -62,9 +62,11 @@ DW_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk v
 # 与 Ubuntu 差异：xhci_pci/scsi_mod/virtio_pci/virtio/usbcore/ehci/ohci 为内核内建
 # （modules.builtin，无模块文件）；exfat/ntfs3 无模块（Kylin 4.19 未引入）；
 # usb-storage 为文件名（非 usb_storage）；vfat/fat 为模块（Kylin 退出写日志 U 盘 vfat
-# 挂载需要）。依赖链（ahci→libahci→libata、nvme→nvme-core→nvme-common、uas→usb-storage、
+# 挂载需要）。依赖链（ahci→libahci→libata、nvme→nvme-core→nvme-common、
 # mpt3sas→raid_class+scsi_transport_sas、vfat→fat）由 dw_modules_kylin 按 modules.dep 解析
-DW_KYLIN_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat ast"
+# v1.5.8 去掉 uas：UAS 驱动绑定 U 盘（ASolid USB 盘）若协议响应异常会内核 D 状态卡死
+# （真机实证：uas 注册后 sleep 结束前的 exec 未发生）；usb-storage 已足够枚举 U 盘
+DW_KYLIN_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage nls_iso8859-1 vfat fat ast"
 # v1.5.6 显卡种子只保留 ast（Kylin 模式）：真机为 AST2500；mgag200/smifb/bochs-drm/cirrus/
 # virtio-gpu 在无对应硬件时 modprobe 可能内核 D 状态挂起（用户态 timeout 无效）导致 init
 # 卡死（真机实证 sdb 枚举后无输出）——initrd 不再打包这些模块（构建体积减小、init 无法
@@ -120,8 +122,8 @@ dw_build_deps() {
 #   1) 按 DW_KYLIN_MODULES 白名单在 kylin-src/modules/<kver>/kernel/ 下定位 .ko.xz
 #      （缺失模块跳过、不中断——如个别白名单模块该内核无文件）；
 #   2) 一次 awk 读 modules.dep 建依赖图 + DFS 递归解析依赖链（ahci→libahci→libata、
-#      nvme→nvme-core→nvme-common、uas→usb-storage、mpt3sas→raid_class+scsi_transport_sas、
-#      vfat→fat），输出全部 .ko.xz 相对路径；
+#      nvme→nvme-core→nvme-common、mpt3sas→raid_class+scsi_transport_sas、vfat→fat），
+#      输出全部 .ko.xz 相对路径；
 #   3) 按相对路径拷入 rootfs/lib/modules/<kver>/（保持原布局，busybox modprobe 按
 #      modules.dep 路径解析）；
 #   4) 统一 xz -d 解压为 .ko（busybox 无 xz 解压能力，.ko.xz 加载必失败）；

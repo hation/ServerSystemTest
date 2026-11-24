@@ -19,7 +19,7 @@
 #   L4 dw_save_log_to_usb 挂载失败（mount.fail）→ 返回 1（降级提示）
 #   L5 init 零 U 盘 I/O：src/init 与 src/lib.sh 均不再出现 dw_mount_log_media；
 #      init 脚本内无任何 U 盘挂载调用（t3_init.sh I1 再做运行级 cmds.txt 断言）
-#   L6 dw_log 写内存正常（LOG_DEGRADED 未触发，WARN 不出现）
+#   L6 dw_log 写内存正常（LOG_DEGRADED 未触发）；v1.5.8 加 kmsg 镜像断言（xtrace 载荷）
 set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 trap 'rc=$?; cleanup_case; exit "$rc"' EXIT
@@ -213,14 +213,15 @@ else
 fi
 cleanup_case
 
-# ---------- L6：dw_log 写内存正常（LOG_DEGRADED 未触发） ----------
+# ---------- L6：dw_log 写内存正常（LOG_DEGRADED 未触发）+ kmsg 镜像（v1.5.8） ----------
 CASE="L6 dw_log 写内存正常"
 setup_case
 mkdir -p "$ROOT/logdir"
 PATH="$FAKE_BIN:$PATH" \
 LSBLK_BIN=lsblk BLKID_BIN=blkid WIPEFS_BIN=wipefs UMOUNT_BIN=umount \
 LOG_FILE="$ROOT/logdir/t.log" \
-bash -c ". \"$LIB_SH\"; dw_log 'first line'; dw_log 'second line'; echo \"DEGRADED=\${LOG_DEGRADED:-0}\"" > "$OUTF" 2>&1
+BASH_XTRACEFD=3 \
+bash -x -c ". \"$LIB_SH\"; dw_log 'first line'; dw_log 'second line'; echo \"DEGRADED=\${LOG_DEGRADED:-0}\"" 3> "$ROOT/xtrace.txt" > "$OUTF" 2>&1
 LAST_RC=$?
 check_rc 0 'dw_log 写内存应正常返回'
 check_out 'second line' '两行均显示屏幕'
@@ -231,6 +232,10 @@ if [ -f "$ROOT/logdir/t.log" ] && grep -Fq 'first line' "$ROOT/logdir/t.log" && 
 else
     _fail '日志文件未完整写入'
 fi
+# v1.5.8：dw_log 加 kmsg 镜像（xtrace 载荷断言——Git Bash /dev/kmsg 写失败静默，镜像行为
+# 经 `+ echo 'diskwipe-init: ...' > /dev/kmsg` 行正向验证）
+check_file "$ROOT/xtrace.txt" 'diskwipe-init: first line' 'dw_log 应镜像到 kmsg（第一行）'
+check_file "$ROOT/xtrace.txt" 'diskwipe-init: second line' 'dw_log 应镜像到 kmsg（第二行）'
 cleanup_case
 
 finish

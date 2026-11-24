@@ -1,11 +1,14 @@
 #!/bin/bash
 # T3：diskwipe-iso initramfs 启动脚本（src/init）假件单测
 # 覆盖：src/init 的启动编排——挂载 /proc /sys /dev → busybox modprobe 白名单磁盘驱动 →
-#       mdev -s 扫描设备 → sleep 3（v1.5.7：去掉重试 mdev 轮询）→ exec menu.sh。
+#       mdev -s 扫描设备 → sleep 3（v1.5.7：去掉重试 mdev 轮询）→ exec menu.sh
+#       （v1.5.8：exec 前后 kmsg 诊断 + 失败兜底救援 shell）。
 # v1.5.6 语义：进度走 /dev/kmsg（dw_progress 写内核 printk 通道，与内核日志混排）+
 #   timeout 5 兜底（假件转执行）；显卡循环只加载 ast（mgag200/smifb/bochs-drm/cirrus/
 #   virtio-gpu 在无对应硬件时 modprobe 可能内核 D 状态挂起导致 init 卡死，真机实证）；
 #   仅挂载失败进入救援 shell；模块加载/mdev 失败仅 WARN 继续（不 rescue，保证到菜单）。
+# v1.5.8 适配：Kylin ky10 分支去掉 uas（I5 用例：uas 不得加载；usb-storage 仍加载）；
+#   exec 段诊断（I1 断言 exec menu.sh 进度行；I6 用例：exec 失败兜底救援 shell）。
 # kmsg 进度断言方式：本机 Git Bash 的 /dev 为 MSYS 虚拟只读目录，无法创建 /dev/kmsg
 #   假件（写失败静默——恰是生产"写失败不中断启动"语义）；用 `bash -x` + BASH_XTRACEFD=3
 #   把 xtrace 分流到 $ROOT/xtrace.txt，正向断言 dw_progress 调用与 kmsg 载荷
@@ -19,21 +22,27 @@
 # 用例：
 #   I1  正常：假 mount/modprobe/mdev 全部成功 → 输出含挂载 /proc /sys /dev；xtrace 含
 #       "diskwipe-init: loading module <name>" / "diskwipe-init: loading video module ast" /
-#       "diskwipe-init: device scan (mdev -s)"（kmsg 进度载荷）；modprobe 调用覆盖
-#       DRIVE_MODULES 全部模块名 + ast，且**不含** mgag200/smifb/bochs-drm/cirrus/virtio-gpu
-#       （显卡循环只留 ast）；stdout 不含 "diskwipe-init:"（进度不打 console）；
+#       "diskwipe-init: device scan (mdev -s)" / "diskwipe-init: exec menu.sh"（kmsg 进度载荷）；
+#       modprobe 调用覆盖 DRIVE_MODULES 全部模块名 + ast，且**不含** mgag200/smifb/bochs-drm/
+#       cirrus/virtio-gpu（显卡循环只留 ast）；stdout 不含 "diskwipe-init:"（进度不打 console）；
 #       最后 exec menu.sh（假 menu.sh 打标记）
 #   I2  modprobe 某模块（mpt3sas）失败 → 打印 WARN 继续加载后续模块、不 rescue、
 #       最终 exec menu.sh（v1.5.5：失败不再 init_rescue）
 #   I3  挂载 /sys 失败 → 打印错误、停留在救援 shell、不 exec menu.sh、不加载模块
 #       （init_rescue 语义仅保留给 mount）
 #   I4  mdev -s 失败 → 打印 WARN 继续（不 rescue）、最终 exec menu.sh
+#   I5  Kylin ky10 模式（假 uname 返回 4.19.90 ...ky10）：走 *ky10* 分支白名单——
+#       uas 不得加载（v1.5.8 去掉）、usb-storage/vfat/fat 等 ky10 清单模块加载、exec 正常
+#   I6  exec menu.sh 失败（假 menu.sh 去掉执行位）：POSIX 语义下 exec 失败 shell 直接
+#       以 126 退出（|| 兜底不可达——bash/dash/busybox ash 实证一致）；断言 exec 前的
+#       kmsg 诊断行已先打（定位"exec 前卡住"才是诊断价值所在）
 set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 trap 'rc=$?; cleanup_case; exit "$rc"' EXIT
 
 INIT_SH="$REPO_ROOT/diskwipe-iso/src/init"
-# 与 src/init 内 DRIVE_MODULES 常量保持一致
+# 与 src/init 内 DRIVE_MODULES 常量保持一致（Ubuntu 模式清单——本机 Git Bash uname 非 ky10，
+# 测试默认走 Ubuntu 分支；ky10 分支白名单见 I5 用例，v1.5.8 起不含 uas）
 DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod usb_storage uas nls_iso8859-1 exfat ntfs3"
 
 echo "==== T3 initramfs 启动脚本测试 ===="
@@ -153,6 +162,7 @@ check_kmsg 'diskwipe-init: loading video module ast' 'kmsg 显卡进度行（只
 check_kmsg 'diskwipe-init: device scan (mdev -s)' 'kmsg mdev 扫描进度行'
 check_kmsg 'diskwipe-init: Device nodes scanned' 'kmsg 设备节点扫描完成行'
 check_kmsg 'diskwipe-init: device settle wait (sleep)' 'kmsg 设备稳定等待进度行（v1.5.7 去掉重试轮）'
+check_kmsg 'diskwipe-init: exec menu.sh' 'kmsg exec menu.sh 诊断行（v1.5.8）'
 # v1.5.6 显卡循环只留 ast：modprobe 调用含 ast、不含其余 5 个显卡驱动
 check_cmds 'modprobe ast' '应加载 ast（显卡循环白名单唯一）'
 for gv in mgag200 smifb bochs-drm cirrus virtio-gpu; do
@@ -204,6 +214,38 @@ check_not_out 'ERROR' 'mdev 失败不再进入救援 shell（v1.5.5 语义）'
 check_not_out 'RESCUE_SHELL_MARKER' '不得进入救援 shell'
 check_kmsg 'diskwipe-init: Device nodes scanned' 'WARN 后继续打 kmsg 完成行（不 rescue）'
 check_out 'MENU_EXEC_MARKER' '最终应 exec menu.sh（失败不再 rescue）'
+cleanup_case
+
+# ---------- I5：Kylin ky10 模式（v1.5.8：白名单去掉 uas） ----------
+CASE="I5 Kylin ky10 模式去掉 uas"
+setup_stub
+# 假 uname：返回 Kylin 4.19 ky10 版本串 → init 的 case *ky10* 分支生效
+fake_bin uname '#!/bin/sh
+echo "4.19.90-89.11.v2401.ky10.x86_64"'
+run_init "$OUTF"
+check_rc 0 'ky10 模式正常启动应退出 0'
+check_out 'MENU_EXEC_MARKER' 'ky10 模式最终应 exec menu.sh'
+# ky10 白名单（文件名形态 usb-storage；virtio_pci/xhci_pci/scsi_mod/exfat/ntfs3 为内建/无模块，不加载）
+for m in ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage nls_iso8859-1 vfat fat; do
+    check_cmds "modprobe $m" "ky10 模式应加载模块 $m"
+done
+check_not_cmds 'modprobe uas' 'ky10 模式不得加载 uas（v1.5.8：UAS 绑定 U 盘可能 D 状态卡死）'
+check_not_cmds 'modprobe virtio_pci' 'ky10 模式不得加载 virtio_pci（Kylin 内核内建）'
+check_not_cmds 'modprobe xhci_pci' 'ky10 模式不得加载 xhci_pci（Kylin 内核内建）'
+check_kmsg 'diskwipe-init: exec menu.sh' 'ky10 模式 exec menu.sh 诊断行（v1.5.8）'
+cleanup_case
+
+# ---------- I6：exec menu.sh 失败（v1.5.8：exec 前诊断行先打） ----------
+# POSIX 语义实证（WSL dash/busybox ash/bash 一致）：exec 失败 → shell 立即以 126/127
+# 退出，`exec ... || { ... }` 兜底不可达（源码按 brief 保留该兜底，防御性）；
+# 本用例断言真实行为：exec 前 kmsg 诊断行已打 + 进程以 126 退出 + 未进入菜单。
+CASE="I6 exec menu.sh 失败（诊断行先打）"
+setup_stub
+chmod -x "$ROOT/stub/menu.sh"
+run_init "$OUTF"
+check_rc 126 'exec 失败 shell 以 126 退出（POSIX exec 语义，|| 兜底不可达）'
+check_kmsg 'diskwipe-init: exec menu.sh' 'exec 前 kmsg 诊断行已先打（定位 exec 前卡点）'
+check_not_out 'MENU_EXEC_MARKER' 'exec 失败不得进入菜单'
 cleanup_case
 
 finish

@@ -14,7 +14,8 @@
 #   - 屏幕与日志的全部用户可见行必须纯 ASCII（无 CJK）——IPMI 虚拟 KVM（VGA→Linux
 #     vt console）无中文字体，中文必然乱码；中文仅保留在代码注释。
 #   - 读 stdin 写 stdout；大写 YES 严格匹配才执行；非法输入忽略（1,2,x → 忽略 x）；
-#     排除列表为空 = 默认全选；无盘可清（仅 usb+光驱）→ 提示"仅发现启动介质"并退出；
+#     排除列表为空 = 默认全选；无盘可清（仅 usb+光驱）→ 提示并自动重试 3 次、仍无盘则
+#     自动 reboot（v1.5.10：避免 sda 迟就绪误判 + 避免 exit 致 PID1 退出内核 panic）；
 #     0 退出（打印可断电/重启提示）；清除后回到菜单（列表刷新）。
 #   - 列盘循环零外部命令：枚举（dw_enum_disks）+ 批量类型探测（dw_scan_system_disks）+
 #     批量格式化（dw_format_disk_lines）各一次预计算，循环内纯 shell 字符串切分查表；
@@ -73,10 +74,15 @@ disk_type_label() {
     esac
 }
 
+# v1.5.10：无盘重试计数（在 while : 前初始化；重试 ≤3 轮 → 仍无盘则最终 reboot）
+dwnoretry=0
+
 while :; do
     # 枚举全部可清盘（lib.sh 内 lsblk 包 "$TIMEOUT_BIN" 3 兜底；超时/失败 → 返回 1 且输出空）。
     # 枚举失败（超时等）→ 打印错误并自动重试一次；仍失败 → 打印错误 + 可安全重启提示，
-    # 绝不误判"仅启动介质"退出；枚举成功但为空（仅 usb+光驱）才走"仅启动介质"路径。
+    # 绝不误判"仅启动介质"退出；枚举成功但为空（仅 usb+光驱）→ 走下方 v1.5.10 无盘路径：
+    # 重试 3 次（sleep 5）→ 仍无盘 sleep 10 后 busybox reboot（回 Ventoy 重新启动；
+    # 不再 exit——PID1 退出即内核 panic，用户误判"卡住"）。交互逻辑其余不变。
     dw_progress "enumerating disks (lsblk)"
     ml="$(dw_enum_disks)"
     if [ "$?" -ne 0 ]; then
@@ -89,11 +95,21 @@ while :; do
         fi
     fi
     if [ -z "$ml" ]; then
-        echo
-        dw_log "Only boot media found (no wipable disks; boot USB/optical drive auto-excluded)"
+        # v1.5.10：无盘重试避免 sda（mpt3sas SAS）迟就绪误判（真机 mpt3sas 14.47s 才加载、
+        # SAS 盘扫描需数秒）；重试 3 轮仍无盘 → 最终 reboot 回 Ventoy，而非 exit 导致
+        # PID1 退出内核 panic。重试消息经 dw_log/dw_progress 双通道（屏幕 + kmsg 可见）。
+        dwnoretry=$((dwnoretry + 1))
+        if [ "$dwnoretry" -le 3 ]; then
+            dw_log "Only boot media found (no wipable disks yet; retrying in 5s...)"
+            dw_progress "no disks, retry $dwnoretry/3 (sleep 5)"
+            sleep 5
+            continue
+        fi
+        dw_log "No wipable disks found after 3 retries."
         dw_log "You may power off or reboot safely."
-        dw_log_finish
-        exit 0
+        dw_progress "no disks after retries, rebooting in 10s"
+        sleep 10
+        reboot
     fi
 
     echo "=============================================="

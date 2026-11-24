@@ -1,7 +1,9 @@
 #!/bin/sh
 # diskwipe-iso initramfs 启动脚本（PID 1 入口）：
 #   挂载 /proc /sys /dev → busybox modprobe 白名单磁盘驱动 → mdev -s 扫描设备
-#   → sleep 3 等待设备稳定（v1.5.7：去掉重试 mdev 轮询）→ exec menu.sh（交互菜单）。
+#   → sleep 10 等待设备稳定（v1.5.7：去掉重试 mdev 轮询；v1.5.10 加长——mpt3sas
+#   SAS 盘扫描需数秒，menu 枚举前需就绪；U 盘已不绑定，等待期间无 I/O 阻塞风险）
+#   → exec menu.sh（交互菜单）。
 # v1.5.6 语义：进度走 /dev/kmsg（内核 printk 通道，与内核日志混排，真机 KVM 屏幕最后几行
 #   可见）+ timeout 5 兜底（用户态挂起自动跳过）——仅挂载失败进入救援 shell；模块加载/mdev
 #   失败仅 WARN 继续（驱动缺失由 menu 盘列表体现）。注意：内核 D 状态（不可中断 I/O）用户态
@@ -104,8 +106,11 @@ dw_progress "Device nodes scanned"
 #    mdev 触发 U 盘 I/O 阻塞（内核 D 状态，用户态 timeout 无效）致 init 卡死。改为仅
 #    sleep 等待设备稳定；U 盘设备节点由 menu 退出写日志前 dw_save_log_to_usb 内
 #    mdev -s 补建（失败降级）。
+# v1.5.10：加长等待（sleep 3 → 10）——真机 mpt3sas 14.47s 才加载、SAS 盘扫描需数秒，
+#   若 menu 过早枚举（sleep 3 后 15.45s）lsblk 为空 → 误判"仅启动介质"；U 盘已不绑定，
+#   等待期间无 I/O 阻塞风险（不读盘、不触发内核 D 状态）。
 dw_progress "device settle wait (sleep)"
-sleep 3
+sleep 10
 
 # 5) 进入交互菜单（exec 替换自身；v1.5.8 加诊断：exec 前后进度，失败兜底救援 shell）
 dw_progress "exec menu.sh"

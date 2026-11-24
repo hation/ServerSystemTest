@@ -5,7 +5,8 @@
 # 运行：bash diskwipe-iso/tests/run-all.sh（或单独 bash diskwipe-iso/tests/t2_menu.sh）
 # 交互契约（必须满足）：读 stdin 写 stdout；大写 YES 严格匹配才执行；
 #      非法输入忽略（1,2,x → 忽略 x）；排除列表为空 = 默认全选；
-#      0 退出（打印 power off/reboot 提示）；无盘可清（仅 usb+光驱）→ 提示仅发现启动介质并退出；
+#      0 退出（打印 power off/reboot 提示）；无盘可清（仅 usb+光驱）→ 提示并自动重试
+#      3 次、仍无盘则自动 reboot（v1.5.10：避免 sda 迟就绪误判 + 避免 exit 致 PID1 内核 panic）；
 #      清除后回到菜单（列表刷新）。
 # 用例：
 #   M1  两盘 sda/sdb + sdc(usb)：列表含 sda/sdb 不含 sdc；sda 标 SYS、sdb 标 DATA
@@ -13,7 +14,8 @@
 #   M3  输入 1 排除 → YES：只调用 wipe.sh sdb
 #   M4  输入 YES 以外的值（y/no/空）：不执行清除、回到菜单；无 wipe.sh 调用
 #   M5  排除输入 1,2,x：忽略 x，排除 1、2 合法项生效（只清 sdd）；全排 → 提示重新选择
-#   M6  无盘可清（仅 usb+光驱）：提示"仅发现启动介质"、退出、无 wipe.sh 调用
+#   M6  无盘可清（仅 usb+光驱）：提示"仅发现启动介质"、重试 3 轮（sleep 5）、仍无盘
+#        sleep 10 后 reboot（v1.5.10：假 reboot 记录调用、绝不真重启测试机）；无 wipe 调用
 #   M7  清除后循环：再次列出（盘已清后状态刷新：sda 由系统盘变为数据盘）
 #   M8  输入 0 退出：打印"可断电/重启"提示、退出 0
 #   M9  TRAN 为空 + 型号含空格：型号完整显示、末词不误作 TRAN
@@ -162,18 +164,33 @@ check_out 'No disks selected' '全排应提示重新选择'
 check_no_cmds '全排不得执行清除'
 cleanup_case
 
-# ---------- M6：仅 usb+光驱 ----------
-CASE="M6 仅启动介质"
+# ---------- M6：仅 usb+光驱（v1.5.10：重试 3 轮后 reboot，不再退出） ----------
+CASE="M6 仅启动介质（v1.5.10 重试 3 轮后 reboot）"
 setup_case
 cat > "$ROOT/lsblk.table" <<'EOF'
 NAME SIZE TYPE MODEL TRAN MOUNTPOINT
 sdc 30G disk USB DISK 3.0 usb
 sr0 1024M rom
 EOF
+# v1.5.10：无盘路径不再 exit——假 reboot（记录调用、立即返回，绝不真重启测试机）
+fake_bin reboot '#!/bin/sh
+[ -n "$ROOT" ] || exit 0
+printf "reboot\n" >> "$ROOT/cmds.txt"
+exit 0'
+# 假 sleep：无盘重试 3×5s + 最终 10s 立即返回（不真等 25s；记录调用供计数断言）
+fake_bin sleep '#!/bin/sh
+[ -n "$ROOT" ] || exit 0
+printf "sleep %s\n" "$*" >> "$ROOT/cmds.txt"
+exit 0'
 run_menu '0' "$OUTF"
-check_rc 0 '应退出 0'
-check_out 'Only boot media found' '应提示仅发现启动介质'
-check_no_cmds '不得执行任何清除命令'
+check_rc 0 '应退出 0（假 reboot 正常返回）'
+check_out 'Only boot media found' '应提示仅发现启动介质（首轮重试消息）'
+check_out 'No wipable disks found after 3 retries' '3 轮重试后应打印最终提示'
+check_cmd_count 'sleep 5' 3 '应重试 3 轮（每轮 sleep 5）'
+check_cmd_count 'sleep 10' 1 '仍无盘应等待 10s 后 reboot'
+check_cmds 'reboot' '仍无盘应 reboot（回 Ventoy，不 exit 致 PID1 panic）'
+check_not_cmds 'wipefs' '无盘重试不得执行清除命令'
+check_not_cmds 'umount' '无盘重试不得执行卸载命令'
 cleanup_case
 
 # ---------- M7：清除后循环，列表刷新 ----------

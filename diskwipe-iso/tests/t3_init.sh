@@ -1,7 +1,8 @@
 #!/bin/bash
 # T3：diskwipe-iso initramfs 启动脚本（src/init）假件单测
 # 覆盖：src/init 的启动编排——挂载 /proc /sys /dev → busybox modprobe 白名单磁盘驱动 →
-#       mdev -s 扫描设备 → sleep 3（v1.5.7：去掉重试 mdev 轮询）→ exec menu.sh
+#       mdev -s 扫描设备 → sleep 10（v1.5.7：去掉重试 mdev 轮询；v1.5.10：加长等待——
+#       mpt3sas SAS 盘扫描需数秒，menu 枚举前需就绪）→ exec menu.sh
 #       （v1.5.8：exec 前后 kmsg 诊断 + 失败兜底救援 shell）。
 # v1.5.6 语义：进度走 /dev/kmsg（dw_progress 写内核 printk 通道，与内核日志混排）+
 #   timeout 5 兜底（假件转执行）；显卡循环只加载 ast（mgag200/smifb/bochs-drm/cirrus/
@@ -12,6 +13,8 @@
 # v1.5.9 适配：Kylin ky10 分支再去掉 usb-storage（I5 用例：usb-storage 不得加载——
 #   真机 U 盘绑定后读盘触发内核 I/O 阻塞致系统整体停滞；U 盘不绑定则系统正常启动，
 #   USB 键盘走内建 usbhid 不受影响；退出写日志 U 盘降级留内存）。
+# v1.5.10 适配：settle wait sleep 3 → 10（I1 用例断言 sleep 10；stub 加假 sleep 立即返回、
+#   记录调用——不真等 10s，同假 timeout 既有模式）。
 # kmsg 进度断言方式：本机 Git Bash 的 /dev 为 MSYS 虚拟只读目录，无法创建 /dev/kmsg
 #   假件（写失败静默——恰是生产"写失败不中断启动"语义）；用 `bash -x` + BASH_XTRACEFD=3
 #   把 xtrace 分流到 $ROOT/xtrace.txt，正向断言 dw_progress 调用与 kmsg 载荷
@@ -92,6 +95,12 @@ exit 0'
 [ -n "$ROOT" ] || exit 0
 shift
 "$@"'
+    # 假 sleep：v1.5.10 settle wait 加长到 10s——记录调用到 cmds.txt 并立即返回
+    # （同假 timeout 既有模式，不真等 10s；供 I1 断言 sleep 10）
+    fake_bin sleep '#!/bin/sh
+[ -n "$ROOT" ] || exit 0
+printf "sleep %s\n" "$*" >> "$ROOT/cmds.txt"
+exit 0'
     # 假 sh（救援 shell）：打印标记后退出（模拟"停留 shell"，不真进入交互）
     fake_bin sh '#!/bin/sh
 echo "RESCUE_SHELL_MARKER"
@@ -166,6 +175,7 @@ check_kmsg 'diskwipe-init: loading video module ast' 'kmsg 显卡进度行（只
 check_kmsg 'diskwipe-init: device scan (mdev -s)' 'kmsg mdev 扫描进度行'
 check_kmsg 'diskwipe-init: Device nodes scanned' 'kmsg 设备节点扫描完成行'
 check_kmsg 'diskwipe-init: device settle wait (sleep)' 'kmsg 设备稳定等待进度行（v1.5.7 去掉重试轮）'
+check_cmds 'sleep 10' 'settle wait 应等待 10s（v1.5.10 加长：SAS 盘扫描需数秒，menu 枚举前需就绪）'
 check_kmsg 'diskwipe-init: exec menu.sh' 'kmsg exec menu.sh 诊断行（v1.5.8）'
 # v1.5.6 显卡循环只留 ast：modprobe 调用含 ast、不含其余 5 个显卡驱动
 check_cmds 'modprobe ast' '应加载 ast（显卡循环白名单唯一）'

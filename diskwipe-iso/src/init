@@ -97,6 +97,11 @@ dw_progress "Disk driver modules loaded"
 dw_progress "loading video module ast"
 timeout 5 modprobe ast 2>/dev/null
 
+# v1.5.11：确保 USB 键盘/鼠标（HID）驱动加载（内建则 modprobe 跳过无碍；模块则加载）。
+# 真机 KVM USB 键盘需 usbhid 才能输入。
+dw_progress "loading HID drivers (usbhid)"
+timeout 5 modprobe usbhid 2>/dev/null
+
 # 3) mdev -s 扫描并创建设备节点（v1.5.6：timeout 5 + kmsg 进度；失败仅 WARN，不 rescue）
 dw_progress "device scan (mdev -s)"
 timeout 5 mdev -s || echo "WARN: mdev scan failed/timed out"
@@ -109,8 +114,11 @@ dw_progress "Device nodes scanned"
 # v1.5.10：加长等待（sleep 3 → 10）——真机 mpt3sas 14.47s 才加载、SAS 盘扫描需数秒，
 #   若 menu 过早枚举（sleep 3 后 15.45s）lsblk 为空 → 误判"仅启动介质"；U 盘已不绑定，
 #   等待期间无 I/O 阻塞风险（不读盘、不触发内核 D 状态）。
+# v1.5.11：再加长（sleep 10 → 25）——真机日志实证 SAS 盘（sda）从驱动加载到 lsblk 可
+#   枚举约需 25 秒，重试 3 轮（每轮 sleep 5）仍全部枚举不到（直到 reboot 未生效、menu
+#   继续跑后才列出盘）；等待足够长，避免无盘重试误判拖到自动 reboot。
 dw_progress "device settle wait (sleep)"
-sleep 10
+sleep 25
 
 # 5) 进入交互菜单（exec 替换自身；v1.5.8 加诊断：exec 前后进度，失败兜底救援 shell）
 dw_progress "exec menu.sh"

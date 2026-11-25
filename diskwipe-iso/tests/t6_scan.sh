@@ -259,7 +259,11 @@ fake_bin timeout '#!/bin/sh
 [ -n "$ROOT" ] || exit 0
 printf "timeout %s\n" "$*" >> "$ROOT/cmds.txt"
 exit 124'
-run_menu '0' "$OUTF"
+# LOG_DIR 指向用例临时目录（隔离 run-all 前序用例在同一秒窗口留下的
+# /tmp/diskwipe-log/diskwipe-<秒>.log 残留——否则 dw_save_log_to_usb 误判日志存在
+# 会多执行一次 lsblk 枚举（实际 3 次），且假 timeout 124 下 tee 不执行、文件本不存在）
+mkdir -p "$ROOT/logdir"
+run_menu '0' "$OUTF" LOG_DIR="$ROOT/logdir"
 check_rc 1 '枚举超时且重试仍失败应退出 1'
 check_out 'ERROR: disk scan timed out or failed' '应打印枚举超时错误'
 check_out 'You may power off or reboot safely' '应打印可安全重启提示'

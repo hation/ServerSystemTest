@@ -14,8 +14,13 @@
 #   - 屏幕与日志的全部用户可见行必须纯 ASCII（无 CJK）——IPMI 虚拟 KVM（VGA→Linux
 #     vt console）无中文字体，中文必然乱码；中文仅保留在代码注释。
 #   - 读 stdin 写 stdout；大写 YES 严格匹配才执行；非法输入忽略（1,2,x → 忽略 x）；
-#     排除列表为空 = 默认全选；无盘可清（仅 usb+光驱）→ 提示并自动重试 3 次、仍无盘则
-#     自动 reboot（v1.5.10：避免 sda 迟就绪误判 + 避免 exit 致 PID1 退出内核 panic）；
+#     排除列表为空 = 默认全选；无盘可清（仅 usb+光驱）→ 提示并自动重试 6 次、仍无盘则
+#     自动 reboot（v1.5.10：避免 sda 迟就绪误判 + 避免 exit 致 PID1 退出内核 panic；
+#     v1.5.11：重试 3 → 6——真机 SAS 盘从驱动加载到 lsblk 可枚举约需 25 秒；
+#     v1.5.12：reboot 改 reboot -f 强制重启（真机 busybox reboot 返回未重启）；若仍
+#     无效 → 打印提示 + continue 重新枚举（盘就绪则正常，避免带空枚举落入列盘段）；
+#     枚举原文经 kmsg 打 RAW enum 诊断行（定位设备名空/格式异常根因）；
+#     勾选循环 mdev 为空时从 mtab 兜底补设备名）；
 #     0 退出（打印可断电/重启提示）；清除后回到菜单（列表刷新）。
 #   - 列盘循环零外部命令：枚举（dw_enum_disks）+ 批量类型探测（dw_scan_system_disks）+
 #     批量格式化（dw_format_disk_lines）各一次预计算，循环内纯 shell 字符串切分查表；
@@ -74,15 +79,23 @@ disk_type_label() {
     esac
 }
 
-# v1.5.10：无盘重试计数（在 while : 前初始化；重试 ≤3 轮 → 仍无盘则最终 reboot）
+# v1.5.10/v1.5.11：无盘重试计数（在 while : 前初始化；v1.5.11 起重试 ≤6 轮 →
+# 仍无盘则最终 reboot——真机 SAS 盘就绪约需 25 秒，3 轮仍不足）
 dwnoretry=0
+
+# v1.5.11：菜单输入重定向到 /dev/tty0（键盘/VT）——/dev/console 输入默认映射到最后一个
+# console（ttyS0 串口），真机 KVM USB 键盘无效；tty0 不存在（无 VT）时 fallback 保持 stdin。
+if [ -e /dev/tty0 ]; then
+    exec 0< /dev/tty0
+fi
 
 while :; do
     # 枚举全部可清盘（lib.sh 内 lsblk 包 "$TIMEOUT_BIN" 3 兜底；超时/失败 → 返回 1 且输出空）。
     # 枚举失败（超时等）→ 打印错误并自动重试一次；仍失败 → 打印错误 + 可安全重启提示，
-    # 绝不误判"仅启动介质"退出；枚举成功但为空（仅 usb+光驱）→ 走下方 v1.5.10 无盘路径：
-    # 重试 3 次（sleep 5）→ 仍无盘 sleep 10 后 busybox reboot（回 Ventoy 重新启动；
-    # 不再 exit——PID1 退出即内核 panic，用户误判"卡住"）。交互逻辑其余不变。
+    # 绝不误判"仅启动介质"退出；枚举成功但为空（仅 usb+光驱）→ 走下方 v1.5.10/v1.5.11/
+    # v1.5.12 无盘路径：重试 6 次（sleep 5）→ 仍无盘 sleep 10 后 reboot -f（回 Ventoy 重新
+    # 启动；不再 exit——PID1 退出即内核 panic，用户误判"卡住"）；reboot -f 无效 → 提示 +
+    # continue 重新枚举。交互逻辑其余不变。
     dw_progress "enumerating disks (lsblk)"
     ml="$(dw_enum_disks)"
     if [ "$?" -ne 0 ]; then
@@ -94,22 +107,34 @@ while :; do
             exit 1
         fi
     fi
+    # v1.5.12：枚举原文诊断（kmsg 输出枚举原文——真机屏幕可见，定位设备名空/格式异常的根因；
+    # 例：无盘时显示 "RAW enum ml=[]" 即可确认枚举结果本身为空、而非设备名提取失败）
+    dw_progress "RAW enum ml=[$ml]"
     if [ -z "$ml" ]; then
         # v1.5.10：无盘重试避免 sda（mpt3sas SAS）迟就绪误判（真机 mpt3sas 14.47s 才加载、
-        # SAS 盘扫描需数秒）；重试 3 轮仍无盘 → 最终 reboot 回 Ventoy，而非 exit 导致
-        # PID1 退出内核 panic。重试消息经 dw_log/dw_progress 双通道（屏幕 + kmsg 可见）。
+        # SAS 盘扫描需数秒）；v1.5.11：重试轮次 3 → 6（真机日志实证 SAS 盘从驱动加载到
+        # lsblk 可枚举约需 25 秒，3 轮仍全部枚举不到——直到 reboot 未生效、menu 继续跑
+        # 后才列出盘）；6 轮仍无盘 → 最终 reboot 回 Ventoy，而非 exit 导致 PID1 退出
+        # 内核 panic。重试消息经 dw_log/dw_progress 双通道（屏幕 + kmsg 可见）。
         dwnoretry=$((dwnoretry + 1))
-        if [ "$dwnoretry" -le 3 ]; then
+        if [ "$dwnoretry" -le 6 ]; then
             dw_log "Only boot media found (no wipable disks yet; retrying in 5s...)"
-            dw_progress "no disks, retry $dwnoretry/3 (sleep 5)"
+            dw_progress "no disks, retry $dwnoretry/6 (sleep 5)"
             sleep 5
             continue
         fi
-        dw_log "No wipable disks found after 3 retries."
+        dw_log "No wipable disks found after 6 retries."
         dw_log "You may power off or reboot safely."
         dw_progress "no disks after retries, rebooting in 10s"
         sleep 10
-        reboot
+        # v1.5.12：busybox reboot -f 强制重启（不依赖 init 守护——真机 reboot 未生效，
+        # menu 继续跑）；若仍返回（未重启）→ fallthrough 保护：打印提示 + continue 重新
+        # 枚举（此时若盘已就绪则正常列盘；避免反复 reboot 空转），绝不带着空 $ml 落入
+        # 下方列盘段（否则空枚举行经格式化管道产生一条假盘行 "Disks found: 1 ()"）。
+        reboot -f 2>/dev/null || true
+        sleep 2
+        dw_progress "reboot ineffective, re-enumerating"
+        continue
     fi
 
     echo "=============================================="
@@ -221,6 +246,13 @@ EOF
         *" $mi "*) continue ;;
         esac
         mdev="${mline%% *}"
+        # v1.5.12 兜底：枚举行设备字段异常为空时（真机 Disks found: 1 () + /dev/ 空），
+        # 从格式化行（mtab 第 mi 行，| 分隔首字段）补设备名——格式化经 awk 字段切分，
+        # 对前导空白等异常更鲁棒；仍为空则该行放弃（不塞空设备名进选中清单）
+        if [ -z "$mdev" ]; then
+            mtabline="$(printf '%s\n' "$mtab" | sed -n "${mi}p")"
+            mdev="${mtabline%%|*}"
+        fi
         msel="${msel:+$msel }$mdev"
         mcnt=$((mcnt + 1))
     done <<EOF

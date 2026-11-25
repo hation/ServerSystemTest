@@ -31,6 +31,11 @@
 #   （循环执行；WSL host0/scan 存在但不可写 → [ -w ] 为假、echo 不执行、零副作用；无
 #   scsi_host 的环境 glob 保持字面量 host*/scan，[ -w ] 同样为假）+ 顺序断言（Disk driver
 #   modules loaded 之后、loading video module ast 之前）。
+# v1.5.16 适配：白名单加载循环中 mpt3sas 单独分支——`modprobe mpt3sas max_queue_depth=10000`
+#   （默认 32455 高核数服务器/initramfs 内存受限时 scsih_probe 失败、控制器不初始化、盘不识别，
+#   Fedora/Broadcom 已知问题；传 10000 为官方方案）。假 modprobe 改为记录完整参数 $*；
+#   I1 断言 mpt3sas 分支带 max_queue_depth=10000（cmds.txt 整行 + xtrace 载荷）、其余模块
+#   形态不变；I2（mpt3sas 加载失败）断言失败形态同样带参数；I5（ky10）mpt3sas 分支同断言。
 # kmsg 进度断言方式：本机 Git Bash 的 /dev 为 MSYS 虚拟只读目录，无法创建 /dev/kmsg
 #   假件（写失败静默——恰是生产"写失败不中断启动"语义）；用 `bash -x` + BASH_XTRACEFD=3
 #   把 xtrace 分流到 $ROOT/xtrace.txt，正向断言 dw_progress 调用与 kmsg 载荷
@@ -90,10 +95,11 @@ while IFS= read -r f; do
     [ "$f" = "$mp" ] && exit 1
 done < "$ROOT/mount.fail"
 exit 0'
-    # 假 modprobe：记录调用到 cmds.txt；$ROOT/modprobe.fail 命中模块时返回 1
+    # 假 modprobe：记录调用到 cmds.txt（v1.5.16 起记录完整参数 $*——mpt3sas 分支需断言
+    #   max_queue_depth=10000 参数形态）；$ROOT/modprobe.fail 命中模块名（$1）时返回 1
     fake_bin modprobe '#!/bin/sh
 [ -n "$ROOT" ] || exit 0
-printf "modprobe %s\n" "$1" >> "$ROOT/cmds.txt"
+printf "modprobe %s\n" "$*" >> "$ROOT/cmds.txt"
 [ -f "$ROOT/modprobe.fail" ] || exit 0
 while IFS= read -r f; do
     [ "$f" = "$1" ] && exit 1
@@ -169,8 +175,13 @@ check_cmds 'mdev -s' '应执行 mdev -s 扫描设备'
 check_cmd_count 'mdev -s' 1 '设备扫描应仅执行 1 次（v1.5.7 去掉重试轮）'
 check_not_cmds 'mount /dev/' 'init 阶段零 U 盘挂载（不再挂载日志介质）'
 for m in $DRIVE_MODULES; do
-    check_cmds "modprobe $m" "应加载模块 $m"
+    if [ "$m" = "mpt3sas" ]; then
+        check_cmds "modprobe mpt3sas max_queue_depth=10000" "mpt3sas 应带 max_queue_depth=10000 加载（v1.5.16 修复：默认 32455 高核数服务器 scsih_probe 失败）"
+    else
+        check_cmds "modprobe $m" "应加载模块 $m"
+    fi
 done
+check_kmsg 'modprobe mpt3sas max_queue_depth=10000' 'xtrace 载荷显示 mpt3sas 分支带 max_queue_depth=10000（v1.5.16 官方方案）'
 if awk '/^mount -t proc proc \/proc$/{m=1} /^modprobe ahci$/{if(m)ok=1} END{exit ok?0:1}' "$ROOT/cmds.txt"; then
     _pass '挂载先于模块加载'
 else
@@ -233,7 +244,7 @@ check_kmsg 'diskwipe-init: loading module mpt3sas' '失败模块仍打 kmsg 进�
 check_out 'WARN: module mpt3sas load failed/timed out' '应打印模块加载失败警告'
 check_not_out 'ERROR' '模块失败不再进入救援 shell（v1.5.5 语义）'
 check_not_out 'RESCUE_SHELL_MARKER' '不得进入救援 shell'
-check_cmds 'modprobe mpt3sas' '应尝试加载失败模块（记录在 cmds.txt）'
+check_cmds 'modprobe mpt3sas max_queue_depth=10000' '应尝试加载失败模块（mpt3sas 分支带 max_queue_depth=10000，记录在 cmds.txt）'
 check_cmds 'modprobe virtio_blk' '失败后继续加载后续模块（v1.5.5 不再中断）'
 check_kmsg 'diskwipe-init: Disk driver modules loaded' '循环结束 kmsg 行应出现（失败继续到循环末尾）'
 check_cmd_count 'mdev -s' 1 '模块失败后仍执行 mdev 首扫（v1.5.7 无重试轮）'
@@ -278,7 +289,11 @@ check_rc 0 'ky10 模式正常启动应退出 0'
 check_out 'MENU_EXEC_MARKER' 'ky10 模式最终应 exec menu.sh'
 # ky10 白名单（v1.5.9 起不含 usb-storage；virtio_pci/xhci_pci/scsi_mod/exfat/ntfs3 为内建/无模块，不加载）
 for m in ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod nls_iso8859-1 vfat fat; do
-    check_cmds "modprobe $m" "ky10 模式应加载模块 $m"
+    if [ "$m" = "mpt3sas" ]; then
+        check_cmds "modprobe mpt3sas max_queue_depth=10000" "ky10 模式 mpt3sas 应带 max_queue_depth=10000 加载（v1.5.16 修复）"
+    else
+        check_cmds "modprobe $m" "ky10 模式应加载模块 $m"
+    fi
 done
 check_not_cmds 'modprobe uas' 'ky10 模式不得加载 uas（v1.5.8：UAS 绑定 U 盘可能 D 状态卡死）'
 check_not_cmds 'modprobe usb-storage' 'ky10 模式不得加载 usb-storage（v1.5.9：U 盘绑定读盘触发内核 I/O 阻塞致系统整体停滞）'

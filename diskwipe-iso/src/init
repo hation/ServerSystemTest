@@ -86,7 +86,14 @@ echo "Mounted /dev"
 #    不再 init_rescue，保证到菜单，驱动缺失由 menu 盘列表体现；原 rescue 语义仅保留给 mount）
 for im in $DRIVE_MODULES; do
     dw_progress "loading module $im"
-    timeout 5 modprobe "$im" 2>/dev/null || echo "WARN: module $im load failed/timed out"
+    # v1.5.16 修复：mpt3sas 默认 max_queue_depth=32455，高核数服务器（海光）+ initramfs
+    # 内存受限时内核无法分配大队列内存 → scsih_probe 失败 → 控制器不初始化、盘不识别
+    # （Fedora/Broadcom 已知问题）。传 max_queue_depth=10000 降低内存需求（官方方案）。
+    if [ "$im" = "mpt3sas" ]; then
+        timeout 5 modprobe mpt3sas max_queue_depth=10000 2>/dev/null || echo "WARN: module mpt3sas load failed/timed out"
+    else
+        timeout 5 modprobe "$im" 2>/dev/null || echo "WARN: module $im load failed/timed out"
+    fi
 done
 dw_progress "Disk driver modules loaded"
 

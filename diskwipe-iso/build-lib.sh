@@ -63,13 +63,13 @@ DW_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk v
 # （modules.builtin，无模块文件）；exfat/ntfs3 无模块（Kylin 4.19 未引入）；
 # usb-storage 为文件名（非 usb_storage）；vfat/fat 为模块（Kylin 退出写日志 U 盘 vfat
 # 挂载需要）。依赖链（ahci→libahci→libata、nvme→nvme-core→nvme-common、
-# mpt3sas→raid_class+scsi_transport_sas、vfat→fat）由 dw_modules_kylin 按 modules.dep 解析
-# v1.5.8 去掉 uas：UAS 驱动绑定 U 盘（ASolid USB 盘）若协议响应异常会内核 D 状态卡死
-# （真机实证：uas 注册后 sleep 结束前的 exec 未发生）；usb-storage 已足够枚举 U 盘
-# v1.5.9 去掉 usb-storage——真机 U 盘绑定后读盘触发内核 I/O 阻塞致系统整体停滞
-# （>30s 无调度）；U 盘不绑定则内核不读盘、系统正常启动；USB 键盘走内建 usbhid
-# 不受影响；退出写日志 U 盘降级留内存（既有 WARN 提示）——initrd 不再打包 usb-storage
-DW_KYLIN_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod nls_iso8859-1 vfat fat ast"
+# mpt3sas→raid_class+scsi_transport_sas、usb-storage→scsi_mod、vfat→fat）
+# 由 dw_modules_kylin 按 modules.dep 解析
+# v1.5.17 恢复 usb-storage + uas（v1.5.6 唯一 sda 识别成功的配置：usb-storage 加载触发
+# SCSI 扫描带出 SAS 盘；v1.5.8 曾去掉 uas（UAS 绑定 ASolid U 盘协议异常 D 状态卡死）、
+# v1.5.9 曾去掉 usb-storage（U 盘绑定读盘触发内核 I/O 阻塞）——v1.5.17 以 init 内
+# 「就绪后 rmmod 卸载」化解（SAS 盘带出后卸载防 U 盘卡死）；initrd 重新打包 usb-storage/uas
+DW_KYLIN_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat ast"
 # v1.5.6 显卡种子只保留 ast（Kylin 模式）：真机为 AST2500；mgag200/smifb/bochs-drm/cirrus/
 # virtio-gpu 在无对应硬件时 modprobe 可能内核 D 状态挂起（用户态 timeout 无效）导致 init
 # 卡死（真机实证 sdb 枚举后无输出）——initrd 不再打包这些模块（构建体积减小、init 无法
@@ -610,10 +610,12 @@ dw_verify_iso() {
             fi
         done
         echo "     校验通过：initrd 内关键模块 ahci/nvme 均为未压缩 .ko"
-        if find "$build_dir/initrdx/lib/modules" -name 'usb-storage.ko' 2>/dev/null | grep -q .; then
-            dw_fail "initrd 内不应再含 usb-storage.ko（v1.5.9 去掉，U 盘不绑定）"; return 1
-        fi
-        echo "     校验通过：initrd 内无 usb-storage.ko（v1.5.9 去掉，U 盘不绑定）"
+        for m in usb-storage uas; do
+            if ! find "$build_dir/initrdx/lib/modules" -name "$m.ko" 2>/dev/null | grep -q .; then
+                dw_fail "initrd 内缺少 Kylin 模块 $m.ko（v1.5.17 恢复 usb-storage/uas 触发 SCSI 扫描带出 SAS 盘，必须打包）"; return 1
+            fi
+        done
+        echo "     校验通过：initrd 内关键模块 usb-storage/uas 均为未压缩 .ko（v1.5.17 恢复）"
     fi
 }
 

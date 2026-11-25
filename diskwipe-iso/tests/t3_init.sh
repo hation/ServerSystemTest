@@ -15,6 +15,10 @@
 # v1.5.9 适配：Kylin ky10 分支再去掉 usb-storage（I5 用例：usb-storage 不得加载——
 #   真机 U 盘绑定后读盘触发内核 I/O 阻塞致系统整体停滞；U 盘不绑定则系统正常启动，
 #   USB 键盘走内建 usbhid 不受影响；退出写日志 U 盘降级留内存）。
+# v1.5.17 适配：Kylin ky10 分支恢复 usb-storage + uas（I5 用例改为断言加载——usb-storage
+#   加载触发 SCSI 扫描带出 SAS 盘（v1.5.6 唯一 sda 识别成功配置，v1.5.9 去掉后 sda 再未
+#   出现））；settle wait（sleep 10）后新增 rmmod usb-storage uas 卸载（防 U 盘卡死；
+#   I1/I5 断言卸载命令 + 顺序在 sleep 10 之后、exec menu.sh 之前；stub 加假 rmmod 记录调用）。
 # v1.5.10 适配：settle wait sleep 3 → 10（I1 用例断言 sleep 10；stub 加假 sleep 立即返回、
 #   记录调用——不真等 10s，同假 timeout 既有模式）。
 # v1.5.11 适配：显卡循环（ast）后新增 HID 驱动保障——`dw_progress "loading HID drivers
@@ -123,6 +127,13 @@ shift
 [ -n "$ROOT" ] || exit 0
 printf "sleep %s\n" "$*" >> "$ROOT/cmds.txt"
 exit 0'
+    # 假 rmmod：v1.5.17 settle wait 后卸载 usb-storage/uas（记录调用到 cmds.txt；
+    #   busybox rmmod 支持多模块 + '-'→'_' 模块名转换，Kylin usb-storage.ko 运行时
+    #   模块名为 usb_storage）
+    fake_bin rmmod '#!/bin/sh
+[ -n "$ROOT" ] || exit 0
+printf "rmmod %s\n" "$*" >> "$ROOT/cmds.txt"
+exit 0'
     # 假 sh（救援 shell）：打印标记后退出（模拟"停留 shell"，不真进入交互）
     fake_bin sh '#!/bin/sh
 echo "RESCUE_SHELL_MARKER"
@@ -216,6 +227,19 @@ check_kmsg 'diskwipe-init: device scan (mdev -s)' 'kmsg mdev 扫描进度行'
 check_kmsg 'diskwipe-init: Device nodes scanned' 'kmsg 设备节点扫描完成行'
 check_kmsg 'diskwipe-init: device settle wait (sleep)' 'kmsg 设备稳定等待进度行（v1.5.7 去掉重试轮）'
 check_cmds 'sleep 10' 'settle wait 应等待 10s（v1.5.13 缩短：SAS 盘扫描数秒即可，盘是否就绪由 menu 无盘无限重试兜底）'
+# v1.5.17：settle wait 后卸载 usb-storage/uas（防 U 盘卡死；卸载失败不阻断——无 U 盘
+# 时模块仍加载、卸载亦无害）
+check_cmds 'rmmod usb-storage uas' 'settle wait 后应卸载 usb-storage/uas（v1.5.17 防 U 盘卡死）'
+if awk '/^sleep 10$/{s=NR} /^rmmod usb-storage uas$/{if(NR>s)ok=1} END{exit ok?0:1}' "$ROOT/cmds.txt"; then
+    _pass 'rmmod 卸载在 settle wait（sleep 10）之后'
+else
+    _fail 'rmmod 卸载应在 sleep 10 之后'
+fi
+if awk '/^\+ rmmod usb-storage uas$/{r=NR} /diskwipe-init: exec menu.sh/{if(r&&NR>r)ok=1} END{exit ok?0:1}' "$ROOT/xtrace.txt"; then
+    _pass 'rmmod 卸载在 exec menu.sh 之前'
+else
+    _fail 'rmmod 卸载应在 exec menu.sh 之前'
+fi
 check_kmsg 'diskwipe-init: exec menu.sh' 'kmsg exec menu.sh 诊断行（v1.5.8）'
 # v1.5.6 显卡循环只留 ast：modprobe 调用含 ast、不含其余 5 个显卡驱动
 check_cmds 'modprobe ast' '应加载 ast（显卡循环白名单唯一）'
@@ -278,8 +302,8 @@ check_kmsg 'diskwipe-init: Device nodes scanned' 'WARN 后继续打 kmsg 完成�
 check_out 'MENU_EXEC_MARKER' '最终应 exec menu.sh（失败不再 rescue）'
 cleanup_case
 
-# ---------- I5：Kylin ky10 模式（v1.5.8 去掉 uas；v1.5.9 再去掉 usb-storage） ----------
-CASE="I5 Kylin ky10 模式去掉 uas/usb-storage"
+# ---------- I5：Kylin ky10 模式（v1.5.17 恢复 usb-storage + uas） ----------
+CASE="I5 Kylin ky10 模式恢复 usb-storage/uas"
 setup_stub
 # 假 uname：返回 Kylin 4.19 ky10 版本串 → init 的 case *ky10* 分支生效
 fake_bin uname '#!/bin/sh
@@ -287,20 +311,23 @@ echo "4.19.90-89.11.v2401.ky10.x86_64"'
 run_init "$OUTF"
 check_rc 0 'ky10 模式正常启动应退出 0'
 check_out 'MENU_EXEC_MARKER' 'ky10 模式最终应 exec menu.sh'
-# ky10 白名单（v1.5.9 起不含 usb-storage；virtio_pci/xhci_pci/scsi_mod/exfat/ntfs3 为内建/无模块，不加载）
-for m in ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod nls_iso8859-1 vfat fat; do
+# ky10 白名单（v1.5.17 恢复 usb-storage/uas——加载触发 SCSI 扫描带出 SAS 盘；
+# virtio_pci/xhci_pci/scsi_mod/exfat/ntfs3 为内建/无模块，不加载）
+for m in ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat; do
     if [ "$m" = "mpt3sas" ]; then
         check_cmds "modprobe mpt3sas max_queue_depth=10000" "ky10 模式 mpt3sas 应带 max_queue_depth=10000 加载（v1.5.16 修复）"
     else
         check_cmds "modprobe $m" "ky10 模式应加载模块 $m"
     fi
 done
-check_not_cmds 'modprobe uas' 'ky10 模式不得加载 uas（v1.5.8：UAS 绑定 U 盘可能 D 状态卡死）'
-check_not_cmds 'modprobe usb-storage' 'ky10 模式不得加载 usb-storage（v1.5.9：U 盘绑定读盘触发内核 I/O 阻塞致系统整体停滞）'
+check_cmds 'modprobe usb-storage' 'ky10 模式应加载 usb-storage（v1.5.17 恢复：加载触发 SCSI 扫描带出 SAS 盘，v1.5.6 唯一 sda 识别成功配置）'
+check_cmds 'modprobe uas' 'ky10 模式应加载 uas（v1.5.17 恢复：与 usb-storage 同属 v1.5.6 配置）'
 check_not_cmds 'modprobe virtio_pci' 'ky10 模式不得加载 virtio_pci（Kylin 内核内建）'
 check_not_cmds 'modprobe xhci_pci' 'ky10 模式不得加载 xhci_pci（Kylin 内核内建）'
 # v1.5.11：usbhid 在 ky10 模式同样加载（显卡循环后独立 modprobe，不属 DRIVE_MODULES 白名单）
 check_cmds 'modprobe usbhid' 'ky10 模式应加载 usbhid（v1.5.11 HID 驱动保障）'
+# v1.5.17：settle wait 后卸载 usb-storage/uas（卸载无条件、不区分模式——ky10 同样执行）
+check_cmds 'rmmod usb-storage uas' 'ky10 模式 settle 后应卸载 usb-storage/uas（v1.5.17 防 U 盘卡死）'
 check_kmsg 'diskwipe-init: exec menu.sh' 'ky10 模式 exec menu.sh 诊断行（v1.5.8）'
 cleanup_case
 

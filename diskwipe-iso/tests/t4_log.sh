@@ -9,6 +9,8 @@
 # v1.5.9 适配：init Kylin 白名单去掉 usb-storage → 真机 U 盘不再绑定 → 退出写日志必走
 #       降级留内存路径（无候选 → WARN + Log kept in memory）——L1 的无 U 盘降级断言即
 #       v1.5.9 常态路径；L5 追加「init Kylin 白名单无 usb-storage」源码级断言。
+# v1.5.17 适配：init Kylin 白名单恢复 usb-storage（+uas）→ L5 源码级断言翻转——
+#       必须含 usb-storage（触发 SCSI 扫描带出 SAS 盘，v1.5.6 唯一 sda 识别成功配置）。
 # 运行：bash diskwipe-iso/tests/run-all.sh（或单独 bash diskwipe-iso/tests/t4_log.sh）
 # 安全约束（用户强要求，测试绝不触碰本机真实块设备/真实挂载）：
 #   假 lsblk/blkid/wipefs/umount/mount/cp 全部经接缝变量/PATH 注入，绝不真挂载/真清除；
@@ -216,13 +218,13 @@ if grep -Eq '^[[:space:]]*mount[[:space:]]+/?dev/' "$INIT_SH"; then
 else
     _pass 'init 脚本内无 /dev/ 设备挂载调用'
 fi
-# v1.5.9：init Kylin（ky10 分支）白名单不得含 usb-storage——U 盘不绑定 → 退出写日志
-# 必走降级留内存路径（menu 退出打印 WARN + Log kept in memory；USB 键盘走内建 usbhid
-# 不受影响）。grep 锚定 DRIVE_MODULES 赋值行（注释提及 usb-storage 不算）。
+# v1.5.17：init Kylin（ky10 分支）白名单必须含 usb-storage——usb-storage 加载触发
+# SCSI 扫描带出 SAS 盘（v1.5.6 唯一 sda 识别成功配置；v1.5.9 曾去掉）。grep 锚定
+# DRIVE_MODULES 赋值行（注释提及 usb-storage 不算）。
 if grep -E '^[[:space:]]*DRIVE_MODULES="[^"]*usb-storage' "$INIT_SH"; then
-    _fail 'src/init Kylin 白名单不得含 usb-storage（v1.5.9 去掉）'
+    _pass 'src/init Kylin 白名单含 usb-storage（v1.5.17 恢复，触发 SCSI 扫描带出 SAS 盘）'
 else
-    _pass 'src/init Kylin 白名单无 usb-storage（v1.5.9，写日志必降级留内存）'
+    _fail 'src/init Kylin 白名单不得缺少 usb-storage（v1.5.17 应已恢复）'
 fi
 cleanup_case
 

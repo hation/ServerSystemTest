@@ -4,6 +4,7 @@
 #   → sleep 10 等待设备稳定（v1.5.7：去掉重试 mdev 轮询；v1.5.10 加长——mpt3sas
 #   SAS 盘扫描需数秒，menu 枚举前需就绪；U 盘已不绑定，等待期间无 I/O 阻塞风险；
 #   v1.5.13：25 → 10 缩短——SAS 盘扫描数秒即可，盘是否就绪由 menu 持续重试兜底）
+#   → rmmod 卸载 usb-storage/uas（v1.5.17：SAS 盘带出后卸载防 U 盘卡死）
 #   → exec menu.sh（交互菜单）。
 # v1.5.6 语义：进度走 /dev/kmsg（内核 printk 通道，与内核日志混排，真机 KVM 屏幕最后几行
 #   可见）+ timeout 5 兜底（用户态挂起自动跳过）——仅挂载失败进入救援 shell；模块加载/mdev
@@ -23,7 +24,8 @@
 #     bash 专属语法），LF 行尾，中文注释。
 #   - 只做启动编排；交互/清除逻辑由 menu.sh/wipe.sh/lib.sh 保证。
 #   - 模块白名单覆盖主流服务器磁盘控制器（AHCI/NVMe/LSI/板载 RAID/虚拟化/USB3 等）与
-#     USB 存储驱动（usb_storage/uas——退出时日志写 U 盘需要；无 U 盘时加载亦无害），
+#     USB 存储驱动（usb_storage/uas——v1.5.17 恢复：加载触发 SCSI 扫描带出 SAS 盘，
+#     就绪后卸载防 U 盘 I/O 卡死；无 U 盘时加载亦无害），
 #     依赖模块由 busybox modprobe 按 modules.dep 自动带入。
 #   - 测试经 INIT_PATH 接缝变量注入假件（mount/modprobe/mdev 只记录调用，不真挂载）。
 
@@ -38,7 +40,9 @@ dw_progress() { echo "diskwipe-init: $*" > /dev/kmsg 2>/dev/null; }
 . "$(dirname "$0")/lib.sh"
 
 # 磁盘驱动模块白名单（按此字符串逐模块加载）。
-# usb_storage/uas：退出时日志写 U 盘需要（无 U 盘时加载同样成功——驱动加载与设备存在无关）
+# usb_storage/uas：v1.5.17 恢复——usb-storage 加载触发 SCSI 总线扫描/事件使 mpt3sas
+#   控制器完成初始化并带出 SAS 盘（v1.5.6 唯一 sda 识别成功的配置；v1.5.9 去掉后 sda
+#   再未出现）；设备就绪后由下方 rmmod 卸载（防 v1.5.7/1.5.8 U 盘 I/O 卡死）。
 # nls_iso8859-1/exfat/ntfs3：vfat 挂载需 iocharset 模块；exfat/ntfs3 为模块（Ventoy
 #   数据区/Windows U 盘退出写日志需要；无对应设备时加载亦无害）
 DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod usb_storage uas nls_iso8859-1 exfat ntfs3"
@@ -56,12 +60,13 @@ DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_bl
 #     构建侧 dw_modules_kylin 已按同一清单 + 依赖链提取对应 .ko 进 initramfs。
 case "$(uname -r 2>/dev/null)" in
 *ky10*)
-    # v1.5.8 去掉 uas：UAS 驱动绑定 U 盘（ASolid USB 盘）若协议响应异常会内核 D 状态
-    # 卡死（真机实证：uas 注册后 sleep 结束前的 exec 未发生）；usb-storage 已足够枚举 U 盘
-    # v1.5.9 去掉 usb-storage——真机 U 盘绑定后读盘触发内核 I/O 阻塞致系统整体停滞
-    # （>30s 无调度）；U 盘不绑定则内核不读盘、系统正常启动；USB 键盘走内建 usbhid
-    # 不受影响；退出写日志 U 盘降级留内存（既有 WARN 提示）
-    DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod nls_iso8859-1 vfat fat"
+    # v1.5.17 恢复 usb-storage + uas（文件名形态 usb-storage.ko——busybox modprobe 按
+    # modules.dep 解析，usb_storage 与 usb-storage 均能命中）——v1.5.6 唯一 sda 识别成功
+    # 的配置：usb-storage 加载触发 SCSI 总线扫描/事件带出 SAS 盘（v1.5.9 去掉后 sda 再未
+    # 出现）。v1.5.8 曾去掉 uas（UAS 绑定 ASolid U 盘协议异常 D 状态卡死）、v1.5.9 曾去掉
+    # usb-storage（U 盘绑定读盘触发内核 I/O 阻塞）——v1.5.17 以「就绪后卸载」化解
+    # （SAS 盘带出后 rmmod usb-storage uas，见 settle wait 之后；卸载失败不阻断）。
+    DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat"
     ;;
 esac
 
@@ -136,6 +141,13 @@ dw_progress "Device nodes scanned"
 #   ——盘迟就绪也只是多等几个 5s 重试周期，绝不自动关机/重启）。
 dw_progress "device settle wait (sleep)"
 sleep 10
+
+# v1.5.17：SAS 盘已带出（usb-storage 加载触发 SCSI 扫描），卸载 usb-storage/uas——
+# U 盘设备已绑定，退出写日志 U 盘不再需要（日志降级内存+屏幕），卸载消除 U 盘 I/O 阻塞
+# （v1.5.7/1.5.8 卡死根源；busybox rmmod 支持多模块与 '-'→'_' 模块名转换——Kylin
+# usb-storage.ko 运行时模块名为 usb_storage）。卸载失败不阻断（无 U 盘时 usb-storage
+# 仍加载、卸载亦无害）。
+rmmod usb-storage uas 2>/dev/null || true
 
 # 5) 进入交互菜单（exec 替换自身；v1.5.8 加诊断：exec 前后进度，失败兜底救援 shell）
 dw_progress "exec menu.sh"

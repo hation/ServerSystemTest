@@ -2,7 +2,8 @@
 # diskwipe-iso initramfs 启动脚本（PID 1 入口）：
 #   挂载 /proc /sys /dev → busybox modprobe 白名单磁盘驱动 → mdev -s 扫描设备
 #   → sleep 10 等待设备稳定（v1.5.7：去掉重试 mdev 轮询；v1.5.10 加长——mpt3sas
-#   SAS 盘扫描需数秒，menu 枚举前需就绪；U 盘已不绑定，等待期间无 I/O 阻塞风险）
+#   SAS 盘扫描需数秒，menu 枚举前需就绪；U 盘已不绑定，等待期间无 I/O 阻塞风险；
+#   v1.5.13：25 → 10 缩短——SAS 盘扫描数秒即可，盘是否就绪由 menu 持续重试兜底）
 #   → exec menu.sh（交互菜单）。
 # v1.5.6 语义：进度走 /dev/kmsg（内核 printk 通道，与内核日志混排，真机 KVM 屏幕最后几行
 #   可见）+ timeout 5 兜底（用户态挂起自动跳过）——仅挂载失败进入救援 shell；模块加载/mdev
@@ -117,8 +118,10 @@ dw_progress "Device nodes scanned"
 # v1.5.11：再加长（sleep 10 → 25）——真机日志实证 SAS 盘（sda）从驱动加载到 lsblk 可
 #   枚举约需 25 秒，重试 3 轮（每轮 sleep 5）仍全部枚举不到（直到 reboot 未生效、menu
 #   继续跑后才列出盘）；等待足够长，避免无盘重试误判拖到自动 reboot。
+# v1.5.13：缩短回 10（等待煎熬；SAS 盘扫描数秒即可，盘是否就绪由 menu 无盘无限重试兜底
+#   ——盘迟就绪也只是多等几个 5s 重试周期，绝不自动关机/重启）。
 dw_progress "device settle wait (sleep)"
-sleep 25
+sleep 10
 
 # 5) 进入交互菜单（exec 替换自身；v1.5.8 加诊断：exec 前后进度，失败兜底救援 shell）
 dw_progress "exec menu.sh"

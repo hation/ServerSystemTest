@@ -1,9 +1,10 @@
 #!/bin/bash
 # T3：diskwipe-iso initramfs 启动脚本（src/init）假件单测
 # 覆盖：src/init 的启动编排——挂载 /proc /sys /dev → busybox modprobe 白名单磁盘驱动 →
-#       mdev -s 扫描设备 → sleep 25（v1.5.7：去掉重试 mdev 轮询；v1.5.10：加长等待——
-#       mpt3sas SAS 盘扫描需数秒；v1.5.11：再加长——真机 SAS 盘从驱动加载到 lsblk 可枚举
-#       约需 25 秒，menu 枚举前需就绪）→ exec menu.sh
+#       mdev -s 扫描设备 → sleep 10（v1.5.7：去掉重试 mdev 轮询；v1.5.10：加长等待——
+#       mpt3sas SAS 盘扫描需数秒；v1.5.11：再加长到 25——真机 SAS 盘从驱动加载到 lsblk
+#       可枚举约需 25 秒；v1.5.13：缩短回 10——盘是否就绪由 menu 无盘无限重试兜底）
+#       → exec menu.sh
 #       （v1.5.8：exec 前后 kmsg 诊断 + 失败兜底救援 shell）。
 # v1.5.6 语义：进度走 /dev/kmsg（dw_progress 写内核 printk 通道，与内核日志混排）+
 #   timeout 5 兜底（假件转执行）；显卡循环只加载 ast（mgag200/smifb/bochs-drm/cirrus/
@@ -20,8 +21,10 @@
 #   (usbhid)"` + `timeout 5 modprobe usbhid 2>/dev/null`（真机 KVM USB 键盘需 usbhid；
 #   Kylin 内核 CONFIG_USB_HID=y 内建，modprobe 静默跳过无碍）。I1 断言 kmsg 进度行 +
 #   modprobe usbhid 调用 + 顺序（ast 之后、mdev -s 之前）；I5（ky10）同样断言 usbhid 调用。
-#   本版 settle wait 再加长（sleep 10 → 25，I1 断言 sleep 25——真机 SAS 盘从驱动加载到
+#   本版 settle wait 加长（sleep 10 → 25，I1 断言 sleep 25——真机 SAS 盘从驱动加载到
 #   lsblk 可枚举约需 25 秒）。
+# v1.5.13 适配：settle wait 缩短回 10（I1 断言 sleep 10——SAS 盘扫描数秒即可，盘是否
+#   就绪由 menu 无盘无限重试兜底，等待煎熬缩短）。
 # kmsg 进度断言方式：本机 Git Bash 的 /dev 为 MSYS 虚拟只读目录，无法创建 /dev/kmsg
 #   假件（写失败静默——恰是生产"写失败不中断启动"语义）；用 `bash -x` + BASH_XTRACEFD=3
 #   把 xtrace 分流到 $ROOT/xtrace.txt，正向断言 dw_progress 调用与 kmsg 载荷
@@ -102,8 +105,8 @@ exit 0'
 [ -n "$ROOT" ] || exit 0
 shift
 "$@"'
-    # 假 sleep：v1.5.10/1.5.11 settle wait 加长（10s → 25s）——记录调用到 cmds.txt 并立即
-    # 返回（同假 timeout 既有模式，不真等；供 I1 断言 sleep 25）
+    # 假 sleep：v1.5.10/1.5.11 settle wait（10s → 25s）→ v1.5.13 缩短回 10s——记录调用到
+    # cmds.txt 并立即返回（同假 timeout 既有模式，不真等；供 I1 断言 sleep 10）
     fake_bin sleep '#!/bin/sh
 [ -n "$ROOT" ] || exit 0
 printf "sleep %s\n" "$*" >> "$ROOT/cmds.txt"
@@ -182,7 +185,7 @@ check_kmsg 'diskwipe-init: loading video module ast' 'kmsg 显卡进度行（只
 check_kmsg 'diskwipe-init: device scan (mdev -s)' 'kmsg mdev 扫描进度行'
 check_kmsg 'diskwipe-init: Device nodes scanned' 'kmsg 设备节点扫描完成行'
 check_kmsg 'diskwipe-init: device settle wait (sleep)' 'kmsg 设备稳定等待进度行（v1.5.7 去掉重试轮）'
-check_cmds 'sleep 25' 'settle wait 应等待 25s（v1.5.11 加长：真机 SAS 盘从驱动加载到 lsblk 可枚举约需 25 秒）'
+check_cmds 'sleep 10' 'settle wait 应等待 10s（v1.5.13 缩短：SAS 盘扫描数秒即可，盘是否就绪由 menu 无盘无限重试兜底）'
 check_kmsg 'diskwipe-init: exec menu.sh' 'kmsg exec menu.sh 诊断行（v1.5.8）'
 # v1.5.6 显卡循环只留 ast：modprobe 调用含 ast、不含其余 5 个显卡驱动
 check_cmds 'modprobe ast' '应加载 ast（显卡循环白名单唯一）'

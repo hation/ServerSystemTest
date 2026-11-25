@@ -14,11 +14,11 @@
 #   - 屏幕与日志的全部用户可见行必须纯 ASCII（无 CJK）——IPMI 虚拟 KVM（VGA→Linux
 #     vt console）无中文字体，中文必然乱码；中文仅保留在代码注释。
 #   - 读 stdin 写 stdout；大写 YES 严格匹配才执行；非法输入忽略（1,2,x → 忽略 x）；
-#     排除列表为空 = 默认全选；无盘可清（仅 usb+光驱）→ 提示并自动重试 6 次、仍无盘则
-#     自动 reboot（v1.5.10：避免 sda 迟就绪误判 + 避免 exit 致 PID1 退出内核 panic；
-#     v1.5.11：重试 3 → 6——真机 SAS 盘从驱动加载到 lsblk 可枚举约需 25 秒；
-#     v1.5.12：reboot 改 reboot -f 强制重启（真机 busybox reboot 返回未重启）；若仍
-#     无效 → 打印提示 + continue 重新枚举（盘就绪则正常，避免带空枚举落入列盘段）；
+#     排除列表为空 = 默认全选；无盘可清（仅 usb+光驱）→ 无限重试枚举（每 5 秒重枚举，
+#     v1.5.13：绝不自动关机/重启——真机 reboot -f 执行成关机、用户未及操作即断电，
+#     安全第一：盘就绪即正常列盘，用户可随时断电；v1.5.10：避免 sda 迟就绪误判 +
+#     避免 exit 致 PID1 退出内核 panic；v1.5.11：重试 3 → 6；v1.5.12：reboot -f +
+#     fallthrough 保护（v1.5.13 起整体废弃）；
 #     枚举原文经 kmsg 打 RAW enum 诊断行（定位设备名空/格式异常根因）；
 #     勾选循环 mdev 为空时从 mtab 兜底补设备名）；
 #     0 退出（打印可断电/重启提示）；清除后回到菜单（列表刷新）。
@@ -79,8 +79,9 @@ disk_type_label() {
     esac
 }
 
-# v1.5.10/v1.5.11：无盘重试计数（在 while : 前初始化；v1.5.11 起重试 ≤6 轮 →
-# 仍无盘则最终 reboot——真机 SAS 盘就绪约需 25 秒，3 轮仍不足）
+# v1.5.13：无盘重试计数（在 while : 前初始化；仅作日志——无盘时无限重试、永不自动
+# 关机/重启；v1.5.11 起曾「重试 ≤6 轮 → 仍无盘 reboot」、v1.5.12 改 reboot -f，
+# 真机 reboot -f 执行成关机 → v1.5.13 彻底废弃 reboot，安全第一）
 dwnoretry=0
 
 # v1.5.11：菜单输入重定向到 /dev/tty0（键盘/VT）——/dev/console 输入默认映射到最后一个
@@ -92,10 +93,9 @@ fi
 while :; do
     # 枚举全部可清盘（lib.sh 内 lsblk 包 "$TIMEOUT_BIN" 3 兜底；超时/失败 → 返回 1 且输出空）。
     # 枚举失败（超时等）→ 打印错误并自动重试一次；仍失败 → 打印错误 + 可安全重启提示，
-    # 绝不误判"仅启动介质"退出；枚举成功但为空（仅 usb+光驱）→ 走下方 v1.5.10/v1.5.11/
-    # v1.5.12 无盘路径：重试 6 次（sleep 5）→ 仍无盘 sleep 10 后 reboot -f（回 Ventoy 重新
-    # 启动；不再 exit——PID1 退出即内核 panic，用户误判"卡住"）；reboot -f 无效 → 提示 +
-    # continue 重新枚举。交互逻辑其余不变。
+    # 绝不误判"仅启动介质"退出；枚举成功但为空（仅 usb+光驱）→ 走下方 v1.5.13 无盘路径：
+    # 无限重试（每 5 秒重枚举 + continue，永不自动关机/重启——真机 reboot -f 执行成关机、
+    # 用户未及操作即断电；盘就绪即正常列盘）。交互逻辑其余不变。
     dw_progress "enumerating disks (lsblk)"
     ml="$(dw_enum_disks)"
     if [ "$?" -ne 0 ]; then
@@ -111,29 +111,16 @@ while :; do
     # 例：无盘时显示 "RAW enum ml=[]" 即可确认枚举结果本身为空、而非设备名提取失败）
     dw_progress "RAW enum ml=[$ml]"
     if [ -z "$ml" ]; then
-        # v1.5.10：无盘重试避免 sda（mpt3sas SAS）迟就绪误判（真机 mpt3sas 14.47s 才加载、
-        # SAS 盘扫描需数秒）；v1.5.11：重试轮次 3 → 6（真机日志实证 SAS 盘从驱动加载到
-        # lsblk 可枚举约需 25 秒，3 轮仍全部枚举不到——直到 reboot 未生效、menu 继续跑
-        # 后才列出盘）；6 轮仍无盘 → 最终 reboot 回 Ventoy，而非 exit 导致 PID1 退出
-        # 内核 panic。重试消息经 dw_log/dw_progress 双通道（屏幕 + kmsg 可见）。
+        # v1.5.13：无盘无限重试——每 5 秒重枚举，盘就绪即正常；绝不自动关机/重启
+        # （安全第一：真机 reboot -f 执行成关机，用户还没看到菜单就被断电；宁可一直
+        # 等待、用户可随时断电）。dwnoretry 仅作日志计数（v1.5.10 起为避免 sda 迟就绪
+        # 误判与 exit 致 PID1 内核 panic；v1.5.11/1.5.12 曾重试 ≤6 轮后 reboot，
+        # v1.5.13 起废弃 reboot/sleep 10/fallthrough）。重试消息经 dw_log/dw_progress
+        # 双通道（屏幕 + kmsg 可见）。
         dwnoretry=$((dwnoretry + 1))
-        if [ "$dwnoretry" -le 6 ]; then
-            dw_log "Only boot media found (no wipable disks yet; retrying in 5s...)"
-            dw_progress "no disks, retry $dwnoretry/6 (sleep 5)"
-            sleep 5
-            continue
-        fi
-        dw_log "No wipable disks found after 6 retries."
-        dw_log "You may power off or reboot safely."
-        dw_progress "no disks after retries, rebooting in 10s"
-        sleep 10
-        # v1.5.12：busybox reboot -f 强制重启（不依赖 init 守护——真机 reboot 未生效，
-        # menu 继续跑）；若仍返回（未重启）→ fallthrough 保护：打印提示 + continue 重新
-        # 枚举（此时若盘已就绪则正常列盘；避免反复 reboot 空转），绝不带着空 $ml 落入
-        # 下方列盘段（否则空枚举行经格式化管道产生一条假盘行 "Disks found: 1 ()"）。
-        reboot -f 2>/dev/null || true
-        sleep 2
-        dw_progress "reboot ineffective, re-enumerating"
+        dw_log "No wipable disks found yet (retry $dwnoretry). Retrying every 5s... (you may power off anytime)"
+        dw_progress "no disks, retry $dwnoretry (sleep 5, never auto poweroff/reboot)"
+        sleep 5
         continue
     fi
 

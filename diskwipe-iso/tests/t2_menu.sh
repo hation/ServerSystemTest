@@ -12,25 +12,26 @@
 #   fallback）。init usbhid 加载断言在 T3（I1 新增 modprobe usbhid）。
 # 交互契约（必须满足）：读 stdin 写 stdout；大写 YES 严格匹配才执行；
 #      非法输入忽略（1,2,x → 忽略 x）；排除列表为空 = 默认全选；
-#      0 退出（打印 power off/reboot 提示）；无盘可清（仅 usb+光驱）→ 提示并自动重试
-#      6 次、仍无盘则自动 reboot（v1.5.10：避免 sda 迟就绪误判 + 避免 exit 致 PID1 内核
-#      panic；v1.5.11：重试 3 → 6——真机 SAS 盘就绪约需 25 秒；v1.5.12：reboot 改
-#      reboot -f + fallthrough 保护（无效 → 打印提示 + continue 重新枚举，盘就绪则正常））；
+#      0 退出（打印 power off/reboot 提示）；无盘可清（仅 usb+光驱）→ 无限重试枚举
+#      （v1.5.13：每 5 秒重枚举、绝不自动关机/重启——真机 reboot -f 执行成关机、用户
+#      未及操作即断电，安全第一；v1.5.10 起为避免 sda 迟就绪误判 + 避免 exit 致 PID1
+#      内核 panic；v1.5.11 曾重试 3 → 6；v1.5.12 曾 reboot -f + fallthrough，已废弃）；
 #      清除后回到菜单（列表刷新）。
 # v1.5.12 适配：枚举原文诊断行（RAW enum ml=[...] 走 kmsg，M10 xtrace 断言）；勾选兜底
 #   （mdev 为空从 mtab 补设备名，M12 用例——lib.sh awk 枚举输出恒规范，标准假件无法注入
-#   "设备字段空"枚举行，故 M12 直接构造勾选循环输入验证兜底片段）；M6 增加 reboot -f +
-#   fallthrough 断言（假 lsblk 在 reboot -f 记录后返回盘 → 重新枚举列出 → 0 退出）。
+#   "设备字段空"枚举行，故 M12 直接构造勾选循环输入验证兜底片段）；M6 曾断言 reboot -f +
+#   fallthrough（假 lsblk 在 reboot -f 记录后返回盘）。
+# v1.5.13 适配：M6 改为断言无限重试——无盘时每 5 秒重枚举（假 lsblk 前 3 次枚举返回无盘表、
+#   之后返回就绪盘表 → 盘出现即正常列盘），绝不出现 reboot/sleep 10/关机行为。
 # 用例：
 #   M1  两盘 sda/sdb + sdc(usb)：列表含 sda/sdb 不含 sdc；sda 标 SYS、sdb 标 DATA
 #   M2  回车（默认全选）→ YES：调用 wipe.sh 且含 sda sdb；输出确认清单
 #   M3  输入 1 排除 → YES：只调用 wipe.sh sdb
 #   M4  输入 YES 以外的值（y/no/空）：不执行清除、回到菜单；无 wipe.sh 调用
 #   M5  排除输入 1,2,x：忽略 x，排除 1、2 合法项生效（只清 sdd）；全排 → 提示重新选择
-#   M6  无盘可清（仅 usb+光驱）：提示"仅发现启动介质"、重试 6 轮（sleep 5）、仍无盘
-#        sleep 10 后 reboot -f（v1.5.12：假 reboot 记录调用、绝不真重启测试机）；
-#        reboot -f 无效 → fallthrough 保护（sleep 2 + 提示 + continue 重新枚举，
-#        此时盘已就绪 → 正常列盘 → 0 退出）；无 wipe 调用
+#   M6  无盘可清（仅 usb+光驱）：无限重试（v1.5.13：每轮 sleep 5 + 重新枚举、绝不自动
+#       关机/重启——假 lsblk 计数切换：前 3 次枚举返回无盘表、之后返回就绪盘表 → 盘出现
+#       即正常列盘 → 0 退出）；无 wipe 调用、无 reboot 调用
 #   M7  清除后循环：再次列出（盘已清后状态刷新：sda 由系统盘变为数据盘）
 #   M8  输入 0 退出：打印"可断电/重启"提示、退出 0
 #   M9  TRAN 为空 + 型号含空格：型号完整显示、末词不误作 TRAN
@@ -203,52 +204,122 @@ check_out 'No disks selected' '全排应提示重新选择'
 check_no_cmds '全排不得执行清除'
 cleanup_case
 
-# ---------- M6：仅 usb+光驱（v1.5.10/1.5.11/1.5.12：重试 6 轮后 reboot -f + fallthrough） ----------
-CASE="M6 仅启动介质（v1.5.12 重试 6 轮后 reboot -f + fallthrough）"
+# ---------- M6：仅 usb+光驱（v1.5.13：无限重试、绝不自动关机/重启） ----------
+CASE="M6 仅启动介质（v1.5.13 无限重试、盘出现即正常、无 reboot）"
 setup_case
 cat > "$ROOT/lsblk.table" <<'EOF'
 NAME SIZE TYPE MODEL TRAN MOUNTPOINT
 sdc 30G disk USB DISK 3.0 usb
 sr0 1024M rom
 EOF
-# v1.5.12：reboot -f 记录后（fallthrough continue 重新枚举）盘已就绪——模拟真机
-# "reboot 无效、重新枚举后盘才列出"；此前仅 usb+光驱（无盘重试路径）
+# 就绪盘表（模拟真机 SAS 盘迟就绪：无盘重试 N 轮后盘才可枚举）
 cat > "$ROOT/lsblk.ready" <<'EOF'
 NAME SIZE TYPE MODEL TRAN MOUNTPOINT
 sda 894G disk HGST 7K6000 sata
 sdb 894G disk Samsung PM983 nvme
 EOF
-# 假 lsblk：reboot -f 已记录 → 输出就绪盘表；否则输出无盘表
+# 假 lsblk：计数切换——前 3 次枚举返回无盘表（对应 3 轮重试），之后返回就绪盘表
+# （盘出现 → 正常列盘）。处理全部 -o/-no 形态（同 install_fakes；就绪后 dw_scan_system_disks
+# 与退出写日志枚举同样返回就绪表）。
 cat > "$FAKE_BIN/lsblk" <<'FAKE'
 #!/bin/sh
 [ -n "$ROOT" ] || exit 0
-if [ -f "$ROOT/cmds.txt" ] && grep -q '^reboot -f$' "$ROOT/cmds.txt"; then
-    cat "$ROOT/lsblk.ready"
-    exit 0
-fi
-cat "$ROOT/lsblk.table"
+n=0
+if [ -f "$ROOT/enum.count" ]; then n=$(cat "$ROOT/enum.count"); fi
+n=$((n + 1))
+echo "$n" > "$ROOT/enum.count"
+if [ "$n" -ge 4 ]; then tbl="$ROOT/lsblk.ready"; else tbl="$ROOT/lsblk.table"; fi
+case "$1" in
+-o)
+    case "$2" in
+    NAME,SIZE,TYPE,MODEL,TRAN,MOUNTPOINT)
+        [ -f "$tbl" ] && cat "$tbl"
+        ;;
+    NAME,TYPE,MOUNTPOINT,PKNAME)
+        dev="${3#/dev/}"
+        [ -f "$tbl" ] || exit 0
+        awk -v d="$dev" 'BEGIN { print "NAME TYPE MOUNTPOINT PKNAME" }
+            NR==1{next}{
+            name=$1; type=$3
+            mps=""
+            for (i=4; i<=NF; i++) {
+                if ($i ~ /^\//) { mps=$i; for (j=i+1; j<=NF; j++) mps=mps " " $j; break }
+            }
+            pk=""
+            if (name != d) {
+                pk=name
+                if (pk ~ /p[0-9]+$/) sub(/p[0-9]+$/, "", pk)
+                else while (pk ~ /[0-9]$/) pk=substr(pk,1,length(pk)-1)
+            }
+            if (name==d || pk==d) printf "%s %s %s %s\n", name, type, mps, pk
+        }' "$tbl"
+        ;;
+    NAME,TYPE,MOUNTPOINT,PKNAME,PARTTYPENAME,PARTFLAGS)
+        [ -f "$tbl" ] || exit 0
+        awk 'BEGIN { print "NAME TYPE MOUNTPOINT PKNAME PARTTYPENAME PARTFLAGS" }
+            NR==1 { next }
+            {
+                name=$1; type=$3
+                mps=""
+                for (i=4; i<=NF; i++) { if ($i ~ /^\//) { mps=$i; for (j=i+1; j<=NF; j++) mps=mps " " $j; break } }
+                pk=""
+                if (type != "disk") {
+                    pk=name
+                    if (pk ~ /p[0-9]+$/) sub(/p[0-9]+$/, "", pk)
+                    else while (pk ~ /[0-9]$/) pk=substr(pk,1,length(pk)-1)
+                }
+                printf "%s %s %s %s %s %s\n", name, type, mps, pk, "", ""
+            }' "$tbl"
+        ;;
+    NAME,TYPE,TRAN,PKNAME)
+        [ -f "$tbl" ] || exit 0
+        awk 'BEGIN { print "NAME TYPE TRAN PKNAME" }
+            FNR==1 { next }
+            {
+                name=$1; type=$3
+                tran=""; t=NF
+                if ($NF ~ /^\//) t=NF-1
+                if (type == "disk" && t > 3 && $t ~ /^(sata|sas|nvme|usb|spi|ata|scsi|virtio|pcie)$/) tran=$t
+                pk=""
+                if (type != "disk") {
+                    pk=name
+                    if (pk ~ /p[0-9]+$/) sub(/p[0-9]+$/, "", pk)
+                    else while (pk ~ /[0-9]$/) pk=substr(pk,1,length(pk)-1)
+                }
+                print name, type, tran, pk
+            }' "$tbl"
+        ;;
+    esac
+    ;;
+-no)
+    case "$2" in
+    PARTFLAGS|PARTTYPENAME) : ;;
+    esac
+    ;;
+esac
 exit 0
 FAKE
 chmod +x "$FAKE_BIN/lsblk"
-# v1.5.10 起：无盘路径不再 exit——假 reboot（记录调用参数、立即返回，绝不真重启测试机）
+# 假 reboot：保留假件（记录调用、立即返回）——断言**绝不调用**（v1.5.13 无盘路径已无 reboot）
 fake_bin reboot '#!/bin/sh
 [ -n "$ROOT" ] || exit 0
 printf "reboot %s\n" "$*" >> "$ROOT/cmds.txt"
 exit 0'
-# 假 sleep：无盘重试 6×5s + 最终 10s + fallthrough 2s 立即返回（不真等；记录调用供计数断言）
+# 假 sleep：重试每轮 5s 立即返回（不真等；记录调用供计数断言）
 fake_bin sleep '#!/bin/sh
 [ -n "$ROOT" ] || exit 0
 printf "sleep %s\n" "$*" >> "$ROOT/cmds.txt"
 exit 0'
 run_menu '0' "$OUTF"
-check_rc 0 '应退出 0（reboot -f 无效 → fallthrough 重枚举盘就绪 → 0 输入退出）'
-check_out 'Only boot media found' '应提示仅发现启动介质（首轮重试消息）'
-check_out 'No wipable disks found after 6 retries' '6 轮重试后应打印最终提示'
-check_cmd_count 'sleep 5' 6 '应重试 6 轮（每轮 sleep 5）'
-check_cmd_count 'sleep 10' 1 '仍无盘应等待 10s 后 reboot -f'
-check_cmds 'reboot -f' '仍无盘应 reboot -f（v1.5.12 强制重启，不依赖 init 守护）'
-check_cmd_count 'sleep 2' 1 'reboot -f 后应 sleep 2（fallthrough 保护等待；"reboot ineffective"提示行走 kmsg——真机 KVM 屏幕可见，qemu B 断言）'
-check_out '/dev/sda' 'fallthrough → continue 重新枚举后盘已就绪 → 正常列盘（不再假盘行 Disks found: 1 ()）'
+check_rc 0 '应退出 0（无限重试至盘就绪 → 0 输入退出）'
+check_out 'No wipable disks found yet (retry 1)' '应打印无盘重试消息（retry 1，v1.5.13 无限重试）'
+check_out 'No wipable disks found yet (retry 3)' '应打印无盘重试消息（retry 3）'
+check_cmd_count 'sleep 5' 3 '应无限重试 3 轮（每轮 sleep 5；盘第 4 轮枚举就绪）'
+check_not_cmds 'sleep 10' '绝不 sleep 10（v1.5.12 的 reboot 前等待已删除）'
+check_not_cmds 'sleep 2' '绝无 fallthrough 的 sleep 2'
+check_not_cmds 'reboot' '绝不 reboot / reboot -f（v1.5.13：真机 reboot -f 执行成关机、安全第一）'
+check_out '/dev/sda' '盘就绪后 → continue 重新枚举 → 正常列盘'
+check_out '/dev/sdb' '就绪盘全部列出'
 check_count 'DiskWipe Tool' 1 '仅就绪后列盘一次（无盘轮次不列盘）'
 check_out 'power off' '0 退出应打印可断电/重启提示'
 check_not_cmds 'wipefs' '无盘重试不得执行清除命令'

@@ -85,6 +85,10 @@ disk_type_label() {
 # 关机/重启；v1.5.11 起曾「重试 ≤6 轮 → 仍无盘 reboot」、v1.5.12 改 reboot -f，
 # 真机 reboot -f 执行成关机 → v1.5.13 彻底废弃 reboot，安全第一）
 dwnoretry=0
+# v1.5.29：枚举轮次计数（每轮枚举 +1，有盘/无盘均计数）——U 盘实时诊断日志每 5 轮
+# 枚举写一次（防 U 盘 I/O 频繁；无盘重试时与 dwnoretry 同步递增、行为等价；有盘菜单
+# 循环时 dwnoretry 不递增、故独立计数保证有盘场景同样每 5 轮写一次）
+dwenum=0
 
 # v1.5.11：菜单输入重定向到 /dev/tty0（键盘/VT）——/dev/console 输入默认映射到最后一个
 # console（ttyS0 串口），真机 KVM USB 键盘无效；tty0 不存在（无 VT）时 fallback 保持 stdin。
@@ -122,6 +126,79 @@ while :; do
     # tr '\n' '|' 把多行压成一行进 kmsg；2>&1 捕获错误）
     dw_progress "RAW lsblk: $(lsblk -o NAME,SIZE,TYPE,MODEL,TRAN,MOUNTPOINT 2>&1 | tr '\n' '|')"
     dw_progress "RAW enum ml=[$ml]"
+    # v1.5.20 全面诊断：每个可疑点一行——SCSI 控制器列表（scsi_host）、内核块设备表
+    # （/proc/partitions）、mpt3sas/megaraid/SCSI/sd 关键日志、PCI 控制器驱动绑定
+    # （SAS 控制器被谁绑：mpt3sas/megaraid_sas/未绑定——关键证据）。
+    # 压缩：tr '\n' '|' 多行压一行进 kmsg；dmesg grep 用 tail 限长防刷屏；dmesg 等命令
+    # 缺失时输出空不报错（2>/dev/null 兜底）。每次枚举刷新——真机 KVM 无滚动、只能看到
+    # 屏幕最后几行，最后几行即最新诊断（真机重点看 DIAG hosts/parts/pci）。
+    # v1.5.21：DIAG pci 改为全量（含未绑定设备，driver 缺失显 NONE——v1.5.20 只打印有
+    # driver 的设备、未绑定的 SAS 控制器被遗漏；真机 mpt3sas 加载成功但未绑定/初始化
+    # SAS 控制器（probe 失败、无 scsi_host），PCI 全量含 NONE 才能确认其未绑定状态）；
+    # DIAG mpt 放大（-iE 忽略大小写，加 probe/chain_lookup/free_pages/max_queue_depth 等
+    # probe 失败相关关键词，tail 15——定位 __get_free_pages 内存分配失败 vs 固件握手
+    # 失败）；新增 DIAG scsi（SCSI 设备列表，与 scsi_host 互补——控制器创建后设备枚举
+    # 的直接证据，真机 mpt3sas 无 scsi_host 时这里应为空）。
+    # v1.5.21 另修：DIAG mpt 与 dmesg-tail 拼接内容可能超 /dev/kmsg 单行上限
+    # （内核 LOG_LINE_MAX≈1024 字节，超长行整条被拒、kmsg 不出现——v1.5.20 的 dmesg-tail
+    # 40 行拼接 ~3KB 实测从未显示），统一 head -c 900 截断（busybox head 支持 -c；
+    # 900 < 1024 保底显示，tail 行数语义不变、只防超长丢弃）。
+    # v1.5.22：DIAG pci/mpt 移到枚举诊断最后两行（用户 KVM 屏幕无滚动、只见最后几行——
+    # 每轮枚举最后两行必为 DIAG pci（SAS 控制器 PCI 地址+NONE/驱动名）与 DIAG mpt
+    # （mpt3sas probe 失败具体错误），真机定位 mpt3sas 未初始化 SAS 控制器的失败原因；
+    # DIAG 行内容与 v1.5.21 完全一致，仅输出顺序调整）。
+    # v1.5.24：DIAG SAS/mods 插在 DIAG pci 与 DIAG mpt 之间——枚举诊断最后四行必为
+    # pci/SAS/mods/mpt（决定性诊断：SAS 控制器在不在总线、被谁绑定 + 存储模块是否加载；
+    # 用户 KVM 最后几行全可见，DIAG mpt 仍为枚举诊断末行）。
+    dw_progress "DIAG hosts=$(ls /sys/class/scsi_host 2>/dev/null | tr '\n' '|')"
+    dw_progress "DIAG parts=$(cat /proc/partitions 2>/dev/null | tr '\n' '|')"
+    dw_progress "DIAG sd=$(dmesg 2>/dev/null | grep -E 'sd [0-9]|Attached SCSI|Adding|Discovered' | tail -n 8 | tr '\n' '|')"
+    dw_progress "DIAG scsi=$(ls /sys/bus/scsi/devices 2>/dev/null | tr '\n' '|')"
+    dw_progress "DIAG pci=$(for d in /sys/bus/pci/devices/*; do drv=$(readlink "$d/driver" 2>/dev/null || echo NONE); printf '%s:%s|' "${d##*/}" "$(basename "$drv")"; done)"
+    # v1.5.24 决定性诊断：专门找 LSI/Broadcom（vendor 0x1000，SAS 控制器）PCI 设备——
+    # 地址:device:driver（mpt3sas/NONE）——一行判定 SAS 控制器在不在总线、被谁绑定。
+    dw_progress "DIAG SAS=$(for d in /sys/bus/pci/devices/*; do v=$(cat "$d/vendor" 2>/dev/null); if [ "$v" = "0x1000" ]; then drv=$(readlink "$d/driver" 2>/dev/null || echo NONE); printf '%s:dev=%s:drv=%s|' "${d##*/}" "$(cat "$d/device" 2>/dev/null)" "$(basename "$drv")"; fi; done)"
+    # v1.5.24：存储相关模块加载状态（mpt3sas/megaraid_sas/usb_storage/sd_mod/scsi_mod 等）
+    dw_progress "DIAG mods=$(for m in mpt3sas megaraid_sas usb_storage uas sd_mod scsi_mod libata ahci nvme virtio_blk; do [ -d "/sys/module/$m" ] && printf '%s|' "$m"; done)"
+    dw_progress "DIAG mpt=$(dmesg 2>/dev/null | grep -iE 'mpt3sas|megaraid|megasas|scsih|probe|fail|chain_lookup|free_pages|max_queue_depth|fault' | tail -n 15 | tr '\n' '|' | head -c 900)"
+    # v1.5.29：实时把诊断写到 U 盘文件——摆脱 KVM 屏幕日志乱码（OCR 失真，DIAG 行看不清）：
+    # 用户测一次、拔 U 盘回电脑读 U 盘内 diskwipe-diag.log（干净完整日志：RAW lsblk +
+    # 全部 DIAG 行（hosts/parts/sd/scsi/pci/SAS/mods/mpt）+ dmesg 尾部，一次性确定根因）。
+    # 每 5 轮枚举写一次（防 U 盘 I/O 频繁；dwenum 每轮枚举 +1）；U 盘分区可能不是 sda1
+    # （vfat 数据区）——探测 /dev/sd*[0-9] 逐个 timeout 3 mount -t vfat 首个可挂载分区
+    # （Ventoy 数据区为 vfat）；全部包 timeout 3 兜底 + 子 shell 包裹 + 静默降级
+    # （挂载/写入失败绝不阻断枚举/重试；U 盘 I/O 阻塞时 mount/sync/umount 由 timeout 放弃）。
+    dwenum=$((dwenum + 1))
+    if [ $((dwenum % 5)) -eq 1 ]; then
+        (
+            mkdir -p /mnt/dwdiag 2>/dev/null
+            dwusb=0
+            for dwp in /dev/sd[a-z][0-9] /dev/sd[a-z][a-z][0-9]; do
+                [ -e "$dwp" ] || continue
+                if timeout 3 mount -t vfat "$dwp" /mnt/dwdiag 2>/dev/null; then
+                    dwusb=1
+                    break
+                fi
+            done
+            if [ "$dwusb" = "1" ]; then
+                {
+                    echo "==== diskwipe-diag v1.5.29 $(date) retry=$dwnoretry enum=$dwenum ===="
+                    echo "RAW lsblk: $(lsblk -o NAME,SIZE,TYPE,MODEL,TRAN,MOUNTPOINT 2>&1 | tr '\n' '|')"
+                    echo "DIAG hosts: $(ls /sys/class/scsi_host 2>/dev/null | tr '\n' '|')"
+                    echo "DIAG parts: $(cat /proc/partitions 2>/dev/null | tr '\n' '|')"
+                    echo "DIAG sd: $(dmesg 2>/dev/null | grep -E 'sd [0-9]|Attached SCSI|Adding|Discovered' | tail -n 8 | tr '\n' '|')"
+                    echo "DIAG scsi: $(ls /sys/bus/scsi/devices 2>/dev/null | tr '\n' '|')"
+                    echo "DIAG pci: $(for d in /sys/bus/pci/devices/*; do drv=$(readlink "$d/driver" 2>/dev/null || echo NONE); printf '%s:%s|' "${d##*/}" "$(basename "$drv")"; done)"
+                    echo "DIAG SAS: $(for d in /sys/bus/pci/devices/*; do v=$(cat "$d/vendor" 2>/dev/null); if [ "$v" = "0x1000" ]; then drv=$(readlink "$d/driver" 2>/dev/null || echo NONE); printf '%s:dev=%s:drv=%s|' "${d##*/}" "$(cat "$d/device" 2>/dev/null)" "$(basename "$drv")"; fi; done)"
+                    echo "DIAG mods: $(for m in mpt3sas megaraid_sas usb_storage uas sd_mod scsi_mod libata ahci nvme virtio_blk; do [ -d "/sys/module/$m" ] && printf '%s|' "$m"; done)"
+                    echo "DIAG mpt: $(dmesg 2>/dev/null | grep -iE 'mpt3sas|megaraid|megasas|scsih|probe|fail|chain_lookup|free_pages|max_queue_depth|fault' | tail -n 20 | tr '\n' '|')"
+                    echo "DIAG dmesg-tail: $(dmesg 2>/dev/null | tail -n 60 | tr '\n' '|')"
+                } >> /mnt/dwdiag/diskwipe-diag.log 2>/dev/null
+                timeout 3 sync 2>/dev/null
+            fi
+            timeout 3 umount /mnt/dwdiag 2>/dev/null || true
+        ) 2>/dev/null
+    fi
     if [ -z "$ml" ]; then
         # v1.5.13：无盘无限重试——每 5 秒重枚举，盘就绪即正常；绝不自动关机/重启
         # （安全第一：真机 reboot -f 执行成关机，用户还没看到菜单就被断电；宁可一直
@@ -134,6 +211,11 @@ while :; do
         if [ $((dwnoretry % 10)) -eq 1 ]; then
             dw_log "No wipable disks found yet (retry $dwnoretry). Retrying... (you may power off anytime)"
             dw_progress "no disks, retry $dwnoretry (never auto poweroff/reboot)"
+            # v1.5.20：每 10 轮附加一次 dmesg 尾部（tail -40 全量、防过滤丢关键——
+            # 无盘时看驱动加载/SCSI 错误日志的完整尾部；dmesg 缺失输出空不报错）
+            # v1.5.21：head -c 900 截断——kmsg 单行 ~1024 字节上限，40 行拼接超长
+            # 整条被拒（v1.5.20 实测从未显示），截断保底可见（行数语义不变）
+            dw_progress "DIAG dmesg-tail=$(dmesg 2>/dev/null | tail -n 40 | tr '\n' '|' | head -c 900)"
         fi
         # v1.5.14：sleep 在真机严重失真（5s 实际 ~0.17s → 刷新疯狂）；read -t 用 select 超时，
         # 若时钟正常则 5s 真实等待（等待期间用户按键可提前跳过——tty0 已重定向）。

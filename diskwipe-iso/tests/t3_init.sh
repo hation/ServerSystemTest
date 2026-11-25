@@ -23,10 +23,10 @@
 #   删除 init 的 scsi_host rescan 循环（I1 断言翻转：不得出现）、删除 rmmod usb-storage
 #   uas 段（I1/I5 断言翻转：不得卸载；假 rmmod stub 移除）；usb-storage/uas 白名单保留
 #   （I1/I5 断言加载不变）。
-# v1.5.19 适配：白名单去掉 megaraid_sas（megaraid_sas 与 mpt3sas 竞争同一 LSI SAS 控制器
-#   ——真机根因，联网确认 Broadcom/Proxmox/Dell 已知问题；v1.5.6 唯一 sda 识别成功盘在
-#   mpt3sas、无需 megaraid_sas，只留 mpt3sas 独占）。DRIVE_MODULES 常量同步去掉
-#   megaraid_sas（I1 循环断言不加载）；I5（ky10）清单同样去掉并断言不得加载。
+# v1.5.19 适配（历史）：白名单曾去掉 megaraid_sas（当时误判与 mpt3sas 竞争同一 LSI SAS
+#   控制器）。v1.6.0 变更：ISO 解包客观对比证明 v1.5.6（唯一成功）与 v1.5.27（失败）唯一
+#   模块差异是 megaraid_sas，v1.5.19「竞争」假设证伪——I5（ky10）恢复 megaraid_sas；I1 为
+#   Ubuntu 分支（白名单本就不含 megaraid_sas），断言不加载不变。
 # v1.5.10 适配：settle wait sleep 3 → 10（I1 用例断言 sleep 10；stub 加假 sleep 立即返回、
 #   记录调用——不真等 10s，同假 timeout 既有模式）。
 # v1.5.11 适配：显卡循环（ast）后新增 HID 驱动保障——`dw_progress "loading HID drivers
@@ -78,7 +78,7 @@ trap 'rc=$?; cleanup_case; exit "$rc"' EXIT
 INIT_SH="$REPO_ROOT/diskwipe-iso/src/init"
 # 与 src/init 内 DRIVE_MODULES 常量保持一致（Ubuntu 模式清单——本机 WSL uname 非 ky10，
 # 测试默认走 Ubuntu 分支；ky10 分支白名单见 I5 用例，v1.5.17 起恢复 usb-storage/uas；
-# v1.5.19 起 megaraid_sas 去掉——与 mpt3sas 竞争同一 LSI SAS 控制器）
+# Ubuntu 分支白名单本就不含 megaraid_sas——v1.6.0 仅 Kylin 分支恢复，见 I5）
 DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod usb_storage uas nls_iso8859-1 exfat ntfs3"
 
 echo "==== T3 initramfs 启动脚本测试 ===="
@@ -206,6 +206,12 @@ else
 fi
 check_out 'MENU_EXEC_MARKER' '最后应 exec menu.sh（假 menu.sh 打标记）'
 check_not_out 'failed' '正常路径不应出现失败提示'
+# v1.5.20：全部模块加载成功 → 不输出 DIAG mod FAILED（仅失败时记录退出码，成功不刷屏）
+if grep -Fq 'DIAG mod ' "$ROOT/xtrace.txt"; then
+    _fail 'I1 全部模块加载成功不应输出 DIAG mod FAILED（v1.5.20 仅失败时记录退出码）'
+else
+    _pass 'I1 全部模块加载成功不输出 DIAG mod（v1.5.20 仅失败时记录退出码，成功不刷屏）'
+fi
 # v1.5.6 kmsg 进度行必现（真机靠 kmsg 定位卡点；写 /dev/kmsg 与内核日志混排、屏幕最后几行可见）
 check_kmsg 'diskwipe-init: loading module ahci' 'kmsg 进度行（磁盘模块循环）'
 check_kmsg 'diskwipe-init: loading module mpt3sas' 'kmsg 进度行（磁盘模块循环，全部模块）'
@@ -253,6 +259,8 @@ run_init "$OUTF"
 check_rc 0 '模块失败 WARN 继续，最终 exec menu.sh 正常结束'
 check_kmsg 'diskwipe-init: loading module mpt3sas' '失败模块仍打 kmsg 进度行（定位卡点）'
 check_out 'WARN: module mpt3sas load failed/timed out' '应打印模块加载失败警告'
+# v1.5.20：模块加载失败记录退出码（kmsg DIAG——真机定位 mpt3sas 加载失败的直接证据）
+check_kmsg 'DIAG mod mpt3sas rc=1 FAILED' 'mpt3sas 加载失败应输出 DIAG mod rc=1 FAILED（v1.5.20）'
 check_not_out 'ERROR' '模块失败不再进入救援 shell（v1.5.5 语义）'
 check_not_out 'RESCUE_SHELL_MARKER' '不得进入救援 shell'
 check_cmds 'modprobe mpt3sas' '应尝试加载失败模块（mpt3sas 恢复正常 modprobe，记录在 cmds.txt）'
@@ -300,11 +308,11 @@ check_rc 0 'ky10 模式正常启动应退出 0'
 check_out 'MENU_EXEC_MARKER' 'ky10 模式最终应 exec menu.sh'
 # ky10 白名单（v1.5.17 恢复 usb-storage/uas，v1.5.18 保留——加载触发 SCSI 扫描带出
 # SAS 盘；virtio_pci/xhci_pci/scsi_mod/exfat/ntfs3 为内建/无模块，不加载；
-# v1.5.19 去掉 megaraid_sas——与 mpt3sas 竞争同一 LSI SAS 控制器，只留 mpt3sas 独占）
-for m in ahci libahci libata nvme nvme-core mpt3sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat; do
+# v1.6.0 恢复 megaraid_sas——ISO 解包对比证明 v1.5.6 成功即同时含 megaraid_sas）
+for m in ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat; do
     check_cmds "modprobe $m" "ky10 模式应加载模块 $m"
 done
-check_not_cmds 'modprobe megaraid_sas' 'ky10 模式不得加载 megaraid_sas（v1.5.19：与 mpt3sas 竞争同一 LSI SAS 控制器，只留 mpt3sas 独占）'
+check_cmds 'modprobe megaraid_sas' 'ky10 模式应加载 megaraid_sas（v1.6.0 恢复：ISO 解包对比证明 v1.5.6 成功即同时含 megaraid_sas）'
 check_cmds 'modprobe usb-storage' 'ky10 模式应加载 usb-storage（v1.5.17 恢复：加载触发 SCSI 扫描带出 SAS 盘，v1.5.6 唯一 sda 识别成功配置）'
 check_cmds 'modprobe uas' 'ky10 模式应加载 uas（v1.5.17 恢复：与 usb-storage 同属 v1.5.6 配置）'
 check_not_cmds 'modprobe virtio_pci' 'ky10 模式不得加载 virtio_pci（Kylin 内核内建）'
@@ -314,6 +322,12 @@ check_cmds 'modprobe usbhid' 'ky10 模式应加载 usbhid（v1.5.11 HID 驱动�
 # v1.5.18：ky10 同样不执行 rmmod 卸载（v1.5.17 段已删，usb-storage/uas 保持在场）
 check_not_cmds 'rmmod' 'ky10 模式不得卸载 usb-storage/uas（v1.5.18 去 rmmod 段）'
 check_kmsg 'diskwipe-init: exec menu.sh' 'ky10 模式 exec menu.sh 诊断行（v1.5.8）'
+# v1.5.20：ky10 全部模块加载成功 → 不输出 DIAG mod FAILED（仅失败时记录退出码）
+if grep -Fq 'DIAG mod ' "$ROOT/xtrace.txt"; then
+    _fail 'I5 ky10 全部模块加载成功不应输出 DIAG mod FAILED（v1.5.20 仅失败时记录退出码）'
+else
+    _pass 'I5 ky10 全部模块加载成功不输出 DIAG mod（v1.5.20 仅失败时记录退出码）'
+fi
 cleanup_case
 
 # ---------- I6：exec menu.sh 失败（v1.5.8：exec 前诊断行先打） ----------

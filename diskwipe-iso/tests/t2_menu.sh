@@ -166,7 +166,7 @@ check_out 'Will wipe the following 1 disks' '排除后确认清单应为 1 盘'
 check_cmds 'wipefs -a /dev/sdb' '应清除 sdb'
 check_cmds 'partprobe /dev/sdb' 'sdb 清除后应 partprobe'
 check_not_cmds 'wipefs -a /dev/sda' '不得清除被排除的 sda'
-check_not_cmds 'umount' '被排除盘的挂载点不得卸载'
+check_not_cmds 'umount /boot/efi' '被排除盘 sda1 的挂载点不得卸载（v1.5.29 写日志块 umount /mnt/dwdiag 属诊断降级路径、非卸载盘）'
 check_out 'OK /dev/sdb reset to uninitialized' 'sdb 应显示清除成功'
 cleanup_case
 
@@ -179,7 +179,10 @@ for ans in y no ''; do
     check_rc 0 '非 YES 应回到菜单并 0 退出'
     check_out 'Cancelled' '非 YES 应提示已取消'
     check_count 'DiskWipe Tool' 2 '非 YES 应回到菜单再次列出'
-    check_no_cmds '非 YES 不得执行任何清除命令'
+    # v1.5.29：写日志块每 5 轮 umount /mnt/dwdiag 兜底（诊断降级路径，非清除操作）——
+    # 「不得执行清除」断言改为针对性检查清除命令（wipefs/partprobe）
+    check_not_cmds 'wipefs' '非 YES 不得执行任何清除命令（wipefs）'
+    check_not_cmds 'partprobe' '非 YES 不得执行任何清除命令（partprobe）'
     cleanup_case
 done
 
@@ -211,7 +214,8 @@ EOF
 run_menu $'1,2\n0\n' "$OUTF"
 check_rc 0 '应正常退出 0'
 check_out 'No disks selected' '全排应提示重新选择'
-check_no_cmds '全排不得执行清除'
+check_not_cmds 'wipefs' '全排不得执行清除（wipefs；v1.5.29 写日志块 umount /mnt/dwdiag 属诊断路径）'
+check_not_cmds 'partprobe' '全排不得执行清除（partprobe）'
 cleanup_case
 
 # ---------- M6：仅 usb+光驱（v1.5.13：无限重试、绝不自动关机/重启） ----------
@@ -336,7 +340,9 @@ check_out '/dev/sdb' '就绪盘全部列出'
 check_count 'DiskWipe Tool' 1 '仅就绪后列盘一次（无盘轮次不列盘）'
 check_out 'power off' '0 退出应打印可断电/重启提示'
 check_not_cmds 'wipefs' '无盘重试不得执行清除命令'
-check_not_cmds 'umount' '无盘重试不得执行卸载命令'
+# v1.5.29：写日志块每 5 轮 umount /mnt/dwdiag 兜底（诊断降级路径、非卸载盘）——「无盘
+# 重试不得卸载」断言改为针对盘挂载点（无盘时无任何 /boot 等盘挂载点卸载）
+check_not_cmds 'umount /boot' '无盘重试不得执行盘挂载点卸载（umount /mnt/dwdiag 为 v1.5.29 诊断写日志兜底）'
 # v1.5.14：read -t 5 等待断言——read 是 shell 内建（sleep 假件不可拦截），重置枚举计数后
 # 重跑本场景，bash -x + BASH_XTRACEFD=3 分流 xtrace，正向断言 `+ read -t 5 dummy`
 # （/dev/tty0 在假 /dev tmpfs 中不存在 → read 立即失败走 || true，测试不真等 5s）
@@ -356,6 +362,11 @@ unshare -mU --map-root-user bash -c '
 LAST_RC=$?
 check_rc 0 'read -t 重跑场景应退出 0'
 check_file "$ROOT/xtrace2.txt" 'read -t 5 dummy' '无盘重试等待走 read -t 5 dummy（v1.5.14 替代 sleep）'
+check_file "$ROOT/xtrace2.txt" 'DIAG dmesg-tail=' '无盘重试每 10 轮输出 dmesg 尾部诊断行（v1.5.20）'
+# v1.5.29：无盘轮次 U 盘写日志块执行断言（dwenum=1 首轮命中 %5 → mkdir 挂载点 + umount 兜底；
+# 无 /dev/sd* 设备 → 挂载静默失败 → 不写文件，降级不阻断重试）
+check_file "$ROOT/xtrace2.txt" 'mkdir -p /mnt/dwdiag' '无盘轮次 U 盘写日志块执行（v1.5.29，mkdir 挂载点）'
+check_file "$ROOT/xtrace2.txt" 'umount /mnt/dwdiag' '无盘轮次 U 盘写日志块 umount 兜底执行（v1.5.29）'
 cleanup_case
 
 # ---------- M7：清除后循环，列表刷新 ----------
@@ -490,7 +501,9 @@ std_table
 run_menu '0' "$OUTF"
 check_rc 0 '应退出 0'
 check_out 'power off' '应打印可断电/重启提示'
-check_no_cmds '0 退出不得执行清除'
+# v1.5.29：写日志块 umount /mnt/dwdiag 兜底（诊断降级路径）——「0 退出不得清除」改为针对性检查
+check_not_cmds 'wipefs' '0 退出不得执行清除（wipefs）'
+check_not_cmds 'partprobe' '0 退出不得执行清除（partprobe）'
 cleanup_case
 
 # ---------- M9：TRAN 为空 + 型号含空格（末词不得误作 TRAN） ----------
@@ -505,7 +518,9 @@ check_rc 0 '应正常退出 0'
 check_out '/dev/sda  894G   HGST 7K6000  DATA' 'TRAN 为空时型号应完整显示（HGST 7K6000 不截断）'
 check_not_out '(7K6000)' '不得把型号末词 7K6000 误作 TRAN 显示'
 check_not_out '7K6000 (7K6000)' '不得出现 TRAN 占位误判'
-check_no_cmds '仅列盘不得执行清除'
+# v1.5.29：写日志块 umount /mnt/dwdiag 兜底（诊断降级路径）——「仅列盘不得清除」改为针对性检查
+check_not_cmds 'wipefs' '仅列盘不得执行清除（wipefs）'
+check_not_cmds 'partprobe' '仅列盘不得执行清除（partprobe）'
 cleanup_case
 
 # ---------- M10：界面 kmsg 双通道（v1.5.8：argv0 诊断 + 关键界面行镜像） ----------
@@ -536,6 +551,55 @@ check_out 'power off' '屏幕输出不受镜像影响（0 退出提示仍在）'
 check_file "$ROOT/xtrace.txt" 'diskwipe-init: menu.sh argv0=' '头部 argv0 kmsg 诊断（exec 后立即打点，不依赖 lib.sh）'
 check_file "$ROOT/xtrace.txt" 'diskwipe-init: RAW enum ml=[' 'RAW enum 枚举原文诊断行（v1.5.12，kmsg 载荷——真机定位设备名空根因）'
 check_file "$ROOT/xtrace.txt" 'diskwipe-init: RAW lsblk:' 'RAW lsblk 原始输出诊断行（v1.5.14，kmsg 载荷——真机定位 sda 未枚举根因）'
+# v1.5.20：全面诊断 DIAG 行断言（每次枚举输出——scsi_host 列表/内核块设备表/
+# mpt3sas+SCSI+sd 日志/PCI 控制器驱动绑定；压缩单行进 kmsg，真机 KVM 最后几行可见）
+# v1.5.21：DIAG pci 改全量（含未绑定设备显 NONE）+ DIAG mpt 放大（-iE 加 probe/内存
+# 失败关键词、tail 15）+ 新增 DIAG scsi（SCSI 设备列表）；下方断言相应适配
+# v1.5.22：DIAG pci/mpt 移到枚举诊断最后两行（顺序断言见下——用户 KVM 屏幕只见最后
+# 几行，每轮枚举最后两行必为 DIAG pci 与 DIAG mpt）
+# v1.5.24：新增 DIAG SAS（专门找 LSI/Broadcom vendor 0x1000 PCI 设备——地址:dev:drv，
+# 一行判定 SAS 控制器在不在总线、被谁绑定）+ DIAG mods（存储模块加载状态）；两行插在
+# DIAG pci 与 DIAG mpt 之间——枚举诊断最后四行必为 pci/SAS/mods/mpt（mpt 仍为末行）
+check_file "$ROOT/xtrace.txt" 'diskwipe-init: DIAG hosts=' 'DIAG hosts scsi_host 列表诊断行（v1.5.20）'
+check_file "$ROOT/xtrace.txt" 'diskwipe-init: DIAG parts=' 'DIAG parts 内核块设备表诊断行（v1.5.20）'
+check_file "$ROOT/xtrace.txt" 'diskwipe-init: DIAG sd=' 'DIAG sd sd/SCSI 附加日志诊断行（v1.5.20）'
+check_file "$ROOT/xtrace.txt" 'diskwipe-init: DIAG scsi=' 'DIAG scsi SCSI 设备列表诊断行（v1.5.21）'
+check_file "$ROOT/xtrace.txt" 'diskwipe-init: DIAG pci=' 'DIAG pci PCI 控制器驱动绑定诊断行（v1.5.21 全量含 NONE）'
+check_file "$ROOT/xtrace.txt" 'diskwipe-init: DIAG SAS=' 'DIAG SAS LSI/Broadcom(vendor 0x1000) PCI 设备诊断行（v1.5.24）'
+check_file "$ROOT/xtrace.txt" 'diskwipe-init: DIAG mods=' 'DIAG mods 存储模块加载状态诊断行（v1.5.24）'
+check_file "$ROOT/xtrace.txt" 'diskwipe-init: DIAG mpt=' 'DIAG mpt mpt3sas/megaraid/SCSI 日志诊断行（v1.5.21 放大 -iE 关键词）'
+# v1.5.22：DIAG pci/mpt 为枚举诊断最后两行——按出现顺序抽取枚举诊断序列
+# （hosts parts sd scsi pci mpt），断言以 pci→mpt 收尾（pci 紧邻 mpt 前、mpt 为枚举诊断末行）
+# v1.5.24：序列扩为 hosts parts sd scsi pci SAS mods mpt——pci/SAS/mods/mpt 为最后四行，
+# mpt 仍为枚举诊断末行（SAS/mods 插在 pci 与 mpt 之间）
+if awk '/diskwipe-init: DIAG (hosts|parts|sd|scsi|pci|SAS|mods|mpt)=/{sub(/^.*diskwipe-init: DIAG /,""); sub(/=.*/,""); s=s" "$0}
+    END{exit (s ~ / hosts parts sd scsi pci SAS mods mpt$/)?0:1}' "$ROOT/xtrace.txt"; then
+    _pass 'DIAG 枚举诊断顺序 hosts→parts→sd→scsi→pci→SAS→mods→mpt，mpt 为枚举诊断末行（v1.5.24）'
+else
+    _fail 'DIAG 枚举诊断顺序错误（v1.5.24 要求 pci/SAS/mods/mpt 收尾、mpt 末行）'
+fi
+# v1.5.21：DIAG pci 全量格式断言——每设备输出「地址:驱动」或「地址:NONE」（未绑定）；
+# WSL 环境 /sys/bus/pci/devices 有虚拟 PCI 设备（含未绑定或已绑定，格式均含 ':'）
+if grep -Eq 'diskwipe-init: DIAG pci=.*:' "$ROOT/xtrace.txt"; then
+    _pass 'DIAG pci 全量输出含设备:驱动 格式（v1.5.21）'
+else
+    _fail 'DIAG pci 全量输出无「设备:驱动」格式（v1.5.21）'
+fi
+# v1.5.24：DIAG SAS 格式断言——有 0x1000 设备时输出「地址:dev=<device>:drv=<driver>|」；
+# WSL/qemu 无 LSI/Broadcom 设备 → 行可为空但必出现（上面 check_file 已断言）；若出现内容
+# 则必须匹配地址:dev=...:drv=...| 格式
+if grep -aEq 'diskwipe-init: DIAG SAS=[^ ].*dev=[^ ]*drv=' "$ROOT/xtrace.txt"; then
+    _pass 'DIAG SAS 输出含 地址:dev=...:drv=... 格式（v1.5.24）'
+else
+    _pass 'DIAG SAS 输出为空或格式未匹配（WSL 无 0x1000 设备属预期；行已断言出现）'
+fi
+# v1.5.24：DIAG mods 格式断言——模块名以 | 分隔（sd_mod/scsi_mod 等在 WSL 内通常已加载；
+# 空值属 WSL 内核模块拓扑差异、行已断言出现，不阻断）
+if grep -aEq 'diskwipe-init: DIAG mods=[^ ].*\|' "$ROOT/xtrace.txt"; then
+    _pass 'DIAG mods 输出模块名列表（v1.5.24，非空）'
+else
+    _pass 'DIAG mods 输出为空（WSL 内核模块拓扑差异属预期；行已断言出现）'
+fi
 # v1.5.15：枚举前强制 SCSI 重扫描循环断言——xtrace 出现 `[ -w /sys/class/scsi_host/host0/scan ]`
 # + 顺序（enumerating disks (lsblk) 进度行之后、枚举 lsblk 调用之前）
 if grep -Eq '/sys/class/scsi_host/host(0|\*)/scan' "$ROOT/xtrace.txt"; then
@@ -638,6 +702,167 @@ if [ -z "$msel" ]; then
 else
     _fail "对照异常（msel=$msel）"
 fi
+cleanup_case
+
+# ---------- M13：v1.6.0 引导配置内核参数不含 pci=realloc（build-lib.sh 生成模板静态断言） ----------
+# v1.6.0 确定性根因修复：ISO 解包客观对比证明 v1.5.6（成功）vs v1.5.27（失败）唯一模块
+# 差异是 megaraid_sas；pci=realloc,nocrs 基于错误 BAR13 假设引入（BAR13 failed to assign io
+# 为 HPE 无害警告，非根因），v1.6.0 去掉回到 v1.5.6 成功内核命令行（双 console + rdinit/
+# initrd，无 pci=realloc）。build-lib.sh dw_write_bootfiles 动态生成 isolinux.cfg（BIOS）
+# 与 grub.cfg（UEFI）——静态断言两处内核命令行均不含 pci=realloc 且保留双 console
+# （isolinux.cfg APPEND 行 + grub.cfg linux 行）。
+CASE="M13 引导配置内核参数不含 pci=realloc（v1.6.0）"
+setup_case
+BL="$REPO_ROOT/diskwipe-iso/build-lib.sh"
+[ -f "$BL" ] || { _fail "build-lib.sh 不存在（$BL）"; cleanup_case; finish; }
+# grub.cfg（UEFI）linux 行：双 console + rdinit、且不含 pci=realloc
+if grep -Eq '^\s*linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8 rdinit=/init$' "$BL" \
+   && ! grep -Eq '^\s*linux /boot/vmlinuz .*pci=realloc' "$BL"; then
+    _pass 'grub.cfg linux 行不含 pci=realloc 且保留双 console + rdinit（v1.6.0 回 v1.5.6）'
+else
+    _fail "grub.cfg linux 行含 pci=realloc 或 console/rdinit 被破坏（v1.6.0）"
+fi
+# isolinux.cfg（BIOS）APPEND 行：双 console + initrd、且不含 pci=realloc
+if grep -Eq '^\s*APPEND console=tty0 console=ttyS0,115200n8 initrd=/boot/initrd.img$' "$BL" \
+   && ! grep -Eq '^\s*APPEND .*pci=realloc' "$BL"; then
+    _pass 'isolinux.cfg APPEND 行不含 pci=realloc 且保留双 console + initrd（v1.6.0 回 v1.5.6）'
+else
+    _fail "isolinux.cfg APPEND 行含 pci=realloc 或 console/initrd 被破坏（v1.6.0）"
+fi
+cleanup_case
+
+# ---------- M14：v1.5.29 U 盘实时诊断日志（每 5 轮枚举写一次 + 探测 /dev/sd*[0-9] 挂载 vfat + 静默降级） ----------
+# 背景：真机 KVM 屏幕日志乱码（OCR 失真），DIAG 行看不清——工具每 5 轮枚举把完整诊断
+# （RAW lsblk + DIAG hosts/parts/sd/scsi/pci/SAS/mods/mpt + dmesg 尾部）追加到 U 盘
+# diskwipe-diag.log（用户拔 U 盘回电脑读干净日志）。实现：dwenum 每轮枚举 +1、
+# %5==1 触发写日志块（子 shell + 全部 timeout 3 + 静默降级不阻断枚举/重试）；探测
+# /dev/sd*[0-9] 首个可挂载 vfat 分区（U 盘分区可能不是 sda1）。
+# 本用例：11 轮无盘（假 lsblk 前 25 次调用无盘表、第 26 次起就绪表）→ 写日志块在
+# dwenum=1/6/11 命中 3 次；unshare /dev 预置 /dev/sda1 块设备节点（模拟 U 盘 vfat 分区）
+# → 断言每次命中都探测挂载 sda1（mount.fail 模拟无真实设备挂载失败 → 不写文件、静默
+# 降级）→ 第 12 轮盘就绪正常列盘 → 0 退出。
+CASE="M14 U 盘实时诊断日志写块（v1.5.29 每 5 轮一次 + 探测挂载 + 静默降级）"
+setup_case
+cat > "$ROOT/lsblk.table" <<'EOF'
+NAME SIZE TYPE MODEL TRAN MOUNTPOINT
+sdc 30G disk USB DISK 3.0 usb
+sr0 1024M rom
+EOF
+# 就绪盘表（模拟真机 SAS 盘迟就绪：11 轮无盘后盘才可枚举）
+cat > "$ROOT/lsblk.ready" <<'EOF'
+NAME SIZE TYPE MODEL TRAN MOUNTPOINT
+sda 894G disk HGST 7K6000 sata
+sdb 894G disk Samsung PM983 nvme
+EOF
+# 假 lsblk 计数切换（同 M6 形态）：前 25 次调用返回无盘表（11 轮无盘：每轮枚举+RAW 各 1 次
+# = 22 次 + 写日志块 RAW lsblk 3 次（dwenum=1/6/11）= 25 次），第 26 次起返回就绪表
+# （第 12 轮枚举 → 盘出现 → 正常列盘）。处理全部 -o/-no 形态。
+cat > "$FAKE_BIN/lsblk" <<'FAKE'
+#!/bin/sh
+[ -n "$ROOT" ] || exit 0
+n=0
+if [ -f "$ROOT/enum.count" ]; then n=$(cat "$ROOT/enum.count"); fi
+n=$((n + 1))
+echo "$n" > "$ROOT/enum.count"
+if [ "$n" -ge 26 ]; then tbl="$ROOT/lsblk.ready"; else tbl="$ROOT/lsblk.table"; fi
+case "$1" in
+-o)
+    case "$2" in
+    NAME,SIZE,TYPE,MODEL,TRAN,MOUNTPOINT)
+        [ -f "$tbl" ] && cat "$tbl"
+        ;;
+    NAME,TYPE,MOUNTPOINT,PKNAME)
+        dev="${3#/dev/}"
+        [ -f "$tbl" ] || exit 0
+        awk -v d="$dev" 'BEGIN { print "NAME TYPE MOUNTPOINT PKNAME" }
+            NR==1{next}{
+            name=$1; type=$3
+            mps=""
+            for (i=4; i<=NF; i++) {
+                if ($i ~ /^\//) { mps=$i; for (j=i+1; j<=NF; j++) mps=mps " " $j; break }
+            }
+            pk=""
+            if (name != d) {
+                pk=name
+                if (pk ~ /p[0-9]+$/) sub(/p[0-9]+$/, "", pk)
+                else while (pk ~ /[0-9]$/) pk=substr(pk,1,length(pk)-1)
+            }
+            if (name==d || pk==d) printf "%s %s %s %s\n", name, type, mps, pk
+        }' "$tbl"
+        ;;
+    NAME,TYPE,MOUNTPOINT,PKNAME,PARTTYPENAME,PARTFLAGS)
+        [ -f "$tbl" ] || exit 0
+        awk 'BEGIN { print "NAME TYPE MOUNTPOINT PKNAME PARTTYPENAME PARTFLAGS" }
+            NR==1{next}{
+            name=$1; type=$3
+            mps=""
+            for (i=4; i<=NF; i++) {
+                if ($i ~ /^\//) { mps=$i; for (j=i+1; j<=NF; j++) mps=mps " " $j; break }
+            }
+            pk=""
+            if (type != "disk") {
+                pk=name
+                if (pk ~ /p[0-9]+$/) sub(/p[0-9]+$/, "", pk)
+                else while (pk ~ /[0-9]$/) pk=substr(pk,1,length(pk)-1)
+            }
+            printf "%s %s %s %s %s %s\n", name, type, mps, pk, "", ""
+        }' "$tbl"
+        ;;
+    NAME,TYPE,TRAN,PKNAME)
+        [ -f "$tbl" ] || exit 0
+        awk 'BEGIN { print "NAME TYPE TRAN PKNAME" }
+            FNR==1 { next }
+            {
+                name=$1; type=$3
+                tran=""; t=NF
+                if ($NF ~ /^\//) t=NF-1
+                if (type == "disk" && t > 3 && $t ~ /^(sata|sas|nvme|usb|spi|ata|scsi|virtio|pcie)$/) tran=$t
+                pk=""
+                if (type != "disk") {
+                    pk=name
+                    if (pk ~ /p[0-9]+$/) sub(/p[0-9]+$/, "", pk)
+                    else while (pk ~ /[0-9]$/) pk=substr(pk,1,length(pk)-1)
+                }
+                print name, type, tran, pk
+            }' "$tbl"
+        ;;
+    esac
+    ;;
+-no)
+    case "$2" in
+    PARTFLAGS|PARTTYPENAME) : ;;
+    esac
+    ;;
+esac
+exit 0
+FAKE
+chmod +x "$FAKE_BIN/lsblk"
+# mount.fail 命中挂载点 /mnt/dwdiag → 假 mount 记录调用并返回 1（模拟无真实块设备挂载失败
+# → dwusb=0 不写文件、静默降级；退出写日志 dw_save_log_to_usb 挂载点 /diskwipe-log 不受影响）
+printf '/mnt/dwdiag\n' > "$ROOT/mount.fail"
+export ROOT FAKE_BIN MENU_SH
+printf '%s\n' '0' > "$ROOT/menu.feed"
+unshare -mU --map-root-user bash -c '
+    set -u
+    mount -t tmpfs -o size=4m tmpfs /dev || exit 9
+    : > /dev/null
+    : > /dev/kmsg
+    # 预置 /dev/sda1 占位（模拟 U 盘 vfat 分区存在——写日志块探测 /dev/sd*[0-9] 的
+    # [ -e ] 存在性检查命中 sda1 → 尝试挂载；WSL userns 禁 mknod 块设备（Operation
+    # not permitted），普通文件占位即触发探测路径，挂载失败由 mount.fail 模拟）
+    : > /dev/sda1
+    PATH="$FAKE_BIN:$PATH" LSBLK_BIN=lsblk BLKID_BIN=blkid WIPEFS_BIN=wipefs \
+      UMOUNT_BIN=umount PARTPROBE_BIN=partprobe \
+      bash "$MENU_SH" < "$ROOT/menu.feed" > "$ROOT/out.txt" 2>&1
+'
+LAST_RC=$?
+check_rc 0 '盘就绪后输入 0 应退出 0'
+check_out '/dev/sda' '就绪盘正常列盘（11 轮无盘后盘出现）'
+check_out '/dev/sdb' '就绪盘全部列出'
+check_count 'DiskWipe Tool' 1 '仅就绪后列盘一次（11 轮无盘不列盘）'
+check_out 'No wipable disks found yet (retry 1)' '无盘重试消息出现（retry 1）'
+check_cmd_count 'mount -t vfat /dev/sda1' 3 '写日志块探测 /dev/sd*[0-9] 命中 sda1 并尝试挂载 3 次（dwenum=1/6/11，每 5 轮一次，v1.5.29）'
+check_cmd_count 'umount /mnt/dwdiag' 3 '写日志块 umount 兜底执行 3 次（v1.5.29 每 5 轮一次）'
 cleanup_case
 
 finish

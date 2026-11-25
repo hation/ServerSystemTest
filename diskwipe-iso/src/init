@@ -76,10 +76,10 @@ case "$(uname -r 2>/dev/null)" in
     # 出现）。v1.5.8 曾去掉 uas（UAS 绑定 ASolid U 盘协议异常 D 状态卡死）、v1.5.9 曾去掉
     # usb-storage（U 盘绑定读盘触发内核 I/O 阻塞）——v1.5.18 回退 v1.5.6 纯净配置
     # （去 max_queue_depth/init rescan/rmmod；usb-storage/uas 保持在场不卸载）。
-    # v1.5.19：megaraid_sas 已去掉（与 mpt3sas 竞争同一 LSI SAS 控制器——真机根因，
-    # 联网确认 Broadcom/Proxmox/Dell 已知问题；v1.5.6 盘在 mpt3sas、无需 megaraid_sas；
-    # 只留 mpt3sas 独占控制器带出 SAS 盘）。
-    DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat"
+    # v1.6.0：恢复 megaraid_sas——ISO 解包客观对比证明 v1.5.6（唯一 sda 识别成功）与
+    # v1.5.27（失败）initrd 模块清单唯一差异是 megaraid_sas（mpt3sas 依赖 raid_class/
+    # scsi_transport_sas 两边都完整）；v1.5.19「与 mpt3sas 竞争」假设被证伪，加回。
+    DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat"
     ;;
 esac
 
@@ -107,7 +107,14 @@ for im in $DRIVE_MODULES; do
     # v1.5.18：恢复正常 modprobe "$im"（v1.5.16 曾给 mpt3sas 传 max_queue_depth=10000——
     # 复盘认为该参数或干扰 mpt3sas 初始化，回退 v1.5.6 纯净加载；v1.5.16 的 max_queue_depth
     # 分支一并删除）。
-    timeout 5 modprobe "$im" 2>/dev/null || echo "WARN: module $im load failed/timed out"
+    # v1.5.20：记录每条模块加载退出码（kmsg DIAG——真机定位 mpt3sas 等加载失败/超时的
+    # 直接证据；仅失败时输出，成功不刷屏）。
+    timeout 5 modprobe "$im" 2>/dev/null
+    dwmrc=$?
+    if [ "$dwmrc" -ne 0 ]; then
+        echo "WARN: module $im load failed/timed out"
+        dw_progress "DIAG mod $im rc=$dwmrc FAILED"
+    fi
 done
 dw_progress "Disk driver modules loaded"
 # v1.5.18：init 的 scsi_host rescan 循环已删除（v1.5.15 加项；复盘认为强制 rescan 或干扰

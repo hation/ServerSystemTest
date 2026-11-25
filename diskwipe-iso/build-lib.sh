@@ -40,8 +40,9 @@
 #   4) 写引导文件 + 放置 vmlinuz/initrd.img 到 rootfs/boot/：
 #      boot/grub/grub.cfg（UEFI 精简 GRUB 用，文本终端 terminal_output console +
 #      gfxmode/gfxpayload=text，linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8
-#      + initrd）、isolinux/isolinux.bin + isolinux.cfg（BIOS 用，KERNEL /boot/vmlinuz +
-#      APPEND console=tty0 console=ttyS0,115200n8 initrd=/boot/initrd.img）、
+#      + initrd）、isolinux/isolinux.bin + isolinux.cfg（BIOS 用，
+#      KERNEL /boot/vmlinuz + APPEND console=tty0 console=ttyS0,115200n8
+#      initrd=/boot/initrd.img）、
 #      EFI/BOOT/BOOTX64.EFI（grub-mkimage 精简版，无 gfxterm/video 模块）
 #   5) xorriso 手动打包 BIOS(ISOLINUX)+UEFI(精简 GRUB) 双引导 iso →
 #      <proj>/output/diskwipe-v<版本>.iso（替代 grub-mkrescue）
@@ -72,10 +73,11 @@ DW_MODULES="ahci libahci libata nvme nvme-core mpt3sas virtio_blk virtio_pci xhc
 # SCSI 扫描带出 SAS 盘；v1.5.8 曾去掉 uas（UAS 绑定 ASolid U 盘协议异常 D 状态卡死）、
 # v1.5.9 曾去掉 usb-storage（U 盘绑定读盘触发内核 I/O 阻塞）——v1.5.17 以 init 内
 # 「就绪后 rmmod 卸载」化解（SAS 盘带出后卸载防 U 盘卡死）；initrd 重新打包 usb-storage/uas
-# v1.5.19：megaraid_sas 已去掉——与 mpt3sas 竞争同一 LSI SAS 控制器（联网确认
-# Broadcom/Proxmox/Dell 已知问题；v1.5.6 盘在 mpt3sas、无需 megaraid_sas），只留
-# mpt3sas 独占控制器带出 SAS 盘（与 src/init Kylin 白名单同步）
-DW_KYLIN_MODULES="ahci libahci libata nvme nvme-core mpt3sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat ast"
+# v1.6.0：恢复 megaraid_sas——ISO 解包客观对比证明 v1.5.6（唯一 sda 识别成功）与
+# v1.5.27（失败）initrd 模块清单唯一差异是 megaraid_sas（mpt3sas 依赖 raid_class/
+# scsi_transport_sas 两边都完整）；v1.5.19「与 mpt3sas 竞争」假设被证伪，加回
+#（与 src/init Kylin 白名单同步）
+DW_KYLIN_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat ast"
 # v1.5.6 显卡种子只保留 ast（Kylin 模式）：真机为 AST2500；mgag200/smifb/bochs-drm/cirrus/
 # virtio-gpu 在无对应硬件时 modprobe 可能内核 D 状态挂起（用户态 timeout 无效）导致 init
 # 卡死（真机实证 sdb 枚举后无输出）——initrd 不再打包这些模块（构建体积减小、init 无法
@@ -404,11 +406,14 @@ dw_write_bootfiles() {
     #     而不会进入盲模式，照常执行 linux/initrd/boot，根治真机 UEFI+Ventoy+KVM VGA
     #     盲模式卡死、内核未启动的问题。serial 行兼容 Ventoy grub（其 core 已含 serial 模块，
     #     insmod 幂等；本 iso 的 BOOTX64.EFI core 亦内嵌 serial/terminal 模块）。
-    #     无 gfxterm/video 模块、无 gfxpayload=text（内核跳过 efifb 直接 fallback）
+    #     无 gfxterm/video 模块、无 gfxpayload=text（内核跳过 efifb 直接 fallback）。
+    #     v1.6.0：去掉 pci=realloc,nocrs——回 v1.5.6 成功配置（BAR13 为 HPE 无害警告，
+    #     非根因；根因是误删 megaraid_sas）
     cat > "$rootfs/boot/grub/grub.cfg" <<EOF
 # v1.5.3 UEFI 直启 + serial 终端兜底（消除盲模式卡死；无 gfxterm/video/gfxpayload）
 # 无菜单渲染：不等待终端、不渲染 menuentry；serial 保证至少一个可用终端 → 不进入盲模式
 # （v1.5.0 起 BIOS 走 ISOLINUX 不再经 GRUB，此配置仅 UEFI 路径使用）
+# v1.6.0：去掉 pci=realloc,nocrs——回 v1.5.6 成功内核命令行（BAR13 为 HPE 无害警告，非根因；根因是误删 megaraid_sas）
 insmod serial
 serial --unit=0 --speed=115200 --word=8 --parity=no --stop=1
 terminal_output serial console
@@ -424,6 +429,8 @@ EOF
     #     syslinux 6.x 的核心代码在 ldlinux.c32（/usr/lib/syslinux/modules/bios/，来自
     #     syslinux-common 包），必须与 isolinux.bin 同目录，否则 isolinux 报
     #     "Failed to load ldlinux.c32"）
+    #     v1.6.0：APPEND 行去掉 pci=realloc,nocrs——回 v1.5.6 成功内核命令行（BAR13 为
+    #     HPE 无害警告，非根因；根因是误删 megaraid_sas）
     mkdir -p "$rootfs/isolinux" || { dw_fail "mkdir isolinux 失败"; return 1; }
     cp /usr/lib/ISOLINUX/isolinux.bin "$rootfs/isolinux/isolinux.bin" \
         || { dw_fail "拷贝 isolinux.bin 失败（isolinux 包未安装？）"; return 1; }
@@ -530,21 +537,25 @@ dw_verify_iso() {
     done
     echo "     校验通过：isolinux.bin/ldlinux.c32/isolinux.cfg、EFI/BOOT/BOOTX64.EFI + efi.img、boot/grub/grub.cfg、boot/vmlinuz、boot/initrd.img 均在 iso 中（-l 目录树 + -x 抽取实检）"
 
-    # 6.2a isolinux.cfg（BIOS 路径内核参数来源）含 KERNEL /boot/vmlinuz、initrd=、双 console
+    # 6.2a isolinux.cfg（BIOS 路径内核参数来源）含 KERNEL /boot/vmlinuz、initrd=、双 console；
+    #     v1.6.0：不得含 pci=realloc（回 v1.5.6 成功配置，BAR13 为 HPE 无害警告非根因）
     icfg="$(isoinfo -R -i "$iso" -x /isolinux/isolinux.cfg 2>/dev/null)"
     printf '%s\n' "$icfg" | grep -q 'KERNEL /boot/vmlinuz' || { dw_fail "isolinux.cfg 缺少 KERNEL /boot/vmlinuz"; return 1; }
     printf '%s\n' "$icfg" | grep -q 'initrd=/boot/initrd.img' || { dw_fail "isolinux.cfg 缺少 initrd=/boot/initrd.img"; return 1; }
     printf '%s\n' "$icfg" | grep -q 'console=tty0' || { dw_fail "isolinux.cfg 缺少 console=tty0"; return 1; }
     printf '%s\n' "$icfg" | grep -q 'console=ttyS0,115200n8' || { dw_fail "isolinux.cfg 缺少 console=ttyS0,115200n8"; return 1; }
-    echo "     校验通过：isolinux.cfg 含 KERNEL /boot/vmlinuz + initrd=/boot/initrd.img + console=tty0/ttyS0,115200n8"
+    if printf '%s\n' "$icfg" | grep -qE '^\s*APPEND .*pci=realloc'; then dw_fail "isolinux.cfg APPEND 行含 pci=realloc（v1.6.0 应移除）"; return 1; fi
+    echo "     校验通过：isolinux.cfg 含 KERNEL /boot/vmlinuz + initrd=/boot/initrd.img + console=tty0/ttyS0,115200n8 且 APPEND 行无 pci=realloc（v1.6.0）"
 
-    # 6.2b grub.cfg（UEFI 路径）含双 console 参数，且无诊断残留（debug loglevel / 诊断 echo）
+    # 6.2b grub.cfg（UEFI 路径）含双 console 参数且无 pci=realloc（v1.6.0），且无诊断
+    #     残留（debug loglevel / 诊断 echo）
     gcfg="$(isoinfo -R -i "$iso" -x /boot/grub/grub.cfg 2>/dev/null)"
     printf '%s\n' "$gcfg" | grep -q 'console=tty0' || { dw_fail "grub.cfg 缺少 console=tty0"; return 1; }
     printf '%s\n' "$gcfg" | grep -q 'console=ttyS0,115200n8' || { dw_fail "grub.cfg 缺少 console=ttyS0,115200n8"; return 1; }
+    if printf '%s\n' "$gcfg" | grep -qE '^\s*linux /boot/vmlinuz .*pci=realloc'; then dw_fail "grub.cfg linux 行含 pci=realloc（v1.6.0 应移除）"; return 1; fi
     if printf '%s\n' "$gcfg" | grep -q 'debug loglevel'; then dw_fail "grub.cfg 残留诊断参数 debug loglevel（应已清理）"; return 1; fi
     if printf '%s\n' "$gcfg" | grep -q 'GRUB: loading'; then dw_fail "grub.cfg 残留诊断 echo 行（应已清理）"; return 1; fi
-    echo "     校验通过：grub.cfg 含双 console 参数且无诊断残留（debug loglevel/echo 已清理）"
+    echo "     校验通过：grub.cfg 含双 console 参数且 linux 行无 pci=realloc，无诊断残留（debug loglevel/echo 已清理，v1.6.0）"
 
     # 6.2c BOOTX64.EFI 精简性：PE 头（MZ 魔数）+ 无 gfxterm/video_fb/efi_gop/efi_uga
     #     模块（grub-mkimage 模块列表已剔除——诊断回归防护：若 gfxterm 模块被打包回 core，

@@ -23,6 +23,11 @@
 #   fallthrough（假 lsblk 在 reboot -f 记录后返回盘）。
 # v1.5.13 适配：M6 改为断言无限重试——无盘时每 5 秒重枚举（假 lsblk 前 3 次枚举返回无盘表、
 #   之后返回就绪盘表 → 盘出现即正常列盘），绝不出现 reboot/sleep 10/关机行为。
+# v1.5.14 适配：M6 断言 read -t 5 等待（sleep 真机失真 5s→~0.17s → 改内建 read -t select
+#   超时；假件 /dev/tty0 不存在 → read 立即失败 || true，用 bash -x xtrace 断言调用）+ 重试
+#   消息每 10 轮一次（重试 2 轮仅 1 条消息）+ 无盘轮次不再调用 sleep 命令；RAW lsblk 诊断每轮
+#   多一次 lsblk 调用 → M6 计数阈值 4→5（前 4 次调用无盘表 = 枚举+RAW 各 2 轮）；M10 加
+#   RAW lsblk kmsg 载荷断言（v1.5.14）。
 # 用例：
 #   M1  两盘 sda/sdb + sdc(usb)：列表含 sda/sdb 不含 sdc；sda 标 SYS、sdb 标 DATA
 #   M2  回车（默认全选）→ YES：调用 wipe.sh 且含 sda sdb；输出确认清单
@@ -205,7 +210,7 @@ check_no_cmds '全排不得执行清除'
 cleanup_case
 
 # ---------- M6：仅 usb+光驱（v1.5.13：无限重试、绝不自动关机/重启） ----------
-CASE="M6 仅启动介质（v1.5.13 无限重试、盘出现即正常、无 reboot）"
+CASE="M6 仅启动介质（v1.5.13 无限重试、v1.5.14 read -t 等待+消息降噪）"
 setup_case
 cat > "$ROOT/lsblk.table" <<'EOF'
 NAME SIZE TYPE MODEL TRAN MOUNTPOINT
@@ -218,7 +223,8 @@ NAME SIZE TYPE MODEL TRAN MOUNTPOINT
 sda 894G disk HGST 7K6000 sata
 sdb 894G disk Samsung PM983 nvme
 EOF
-# 假 lsblk：计数切换——前 3 次枚举返回无盘表（对应 3 轮重试），之后返回就绪盘表
+# 假 lsblk：计数切换——前 4 次调用（枚举 + RAW lsblk 诊断各 2 轮，v1.5.14 每轮多一次
+# lsblk 调用）返回无盘表（对应 2 轮重试），第 5 次起返回就绪盘表
 # （盘出现 → 正常列盘）。处理全部 -o/-no 形态（同 install_fakes；就绪后 dw_scan_system_disks
 # 与退出写日志枚举同样返回就绪表）。
 cat > "$FAKE_BIN/lsblk" <<'FAKE'
@@ -228,7 +234,7 @@ n=0
 if [ -f "$ROOT/enum.count" ]; then n=$(cat "$ROOT/enum.count"); fi
 n=$((n + 1))
 echo "$n" > "$ROOT/enum.count"
-if [ "$n" -ge 4 ]; then tbl="$ROOT/lsblk.ready"; else tbl="$ROOT/lsblk.table"; fi
+if [ "$n" -ge 5 ]; then tbl="$ROOT/lsblk.ready"; else tbl="$ROOT/lsblk.table"; fi
 case "$1" in
 -o)
     case "$2" in
@@ -305,7 +311,8 @@ fake_bin reboot '#!/bin/sh
 [ -n "$ROOT" ] || exit 0
 printf "reboot %s\n" "$*" >> "$ROOT/cmds.txt"
 exit 0'
-# 假 sleep：重试每轮 5s 立即返回（不真等；记录调用供计数断言）
+# 假 sleep：保留假件（记录调用）——断言**绝不调用**（v1.5.14 无盘重试等待改 read -t 内建，
+# sleep 假件不可拦截内建，故调用计数断言不可行，改断言无 sleep 命令调用 + xtrace 断言 read -t）
 fake_bin sleep '#!/bin/sh
 [ -n "$ROOT" ] || exit 0
 printf "sleep %s\n" "$*" >> "$ROOT/cmds.txt"
@@ -313,8 +320,9 @@ exit 0'
 run_menu '0' "$OUTF"
 check_rc 0 '应退出 0（无限重试至盘就绪 → 0 输入退出）'
 check_out 'No wipable disks found yet (retry 1)' '应打印无盘重试消息（retry 1，v1.5.13 无限重试）'
-check_out 'No wipable disks found yet (retry 3)' '应打印无盘重试消息（retry 3）'
-check_cmd_count 'sleep 5' 3 '应无限重试 3 轮（每轮 sleep 5；盘第 4 轮枚举就绪）'
+check_count 'No wipable disks found yet' 1 '重试 2 轮仅打印 1 条消息（v1.5.14 每 10 轮一次降噪）'
+check_not_out 'retry 2' 'retry 2 不打消息（v1.5.14 消息频率降噪）'
+check_not_cmds 'sleep' '无盘重试不再调用 sleep 命令（v1.5.14 read -t 内建等待）'
 check_not_cmds 'sleep 10' '绝不 sleep 10（v1.5.12 的 reboot 前等待已删除）'
 check_not_cmds 'sleep 2' '绝无 fallthrough 的 sleep 2'
 check_not_cmds 'reboot' '绝不 reboot / reboot -f（v1.5.13：真机 reboot -f 执行成关机、安全第一）'
@@ -324,6 +332,25 @@ check_count 'DiskWipe Tool' 1 '仅就绪后列盘一次（无盘轮次不列盘�
 check_out 'power off' '0 退出应打印可断电/重启提示'
 check_not_cmds 'wipefs' '无盘重试不得执行清除命令'
 check_not_cmds 'umount' '无盘重试不得执行卸载命令'
+# v1.5.14：read -t 5 等待断言——read 是 shell 内建（sleep 假件不可拦截），重置枚举计数后
+# 重跑本场景，bash -x + BASH_XTRACEFD=3 分流 xtrace，正向断言 `+ read -t 5 dummy`
+# （/dev/tty0 在假 /dev tmpfs 中不存在 → read 立即失败走 || true，测试不真等 5s）
+rm -f "$ROOT/enum.count"
+printf '%s\n' '0' > "$ROOT/menu.feed"
+export ROOT FAKE_BIN MENU_SH
+unshare -mU --map-root-user bash -c '
+    set -u
+    mount -t tmpfs -o size=4m tmpfs /dev || exit 9
+    : > /dev/null
+    : > /dev/kmsg
+    PATH="$FAKE_BIN:$PATH" LSBLK_BIN=lsblk BLKID_BIN=blkid WIPEFS_BIN=wipefs \
+      UMOUNT_BIN=umount PARTPROBE_BIN=partprobe \
+      BASH_XTRACEFD=3 \
+      bash -x "$MENU_SH" 3> "$ROOT/xtrace2.txt" > "$ROOT/out2.txt" 2>&1 < "$ROOT/menu.feed"
+'
+LAST_RC=$?
+check_rc 0 'read -t 重跑场景应退出 0'
+check_file "$ROOT/xtrace2.txt" 'read -t 5 dummy' '无盘重试等待走 read -t 5 dummy（v1.5.14 替代 sleep）'
 cleanup_case
 
 # ---------- M7：清除后循环，列表刷新 ----------
@@ -503,6 +530,7 @@ check_rc 0 '输入 0 应正常退出 0'
 check_out 'power off' '屏幕输出不受镜像影响（0 退出提示仍在）'
 check_file "$ROOT/xtrace.txt" 'diskwipe-init: menu.sh argv0=' '头部 argv0 kmsg 诊断（exec 后立即打点，不依赖 lib.sh）'
 check_file "$ROOT/xtrace.txt" 'diskwipe-init: RAW enum ml=[' 'RAW enum 枚举原文诊断行（v1.5.12，kmsg 载荷——真机定位设备名空根因）'
+check_file "$ROOT/xtrace.txt" 'diskwipe-init: RAW lsblk:' 'RAW lsblk 原始输出诊断行（v1.5.14，kmsg 载荷——真机定位 sda 未枚举根因）'
 check_file "$ROOT/xtrace.txt" 'diskwipe-init: > ' '输入提示 >  的 kmsg 镜像'
 check_file "$ROOT/xtrace.txt" 'diskwipe-init:   Default: all selected' '排除输入提示行 kmsg 镜像'
 check_file "$ROOT/xtrace.txt" '/dev/sda  894G   HGST 7K6000 (SATA)  SYS' '盘列表行 kmsg 镜像（行内容与屏幕一致）'

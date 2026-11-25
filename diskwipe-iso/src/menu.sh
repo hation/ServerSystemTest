@@ -19,6 +19,8 @@
 #     安全第一：盘就绪即正常列盘，用户可随时断电；v1.5.10：避免 sda 迟就绪误判 +
 #     避免 exit 致 PID1 退出内核 panic；v1.5.11：重试 3 → 6；v1.5.12：reboot -f +
 #     fallthrough 保护（v1.5.13 起整体废弃）；
+#     v1.5.14：等待改 read -t 5（sleep 真机严重失真 5s→~0.17s 致刷新疯狂）+ 重试消息
+#     每 10 轮打一次（屏幕降噪）+ lsblk 原始输出 RAW lsblk 诊断行（定位 sda 未枚举根因）；
 #     枚举原文经 kmsg 打 RAW enum 诊断行（定位设备名空/格式异常根因）；
 #     勾选循环 mdev 为空时从 mtab 兜底补设备名）；
 #     0 退出（打印可断电/重启提示）；清除后回到菜单（列表刷新）。
@@ -94,8 +96,9 @@ while :; do
     # 枚举全部可清盘（lib.sh 内 lsblk 包 "$TIMEOUT_BIN" 3 兜底；超时/失败 → 返回 1 且输出空）。
     # 枚举失败（超时等）→ 打印错误并自动重试一次；仍失败 → 打印错误 + 可安全重启提示，
     # 绝不误判"仅启动介质"退出；枚举成功但为空（仅 usb+光驱）→ 走下方 v1.5.13 无盘路径：
-    # 无限重试（每 5 秒重枚举 + continue，永不自动关机/重启——真机 reboot -f 执行成关机、
-    # 用户未及操作即断电；盘就绪即正常列盘）。交互逻辑其余不变。
+    # 无限重试（每 5 秒重枚举（v1.5.14 起 read -t 5 等待，sleep 真机失真）+ continue，永不
+    # 自动关机/重启——真机 reboot -f 执行成关机、用户未及操作即断电；盘就绪即正常列盘）。
+    # 交互逻辑其余不变。
     dw_progress "enumerating disks (lsblk)"
     ml="$(dw_enum_disks)"
     if [ "$?" -ne 0 ]; then
@@ -109,6 +112,10 @@ while :; do
     fi
     # v1.5.12：枚举原文诊断（kmsg 输出枚举原文——真机屏幕可见，定位设备名空/格式异常的根因；
     # 例：无盘时显示 "RAW enum ml=[]" 即可确认枚举结果本身为空、而非设备名提取失败）
+    # v1.5.14：RAW lsblk 原始输出诊断（在 RAW enum 前——定位真机 sda 一直未被枚举：
+    # 区分「sda 设备未就绪/不存在」vs「lsblk 有输出但 dw_enum_disks 的 awk 解析过滤掉」；
+    # tr '\n' '|' 把多行压成一行进 kmsg；2>&1 捕获错误）
+    dw_progress "RAW lsblk: $(lsblk -o NAME,SIZE,TYPE,MODEL,TRAN,MOUNTPOINT 2>&1 | tr '\n' '|')"
     dw_progress "RAW enum ml=[$ml]"
     if [ -z "$ml" ]; then
         # v1.5.13：无盘无限重试——每 5 秒重枚举，盘就绪即正常；绝不自动关机/重启
@@ -118,9 +125,14 @@ while :; do
         # v1.5.13 起废弃 reboot/sleep 10/fallthrough）。重试消息经 dw_log/dw_progress
         # 双通道（屏幕 + kmsg 可见）。
         dwnoretry=$((dwnoretry + 1))
-        dw_log "No wipable disks found yet (retry $dwnoretry). Retrying every 5s... (you may power off anytime)"
-        dw_progress "no disks, retry $dwnoretry (sleep 5, never auto poweroff/reboot)"
-        sleep 5
+        # v1.5.14：重试消息每 10 轮打一次（其余轮仅计数不刷屏幕，噪音大减；枚举每轮仍进行）
+        if [ $((dwnoretry % 10)) -eq 1 ]; then
+            dw_log "No wipable disks found yet (retry $dwnoretry). Retrying... (you may power off anytime)"
+            dw_progress "no disks, retry $dwnoretry (never auto poweroff/reboot)"
+        fi
+        # v1.5.14：sleep 在真机严重失真（5s 实际 ~0.17s → 刷新疯狂）；read -t 用 select 超时，
+        # 若时钟正常则 5s 真实等待（等待期间用户按键可提前跳过——tty0 已重定向）。
+        read -t 5 dummy < /dev/tty0 2>/dev/null || true
         continue
     fi
 

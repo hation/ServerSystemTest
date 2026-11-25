@@ -57,7 +57,10 @@
 # 模块白名单（与 src/init 的 DRIVE_MODULES 一致，见设计 §6.2）。
 # usb_storage/uas：退出时日志写 U 盘需要（无 U 盘时加载亦无害；依赖 usbcore/scsi_mod/sd_mod 已在列）；
 # nls_iso8859-1/exfat/ntfs3：vfat 挂载 iocharset / exfat、ntfs3（模块）退出写日志 U 盘需要
-DW_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod usb_storage uas nls_iso8859-1 exfat ntfs3"
+# v1.5.19：megaraid_sas 已去掉——与 mpt3sas 竞争同一 LSI SAS 控制器（联网确认 Broadcom/
+# Proxmox/Dell 已知问题，需禁用其一）；v1.5.6 唯一 sda 识别成功盘在 mpt3sas 无需
+# megaraid_sas，只留 mpt3sas 独占控制器（与 src/init 白名单同步）
+DW_MODULES="ahci libahci libata nvme nvme-core mpt3sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod usb_storage uas nls_iso8859-1 exfat ntfs3"
 # Kylin 4.19 白名单（文件名形态，与 src/init 的 Kylin DRIVE_MODULES 一致，见设计 §6.2）：
 # 与 Ubuntu 差异：xhci_pci/scsi_mod/virtio_pci/virtio/usbcore/ehci/ohci 为内核内建
 # （modules.builtin，无模块文件）；exfat/ntfs3 无模块（Kylin 4.19 未引入）；
@@ -69,7 +72,10 @@ DW_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk v
 # SCSI 扫描带出 SAS 盘；v1.5.8 曾去掉 uas（UAS 绑定 ASolid U 盘协议异常 D 状态卡死）、
 # v1.5.9 曾去掉 usb-storage（U 盘绑定读盘触发内核 I/O 阻塞）——v1.5.17 以 init 内
 # 「就绪后 rmmod 卸载」化解（SAS 盘带出后卸载防 U 盘卡死）；initrd 重新打包 usb-storage/uas
-DW_KYLIN_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat ast"
+# v1.5.19：megaraid_sas 已去掉——与 mpt3sas 竞争同一 LSI SAS 控制器（联网确认
+# Broadcom/Proxmox/Dell 已知问题；v1.5.6 盘在 mpt3sas、无需 megaraid_sas），只留
+# mpt3sas 独占控制器带出 SAS 盘（与 src/init Kylin 白名单同步）
+DW_KYLIN_MODULES="ahci libahci libata nvme nvme-core mpt3sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat ast"
 # v1.5.6 显卡种子只保留 ast（Kylin 模式）：真机为 AST2500；mgag200/smifb/bochs-drm/cirrus/
 # virtio-gpu 在无对应硬件时 modprobe 可能内核 D 状态挂起（用户态 timeout 无效）导致 init
 # 卡死（真机实证 sdb 枚举后无输出）——initrd 不再打包这些模块（构建体积减小、init 无法

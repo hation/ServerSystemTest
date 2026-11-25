@@ -4,8 +4,14 @@
 #   → sleep 10 等待设备稳定（v1.5.7：去掉重试 mdev 轮询；v1.5.10 加长——mpt3sas
 #   SAS 盘扫描需数秒，menu 枚举前需就绪；U 盘已不绑定，等待期间无 I/O 阻塞风险；
 #   v1.5.13：25 → 10 缩短——SAS 盘扫描数秒即可，盘是否就绪由 menu 持续重试兜底）
-#   → rmmod 卸载 usb-storage/uas（v1.5.17：SAS 盘带出后卸载防 U 盘卡死）
 #   → exec menu.sh（交互菜单）。
+# v1.5.18：回退 v1.5.6 纯净 mpt3sas 配置（唯一 sda 识别成功版本）——去掉 max_queue_depth
+# 分支、init rescan 循环、rmmod usb-storage/uas（v1.5.15/16/17 加项或干扰控制器初始化）；
+# usb-storage/uas 保持在场（白名单加载），U 盘防卡死由 menu 排除 USB + blkid 只扫非 USB 兜底。
+# v1.5.19：白名单去掉 megaraid_sas——megaraid_sas 与 mpt3sas 竞争同一 LSI SAS 控制器
+# （联网确认 Broadcom/Proxmox/Dell 已知问题，需禁用其一）；v1.5.6（唯一 sda 识别成功）
+# 铁证：盘在 mpt3sas（scsi 32）、无需 megaraid_sas。只留 mpt3sas 独占控制器 → SAS 盘
+# 确定带出（不再靠加载时序碰运气）。mpt3sas 保持正常 modprobe（无 max_queue_depth 分支）。
 # v1.5.6 语义：进度走 /dev/kmsg（内核 printk 通道，与内核日志混排，真机 KVM 屏幕最后几行
 #   可见）+ timeout 5 兜底（用户态挂起自动跳过）——仅挂载失败进入救援 shell；模块加载/mdev
 #   失败仅 WARN 继续（驱动缺失由 menu 盘列表体现）。注意：内核 D 状态（不可中断 I/O）用户态
@@ -24,8 +30,8 @@
 #     bash 专属语法），LF 行尾，中文注释。
 #   - 只做启动编排；交互/清除逻辑由 menu.sh/wipe.sh/lib.sh 保证。
 #   - 模块白名单覆盖主流服务器磁盘控制器（AHCI/NVMe/LSI/板载 RAID/虚拟化/USB3 等）与
-#     USB 存储驱动（usb_storage/uas——v1.5.17 恢复：加载触发 SCSI 扫描带出 SAS 盘，
-#     就绪后卸载防 U 盘 I/O 卡死；无 U 盘时加载亦无害），
+#     USB 存储驱动（usb_storage/uas——v1.5.6 唯一 sda 识别成功配置：加载触发 SCSI
+#     扫描带出 SAS 盘；v1.5.18 起保持在场不卸载；无 U 盘时加载亦无害），
 #     依赖模块由 busybox modprobe 按 modules.dep 自动带入。
 #   - 测试经 INIT_PATH 接缝变量注入假件（mount/modprobe/mdev 只记录调用，不真挂载）。
 
@@ -40,12 +46,16 @@ dw_progress() { echo "diskwipe-init: $*" > /dev/kmsg 2>/dev/null; }
 . "$(dirname "$0")/lib.sh"
 
 # 磁盘驱动模块白名单（按此字符串逐模块加载）。
-# usb_storage/uas：v1.5.17 恢复——usb-storage 加载触发 SCSI 总线扫描/事件使 mpt3sas
-#   控制器完成初始化并带出 SAS 盘（v1.5.6 唯一 sda 识别成功的配置；v1.5.9 去掉后 sda
-#   再未出现）；设备就绪后由下方 rmmod 卸载（防 v1.5.7/1.5.8 U 盘 I/O 卡死）。
+# usb_storage/uas：v1.5.6 唯一 sda 识别成功配置——usb-storage 加载触发 SCSI 总线
+#   扫描/事件使 mpt3sas 控制器完成初始化并带出 SAS 盘（v1.5.9 去掉后 sda 再未出现；
+#   v1.5.17 恢复但以「就绪后 rmmod 卸载」防 U 盘卡死——v1.5.18 复盘认为 v1.5.15/16/17
+#   加项（max_queue_depth/init rescan/rmmod）或干扰控制器初始化，回退纯净状态并保持
+#   usb-storage/uas 在场；U 盘防卡死由 menu 排除 USB + blkid 只扫非 USB 兜底）。
 # nls_iso8859-1/exfat/ntfs3：vfat 挂载需 iocharset 模块；exfat/ntfs3 为模块（Ventoy
 #   数据区/Windows U 盘退出写日志需要；无对应设备时加载亦无害）
-DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod usb_storage uas nls_iso8859-1 exfat ntfs3"
+# v1.5.19：megaraid_sas 已去掉（与 mpt3sas 竞争同一 LSI SAS 控制器，Broadcom/Proxmox/
+# Dell 已知问题；v1.5.6 盘在 mpt3sas 无需 megaraid_sas——只留 mpt3sas 独占）
+DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod usb_storage uas nls_iso8859-1 exfat ntfs3"
 # Kylin 4.19 内核（v1.4.0 起 uname -r 含 ky10 时切换）适配：
 #   - xhci_pci/usbcore/ehci/ohci/scsi_mod/virtio_pci/virtio 为内核内建（modules.builtin，
 #     无模块文件可加载——这正是 Kylin 内核在该海光服务器 USB 栈兼容的关键）；白名单剔除
@@ -64,9 +74,12 @@ case "$(uname -r 2>/dev/null)" in
     # modules.dep 解析，usb_storage 与 usb-storage 均能命中）——v1.5.6 唯一 sda 识别成功
     # 的配置：usb-storage 加载触发 SCSI 总线扫描/事件带出 SAS 盘（v1.5.9 去掉后 sda 再未
     # 出现）。v1.5.8 曾去掉 uas（UAS 绑定 ASolid U 盘协议异常 D 状态卡死）、v1.5.9 曾去掉
-    # usb-storage（U 盘绑定读盘触发内核 I/O 阻塞）——v1.5.17 以「就绪后卸载」化解
-    # （SAS 盘带出后 rmmod usb-storage uas，见 settle wait 之后；卸载失败不阻断）。
-    DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat"
+    # usb-storage（U 盘绑定读盘触发内核 I/O 阻塞）——v1.5.18 回退 v1.5.6 纯净配置
+    # （去 max_queue_depth/init rescan/rmmod；usb-storage/uas 保持在场不卸载）。
+    # v1.5.19：megaraid_sas 已去掉（与 mpt3sas 竞争同一 LSI SAS 控制器——真机根因，
+    # 联网确认 Broadcom/Proxmox/Dell 已知问题；v1.5.6 盘在 mpt3sas、无需 megaraid_sas；
+    # 只留 mpt3sas 独占控制器带出 SAS 盘）。
+    DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat"
     ;;
 esac
 
@@ -91,23 +104,14 @@ echo "Mounted /dev"
 #    不再 init_rescue，保证到菜单，驱动缺失由 menu 盘列表体现；原 rescue 语义仅保留给 mount）
 for im in $DRIVE_MODULES; do
     dw_progress "loading module $im"
-    # v1.5.16 修复：mpt3sas 默认 max_queue_depth=32455，高核数服务器（海光）+ initramfs
-    # 内存受限时内核无法分配大队列内存 → scsih_probe 失败 → 控制器不初始化、盘不识别
-    # （Fedora/Broadcom 已知问题）。传 max_queue_depth=10000 降低内存需求（官方方案）。
-    if [ "$im" = "mpt3sas" ]; then
-        timeout 5 modprobe mpt3sas max_queue_depth=10000 2>/dev/null || echo "WARN: module mpt3sas load failed/timed out"
-    else
-        timeout 5 modprobe "$im" 2>/dev/null || echo "WARN: module $im load failed/timed out"
-    fi
+    # v1.5.18：恢复正常 modprobe "$im"（v1.5.16 曾给 mpt3sas 传 max_queue_depth=10000——
+    # 复盘认为该参数或干扰 mpt3sas 初始化，回退 v1.5.6 纯净加载；v1.5.16 的 max_queue_depth
+    # 分支一并删除）。
+    timeout 5 modprobe "$im" 2>/dev/null || echo "WARN: module $im load failed/timed out"
 done
 dw_progress "Disk driver modules loaded"
-
-# v1.5.15 修复：SCSI 驱动（mpt3sas/megaraid_sas）加载后强制重扫描全部 scsi_host——
-# 真机 SAS 盘未被自动扫描带出（lsblk 空）；echo "- - -" 触发一次完整 rescan，
-# 确保盘被内核创建。逐个写、失败跳过（部分 host 非 SCSI 扫描型）。
-for sh in /sys/class/scsi_host/host*/scan; do
-    [ -w "$sh" ] && echo "- - -" > "$sh" 2>/dev/null || true
-done
+# v1.5.18：init 的 scsi_host rescan 循环已删除（v1.5.15 加项；复盘认为强制 rescan 或干扰
+# mpt3sas 控制器初始化——回到 v1.5.6 纯净状态；menu 枚举前 rescan 保留作兜底）。
 
 # 2.5) v1.5.4 显卡驱动：内核自探测显卡硬件 → DRM → fbcon → tty0 显示（不依赖 GRUB framebuffer；
 # 真机 UEFI 下 GRUB 视频初始化失败无 framebuffer，靠显卡驱动重建显示）。
@@ -141,13 +145,9 @@ dw_progress "Device nodes scanned"
 #   ——盘迟就绪也只是多等几个 5s 重试周期，绝不自动关机/重启）。
 dw_progress "device settle wait (sleep)"
 sleep 10
-
-# v1.5.17：SAS 盘已带出（usb-storage 加载触发 SCSI 扫描），卸载 usb-storage/uas——
-# U 盘设备已绑定，退出写日志 U 盘不再需要（日志降级内存+屏幕），卸载消除 U 盘 I/O 阻塞
-# （v1.5.7/1.5.8 卡死根源；busybox rmmod 支持多模块与 '-'→'_' 模块名转换——Kylin
-# usb-storage.ko 运行时模块名为 usb_storage）。卸载失败不阻断（无 U 盘时 usb-storage
-# 仍加载、卸载亦无害）。
-rmmod usb-storage uas 2>/dev/null || true
+# v1.5.18：rmmod usb-storage/uas 段已删除（v1.5.17 加项；复盘认为卸载或干扰 mpt3sas/
+# SCSI 状态，且 v1.5.6 纯净配置即「usb-storage 保持在场」——回到该状态；U 盘防卡死由
+# menu 排除 USB + blkid 只扫非 USB 兜底）。
 
 # 5) 进入交互菜单（exec 替换自身；v1.5.8 加诊断：exec 前后进度，失败兜底救援 shell）
 dw_progress "exec menu.sh"

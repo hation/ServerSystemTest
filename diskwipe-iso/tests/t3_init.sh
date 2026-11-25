@@ -17,8 +17,16 @@
 #   USB 键盘走内建 usbhid 不受影响；退出写日志 U 盘降级留内存）。
 # v1.5.17 适配：Kylin ky10 分支恢复 usb-storage + uas（I5 用例改为断言加载——usb-storage
 #   加载触发 SCSI 扫描带出 SAS 盘（v1.5.6 唯一 sda 识别成功配置，v1.5.9 去掉后 sda 再未
-#   出现））；settle wait（sleep 10）后新增 rmmod usb-storage uas 卸载（防 U 盘卡死；
-#   I1/I5 断言卸载命令 + 顺序在 sleep 10 之后、exec menu.sh 之前；stub 加假 rmmod 记录调用）。
+#   出现））；settle wait（sleep 10）后新增 rmmod usb-storage uas 卸载（防 U 盘卡死）。
+# v1.5.18 适配：回退 v1.5.6 纯净 mpt3sas 配置（唯一 sda 识别成功版本）——删除
+#   max_queue_depth 分支（mpt3sas 恢复正常 modprobe "$m"，I1/I2/I5 断言改普通形态）、
+#   删除 init 的 scsi_host rescan 循环（I1 断言翻转：不得出现）、删除 rmmod usb-storage
+#   uas 段（I1/I5 断言翻转：不得卸载；假 rmmod stub 移除）；usb-storage/uas 白名单保留
+#   （I1/I5 断言加载不变）。
+# v1.5.19 适配：白名单去掉 megaraid_sas（megaraid_sas 与 mpt3sas 竞争同一 LSI SAS 控制器
+#   ——真机根因，联网确认 Broadcom/Proxmox/Dell 已知问题；v1.5.6 唯一 sda 识别成功盘在
+#   mpt3sas、无需 megaraid_sas，只留 mpt3sas 独占）。DRIVE_MODULES 常量同步去掉
+#   megaraid_sas（I1 循环断言不加载）；I5（ky10）清单同样去掉并断言不得加载。
 # v1.5.10 适配：settle wait sleep 3 → 10（I1 用例断言 sleep 10；stub 加假 sleep 立即返回、
 #   记录调用——不真等 10s，同假 timeout 既有模式）。
 # v1.5.11 适配：显卡循环（ast）后新增 HID 驱动保障——`dw_progress "loading HID drivers
@@ -29,17 +37,12 @@
 #   lsblk 可枚举约需 25 秒）。
 # v1.5.13 适配：settle wait 缩短回 10（I1 断言 sleep 10——SAS 盘扫描数秒即可，盘是否
 #   就绪由 menu 无盘无限重试兜底，等待煎熬缩短）。
-# v1.5.15 适配：init 在「Disk driver modules loaded」后新增强制 SCSI 重扫描循环
-#   （echo "- - -" > /sys/class/scsi_host/host*/scan，逐个写、失败跳过——真机 SAS 盘未被
-#   自动扫描带出）。I1 新增 xtrace 断言：`[ -w /sys/class/scsi_host/host0/scan ]` 出现
-#   （循环执行；WSL host0/scan 存在但不可写 → [ -w ] 为假、echo 不执行、零副作用；无
-#   scsi_host 的环境 glob 保持字面量 host*/scan，[ -w ] 同样为假）+ 顺序断言（Disk driver
-#   modules loaded 之后、loading video module ast 之前）。
-# v1.5.16 适配：白名单加载循环中 mpt3sas 单独分支——`modprobe mpt3sas max_queue_depth=10000`
-#   （默认 32455 高核数服务器/initramfs 内存受限时 scsih_probe 失败、控制器不初始化、盘不识别，
-#   Fedora/Broadcom 已知问题；传 10000 为官方方案）。假 modprobe 改为记录完整参数 $*；
-#   I1 断言 mpt3sas 分支带 max_queue_depth=10000（cmds.txt 整行 + xtrace 载荷）、其余模块
-#   形态不变；I2（mpt3sas 加载失败）断言失败形态同样带参数；I5（ky10）mpt3sas 分支同断言。
+# v1.5.15 适配（v1.5.18 已回退删除）：init 曾在「Disk driver modules loaded」后新增
+#   强制 SCSI 重扫描循环（echo "- - -" > /sys/class/scsi_host/host*/scan）——v1.5.18 复盘
+#   认为该 rescan 或干扰 mpt3sas 控制器初始化，删除（I1 断言翻转：xtrace 不得出现）。
+# v1.5.16 适配（v1.5.18 已回退删除）：白名单加载循环中 mpt3sas 曾单独分支
+#   `modprobe mpt3sas max_queue_depth=10000`——v1.5.18 复盘认为该参数或干扰 mpt3sas
+#   初始化，恢复正常 modprobe "$m"（I1/I2/I5 断言改普通形态）。
 # kmsg 进度断言方式：本机 Git Bash 的 /dev 为 MSYS 虚拟只读目录，无法创建 /dev/kmsg
 #   假件（写失败静默——恰是生产"写失败不中断启动"语义）；用 `bash -x` + BASH_XTRACEFD=3
 #   把 xtrace 分流到 $ROOT/xtrace.txt，正向断言 dw_progress 调用与 kmsg 载荷
@@ -63,8 +66,8 @@
 #       （init_rescue 语义仅保留给 mount）
 #   I4  mdev -s 失败 → 打印 WARN 继续（不 rescue）、最终 exec menu.sh
 #   I5  Kylin ky10 模式（假 uname 返回 4.19.90 ...ky10）：走 *ky10* 分支白名单——
-#       uas 不得加载（v1.5.8 去掉）、usb-storage 不得加载（v1.5.9 去掉）、vfat/fat 等
-#       ky10 清单模块加载、exec 正常
+#       usb-storage/uas 加载（v1.5.17 恢复，v1.5.18 保留）、vfat/fat 等 ky10 清单模块
+#       加载、无 rmmod 卸载、exec 正常
 #   I6  exec menu.sh 失败（假 menu.sh 去掉执行位）：POSIX 语义下 exec 失败 shell 直接
 #       以 126 退出（|| 兜底不可达——bash/dash/busybox ash 实证一致）；断言 exec 前的
 #       kmsg 诊断行已先打（定位"exec 前卡住"才是诊断价值所在）
@@ -73,9 +76,10 @@ set -u
 trap 'rc=$?; cleanup_case; exit "$rc"' EXIT
 
 INIT_SH="$REPO_ROOT/diskwipe-iso/src/init"
-# 与 src/init 内 DRIVE_MODULES 常量保持一致（Ubuntu 模式清单——本机 Git Bash uname 非 ky10，
-# 测试默认走 Ubuntu 分支；ky10 分支白名单见 I5 用例，v1.5.8 起不含 uas）
-DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod usb_storage uas nls_iso8859-1 exfat ntfs3"
+# 与 src/init 内 DRIVE_MODULES 常量保持一致（Ubuntu 模式清单——本机 WSL uname 非 ky10，
+# 测试默认走 Ubuntu 分支；ky10 分支白名单见 I5 用例，v1.5.17 起恢复 usb-storage/uas；
+# v1.5.19 起 megaraid_sas 去掉——与 mpt3sas 竞争同一 LSI SAS 控制器）
+DRIVE_MODULES="ahci libahci libata nvme nvme-core mpt3sas virtio_blk virtio_pci xhci_pci sd_mod scsi_mod usb_storage uas nls_iso8859-1 exfat ntfs3"
 
 echo "==== T3 initramfs 启动脚本测试 ===="
 
@@ -99,8 +103,9 @@ while IFS= read -r f; do
     [ "$f" = "$mp" ] && exit 1
 done < "$ROOT/mount.fail"
 exit 0'
-    # 假 modprobe：记录调用到 cmds.txt（v1.5.16 起记录完整参数 $*——mpt3sas 分支需断言
-    #   max_queue_depth=10000 参数形态）；$ROOT/modprobe.fail 命中模块名（$1）时返回 1
+    # 假 modprobe：记录调用到 cmds.txt（v1.5.18：mpt3sas 已恢复正常 modprobe "$m"，
+    #   无需 max_queue_depth 参数形态断言，仅记录 "$*" 供调用断言）；$ROOT/modprobe.fail
+    #   命中模块名（$1）时返回 1
     fake_bin modprobe '#!/bin/sh
 [ -n "$ROOT" ] || exit 0
 printf "modprobe %s\n" "$*" >> "$ROOT/cmds.txt"
@@ -127,13 +132,8 @@ shift
 [ -n "$ROOT" ] || exit 0
 printf "sleep %s\n" "$*" >> "$ROOT/cmds.txt"
 exit 0'
-    # 假 rmmod：v1.5.17 settle wait 后卸载 usb-storage/uas（记录调用到 cmds.txt；
-    #   busybox rmmod 支持多模块 + '-'→'_' 模块名转换，Kylin usb-storage.ko 运行时
-    #   模块名为 usb_storage）
-    fake_bin rmmod '#!/bin/sh
-[ -n "$ROOT" ] || exit 0
-printf "rmmod %s\n" "$*" >> "$ROOT/cmds.txt"
-exit 0'
+    # v1.5.18：假 rmmod stub 已移除（init 不再调用 rmmod usb-storage uas——v1.5.17 段
+    #   删除，回退 v1.5.6「usb-storage 保持在场」；防卸载再干扰 mpt3sas/SCSI 状态）。
     # 假 sh（救援 shell）：打印标记后退出（模拟"停留 shell"，不真进入交互）
     fake_bin sh '#!/bin/sh
 echo "RESCUE_SHELL_MARKER"
@@ -186,13 +186,14 @@ check_cmds 'mdev -s' '应执行 mdev -s 扫描设备'
 check_cmd_count 'mdev -s' 1 '设备扫描应仅执行 1 次（v1.5.7 去掉重试轮）'
 check_not_cmds 'mount /dev/' 'init 阶段零 U 盘挂载（不再挂载日志介质）'
 for m in $DRIVE_MODULES; do
-    if [ "$m" = "mpt3sas" ]; then
-        check_cmds "modprobe mpt3sas max_queue_depth=10000" "mpt3sas 应带 max_queue_depth=10000 加载（v1.5.16 修复：默认 32455 高核数服务器 scsih_probe 失败）"
-    else
-        check_cmds "modprobe $m" "应加载模块 $m"
-    fi
+    # v1.5.18：mpt3sas 恢复正常 modprobe "$m"（v1.5.16 的 max_queue_depth 分支已删除——
+    # 复盘认为该参数或干扰控制器初始化，回退 v1.5.6 纯净加载）
+    check_cmds "modprobe $m" "应加载模块 $m"
 done
-check_kmsg 'modprobe mpt3sas max_queue_depth=10000' 'xtrace 载荷显示 mpt3sas 分支带 max_queue_depth=10000（v1.5.16 官方方案）'
+# v1.5.19：megaraid_sas 已从白名单去掉（与 mpt3sas 竞争同一 LSI SAS 控制器，真机根因）——
+# 不得出现 modprobe megaraid_sas 调用
+check_not_cmds 'modprobe megaraid_sas' '不得加载 megaraid_sas（v1.5.19：与 mpt3sas 竞争同一 LSI SAS 控制器，只留 mpt3sas 独占）'
+check_kmsg 'modprobe mpt3sas' 'xtrace 载荷显示 mpt3sas 恢复正常 modprobe（v1.5.18 去 max_queue_depth 分支）'
 if awk '/^mount -t proc proc \/proc$/{m=1} /^modprobe ahci$/{if(m)ok=1} END{exit ok?0:1}' "$ROOT/cmds.txt"; then
     _pass '挂载先于模块加载'
 else
@@ -209,37 +210,23 @@ check_not_out 'failed' '正常路径不应出现失败提示'
 check_kmsg 'diskwipe-init: loading module ahci' 'kmsg 进度行（磁盘模块循环）'
 check_kmsg 'diskwipe-init: loading module mpt3sas' 'kmsg 进度行（磁盘模块循环，全部模块）'
 check_kmsg 'diskwipe-init: Disk driver modules loaded' 'kmsg 磁盘循环完成行'
-# v1.5.15：强制 SCSI 重扫描循环断言——xtrace 出现 `[ -w /sys/class/scsi_host/host0/scan ]`
-# （WSL glob 展开 host0/scan；无 scsi_host 的环境 glob 保持字面量 host*/scan，[ -w ] 同样
-# 为假不执行 echo）+ 顺序（Disk driver modules loaded 之后、video ast 之前）
+# v1.5.18：init 的 scsi_host rescan 循环已删除（v1.5.15 加项——复盘认为强制 rescan 或
+# 干扰 mpt3sas 控制器初始化，回退 v1.5.6 纯净状态；menu 枚举前 rescan 保留，由 t2 断言）——
+# xtrace 不得出现 /sys/class/scsi_host/host* 载荷
 if grep -Eq '/sys/class/scsi_host/host(0|\*)/scan' "$ROOT/xtrace.txt"; then
-    _pass 'SCSI rescan 循环执行（[ -w /sys/class/scsi_host/host*/scan ]）'
+    _fail 'init 不得再执行 SCSI rescan 循环（v1.5.18 已删除 v1.5.15 加项）'
 else
-    _fail 'xtrace 未出现 SCSI rescan 循环（[ -w /sys/class/scsi_host/host*/scan ]）'
-fi
-if awk '/diskwipe-init: Disk driver modules loaded/{d=NR} /\/sys\/class\/scsi_host\/host/{r=NR} /diskwipe-init: loading video module ast/{v=NR} END{exit (d&&r&&v&&d<r&&r<v)?0:1}' "$ROOT/xtrace.txt"; then
-    _pass 'SCSI rescan 循环在磁盘模块加载完成之后、video(ast) 加载之前'
-else
-    _fail 'SCSI rescan 循环位置错误（应位于 Disk driver modules loaded 与 video ast 之间）'
+    _pass 'init 无 SCSI rescan 循环（v1.5.18 去 v1.5.15 加项，回退 v1.5.6 纯净状态）'
 fi
 check_kmsg 'diskwipe-init: loading video module ast' 'kmsg 显卡进度行（只加载 ast）'
 check_kmsg 'diskwipe-init: device scan (mdev -s)' 'kmsg mdev 扫描进度行'
 check_kmsg 'diskwipe-init: Device nodes scanned' 'kmsg 设备节点扫描完成行'
 check_kmsg 'diskwipe-init: device settle wait (sleep)' 'kmsg 设备稳定等待进度行（v1.5.7 去掉重试轮）'
 check_cmds 'sleep 10' 'settle wait 应等待 10s（v1.5.13 缩短：SAS 盘扫描数秒即可，盘是否就绪由 menu 无盘无限重试兜底）'
-# v1.5.17：settle wait 后卸载 usb-storage/uas（防 U 盘卡死；卸载失败不阻断——无 U 盘
-# 时模块仍加载、卸载亦无害）
-check_cmds 'rmmod usb-storage uas' 'settle wait 后应卸载 usb-storage/uas（v1.5.17 防 U 盘卡死）'
-if awk '/^sleep 10$/{s=NR} /^rmmod usb-storage uas$/{if(NR>s)ok=1} END{exit ok?0:1}' "$ROOT/cmds.txt"; then
-    _pass 'rmmod 卸载在 settle wait（sleep 10）之后'
-else
-    _fail 'rmmod 卸载应在 sleep 10 之后'
-fi
-if awk '/^\+ rmmod usb-storage uas$/{r=NR} /diskwipe-init: exec menu.sh/{if(r&&NR>r)ok=1} END{exit ok?0:1}' "$ROOT/xtrace.txt"; then
-    _pass 'rmmod 卸载在 exec menu.sh 之前'
-else
-    _fail 'rmmod 卸载应在 exec menu.sh 之前'
-fi
+# v1.5.18：rmmod usb-storage/uas 段已删除（v1.5.17 加项——复盘认为卸载或干扰 mpt3sas/
+# SCSI 状态，回退 v1.5.6「usb-storage 保持在场」；U 盘防卡死由 menu 排除 USB + blkid
+# 只扫非 USB 兜底）——cmds.txt 不得出现 rmmod 调用
+check_not_cmds 'rmmod' 'init 不得卸载 usb-storage/uas（v1.5.18 去 v1.5.17 rmmod 段）'
 check_kmsg 'diskwipe-init: exec menu.sh' 'kmsg exec menu.sh 诊断行（v1.5.8）'
 # v1.5.6 显卡循环只留 ast：modprobe 调用含 ast、不含其余 5 个显卡驱动
 check_cmds 'modprobe ast' '应加载 ast（显卡循环白名单唯一）'
@@ -268,7 +255,7 @@ check_kmsg 'diskwipe-init: loading module mpt3sas' '失败模块仍打 kmsg 进�
 check_out 'WARN: module mpt3sas load failed/timed out' '应打印模块加载失败警告'
 check_not_out 'ERROR' '模块失败不再进入救援 shell（v1.5.5 语义）'
 check_not_out 'RESCUE_SHELL_MARKER' '不得进入救援 shell'
-check_cmds 'modprobe mpt3sas max_queue_depth=10000' '应尝试加载失败模块（mpt3sas 分支带 max_queue_depth=10000，记录在 cmds.txt）'
+check_cmds 'modprobe mpt3sas' '应尝试加载失败模块（mpt3sas 恢复正常 modprobe，记录在 cmds.txt）'
 check_cmds 'modprobe virtio_blk' '失败后继续加载后续模块（v1.5.5 不再中断）'
 check_kmsg 'diskwipe-init: Disk driver modules loaded' '循环结束 kmsg 行应出现（失败继续到循环末尾）'
 check_cmd_count 'mdev -s' 1 '模块失败后仍执行 mdev 首扫（v1.5.7 无重试轮）'
@@ -311,23 +298,21 @@ echo "4.19.90-89.11.v2401.ky10.x86_64"'
 run_init "$OUTF"
 check_rc 0 'ky10 模式正常启动应退出 0'
 check_out 'MENU_EXEC_MARKER' 'ky10 模式最终应 exec menu.sh'
-# ky10 白名单（v1.5.17 恢复 usb-storage/uas——加载触发 SCSI 扫描带出 SAS 盘；
-# virtio_pci/xhci_pci/scsi_mod/exfat/ntfs3 为内建/无模块，不加载）
-for m in ahci libahci libata nvme nvme-core mpt3sas megaraid_sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat; do
-    if [ "$m" = "mpt3sas" ]; then
-        check_cmds "modprobe mpt3sas max_queue_depth=10000" "ky10 模式 mpt3sas 应带 max_queue_depth=10000 加载（v1.5.16 修复）"
-    else
-        check_cmds "modprobe $m" "ky10 模式应加载模块 $m"
-    fi
+# ky10 白名单（v1.5.17 恢复 usb-storage/uas，v1.5.18 保留——加载触发 SCSI 扫描带出
+# SAS 盘；virtio_pci/xhci_pci/scsi_mod/exfat/ntfs3 为内建/无模块，不加载；
+# v1.5.19 去掉 megaraid_sas——与 mpt3sas 竞争同一 LSI SAS 控制器，只留 mpt3sas 独占）
+for m in ahci libahci libata nvme nvme-core mpt3sas virtio_blk sd_mod usb-storage uas nls_iso8859-1 vfat fat; do
+    check_cmds "modprobe $m" "ky10 模式应加载模块 $m"
 done
+check_not_cmds 'modprobe megaraid_sas' 'ky10 模式不得加载 megaraid_sas（v1.5.19：与 mpt3sas 竞争同一 LSI SAS 控制器，只留 mpt3sas 独占）'
 check_cmds 'modprobe usb-storage' 'ky10 模式应加载 usb-storage（v1.5.17 恢复：加载触发 SCSI 扫描带出 SAS 盘，v1.5.6 唯一 sda 识别成功配置）'
 check_cmds 'modprobe uas' 'ky10 模式应加载 uas（v1.5.17 恢复：与 usb-storage 同属 v1.5.6 配置）'
 check_not_cmds 'modprobe virtio_pci' 'ky10 模式不得加载 virtio_pci（Kylin 内核内建）'
 check_not_cmds 'modprobe xhci_pci' 'ky10 模式不得加载 xhci_pci（Kylin 内核内建）'
 # v1.5.11：usbhid 在 ky10 模式同样加载（显卡循环后独立 modprobe，不属 DRIVE_MODULES 白名单）
 check_cmds 'modprobe usbhid' 'ky10 模式应加载 usbhid（v1.5.11 HID 驱动保障）'
-# v1.5.17：settle wait 后卸载 usb-storage/uas（卸载无条件、不区分模式——ky10 同样执行）
-check_cmds 'rmmod usb-storage uas' 'ky10 模式 settle 后应卸载 usb-storage/uas（v1.5.17 防 U 盘卡死）'
+# v1.5.18：ky10 同样不执行 rmmod 卸载（v1.5.17 段已删，usb-storage/uas 保持在场）
+check_not_cmds 'rmmod' 'ky10 模式不得卸载 usb-storage/uas（v1.5.18 去 rmmod 段）'
 check_kmsg 'diskwipe-init: exec menu.sh' 'ky10 模式 exec menu.sh 诊断行（v1.5.8）'
 cleanup_case
 

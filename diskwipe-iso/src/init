@@ -90,6 +90,13 @@ for im in $DRIVE_MODULES; do
 done
 dw_progress "Disk driver modules loaded"
 
+# v1.5.15 修复：SCSI 驱动（mpt3sas/megaraid_sas）加载后强制重扫描全部 scsi_host——
+# 真机 SAS 盘未被自动扫描带出（lsblk 空）；echo "- - -" 触发一次完整 rescan，
+# 确保盘被内核创建。逐个写、失败跳过（部分 host 非 SCSI 扫描型）。
+for sh in /sys/class/scsi_host/host*/scan; do
+    [ -w "$sh" ] && echo "- - -" > "$sh" 2>/dev/null || true
+done
+
 # 2.5) v1.5.4 显卡驱动：内核自探测显卡硬件 → DRM → fbcon → tty0 显示（不依赖 GRUB framebuffer；
 # 真机 UEFI 下 GRUB 视频初始化失败无 framebuffer，靠显卡驱动重建显示）。
 # v1.5.6：显卡循环只加载 ast（真机 AST2500）。mgag200/smifb/bochs-drm/cirrus/

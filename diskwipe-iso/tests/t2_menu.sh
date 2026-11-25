@@ -28,6 +28,11 @@
 #   消息每 10 轮一次（重试 2 轮仅 1 条消息）+ 无盘轮次不再调用 sleep 命令；RAW lsblk 诊断每轮
 #   多一次 lsblk 调用 → M6 计数阈值 4→5（前 4 次调用无盘表 = 枚举+RAW 各 2 轮）；M10 加
 #   RAW lsblk kmsg 载荷断言（v1.5.14）。
+# v1.5.15 适配：menu 在枚举前新增强制 SCSI 重扫描循环（echo "- - -" >
+#   /sys/class/scsi_host/host*/scan，逐个写、失败跳过——SAS 盘可能晚就绪，每次枚举前
+#   rescan 兜底）。M10 新增 xtrace 断言：`[ -w /sys/class/scsi_host/host0/scan ]` 出现
+#   （循环执行；WSL host0/scan 存在但不可写 → [ -w ] 为假、echo 不执行、零副作用）+
+#   顺序断言（enumerating disks (lsblk) 之后、枚举 lsblk 调用之前）。
 # 用例：
 #   M1  两盘 sda/sdb + sdc(usb)：列表含 sda/sdb 不含 sdc；sda 标 SYS、sdb 标 DATA
 #   M2  回车（默认全选）→ YES：调用 wipe.sh 且含 sda sdb；输出确认清单
@@ -531,6 +536,18 @@ check_out 'power off' '屏幕输出不受镜像影响（0 退出提示仍在）'
 check_file "$ROOT/xtrace.txt" 'diskwipe-init: menu.sh argv0=' '头部 argv0 kmsg 诊断（exec 后立即打点，不依赖 lib.sh）'
 check_file "$ROOT/xtrace.txt" 'diskwipe-init: RAW enum ml=[' 'RAW enum 枚举原文诊断行（v1.5.12，kmsg 载荷——真机定位设备名空根因）'
 check_file "$ROOT/xtrace.txt" 'diskwipe-init: RAW lsblk:' 'RAW lsblk 原始输出诊断行（v1.5.14，kmsg 载荷——真机定位 sda 未枚举根因）'
+# v1.5.15：枚举前强制 SCSI 重扫描循环断言——xtrace 出现 `[ -w /sys/class/scsi_host/host0/scan ]`
+# + 顺序（enumerating disks (lsblk) 进度行之后、枚举 lsblk 调用之前）
+if grep -Eq '/sys/class/scsi_host/host(0|\*)/scan' "$ROOT/xtrace.txt"; then
+    _pass '枚举前 SCSI rescan 循环执行（[ -w /sys/class/scsi_host/host*/scan ]）'
+else
+    _fail 'xtrace 未出现枚举前 SCSI rescan 循环（[ -w /sys/class/scsi_host/host*/scan ]）'
+fi
+if awk '/diskwipe-init: enumerating disks \(lsblk\)/{e=NR} /\/sys\/class\/scsi_host\/host/{r=NR} /lsblk/{l=NR} END{exit (e&&r&&l&&e<r&&r<l)?0:1}' "$ROOT/xtrace.txt"; then
+    _pass 'SCSI rescan 循环在 enumerating disks 进度行之后、枚举 lsblk 调用之前'
+else
+    _fail 'SCSI rescan 循环位置错误（应位于 enumerating disks 与 lsblk 枚举之间）'
+fi
 check_file "$ROOT/xtrace.txt" 'diskwipe-init: > ' '输入提示 >  的 kmsg 镜像'
 check_file "$ROOT/xtrace.txt" 'diskwipe-init:   Default: all selected' '排除输入提示行 kmsg 镜像'
 check_file "$ROOT/xtrace.txt" '/dev/sda  894G   HGST 7K6000 (SATA)  SYS' '盘列表行 kmsg 镜像（行内容与屏幕一致）'

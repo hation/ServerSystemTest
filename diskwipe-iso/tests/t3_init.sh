@@ -25,6 +25,12 @@
 #   lsblk 可枚举约需 25 秒）。
 # v1.5.13 适配：settle wait 缩短回 10（I1 断言 sleep 10——SAS 盘扫描数秒即可，盘是否
 #   就绪由 menu 无盘无限重试兜底，等待煎熬缩短）。
+# v1.5.15 适配：init 在「Disk driver modules loaded」后新增强制 SCSI 重扫描循环
+#   （echo "- - -" > /sys/class/scsi_host/host*/scan，逐个写、失败跳过——真机 SAS 盘未被
+#   自动扫描带出）。I1 新增 xtrace 断言：`[ -w /sys/class/scsi_host/host0/scan ]` 出现
+#   （循环执行；WSL host0/scan 存在但不可写 → [ -w ] 为假、echo 不执行、零副作用；无
+#   scsi_host 的环境 glob 保持字面量 host*/scan，[ -w ] 同样为假）+ 顺序断言（Disk driver
+#   modules loaded 之后、loading video module ast 之前）。
 # kmsg 进度断言方式：本机 Git Bash 的 /dev 为 MSYS 虚拟只读目录，无法创建 /dev/kmsg
 #   假件（写失败静默——恰是生产"写失败不中断启动"语义）；用 `bash -x` + BASH_XTRACEFD=3
 #   把 xtrace 分流到 $ROOT/xtrace.txt，正向断言 dw_progress 调用与 kmsg 载荷
@@ -181,6 +187,19 @@ check_not_out 'failed' '正常路径不应出现失败提示'
 check_kmsg 'diskwipe-init: loading module ahci' 'kmsg 进度行（磁盘模块循环）'
 check_kmsg 'diskwipe-init: loading module mpt3sas' 'kmsg 进度行（磁盘模块循环，全部模块）'
 check_kmsg 'diskwipe-init: Disk driver modules loaded' 'kmsg 磁盘循环完成行'
+# v1.5.15：强制 SCSI 重扫描循环断言——xtrace 出现 `[ -w /sys/class/scsi_host/host0/scan ]`
+# （WSL glob 展开 host0/scan；无 scsi_host 的环境 glob 保持字面量 host*/scan，[ -w ] 同样
+# 为假不执行 echo）+ 顺序（Disk driver modules loaded 之后、video ast 之前）
+if grep -Eq '/sys/class/scsi_host/host(0|\*)/scan' "$ROOT/xtrace.txt"; then
+    _pass 'SCSI rescan 循环执行（[ -w /sys/class/scsi_host/host*/scan ]）'
+else
+    _fail 'xtrace 未出现 SCSI rescan 循环（[ -w /sys/class/scsi_host/host*/scan ]）'
+fi
+if awk '/diskwipe-init: Disk driver modules loaded/{d=NR} /\/sys\/class\/scsi_host\/host/{r=NR} /diskwipe-init: loading video module ast/{v=NR} END{exit (d&&r&&v&&d<r&&r<v)?0:1}' "$ROOT/xtrace.txt"; then
+    _pass 'SCSI rescan 循环在磁盘模块加载完成之后、video(ast) 加载之前'
+else
+    _fail 'SCSI rescan 循环位置错误（应位于 Disk driver modules loaded 与 video ast 之间）'
+fi
 check_kmsg 'diskwipe-init: loading video module ast' 'kmsg 显卡进度行（只加载 ast）'
 check_kmsg 'diskwipe-init: device scan (mdev -s)' 'kmsg mdev 扫描进度行'
 check_kmsg 'diskwipe-init: Device nodes scanned' 'kmsg 设备节点扫描完成行'

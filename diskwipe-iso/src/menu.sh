@@ -100,6 +100,11 @@ while :; do
     # 自动关机/重启——真机 reboot -f 执行成关机、用户未及操作即断电；盘就绪即正常列盘）。
     # 交互逻辑其余不变。
     dw_progress "enumerating disks (lsblk)"
+    # v1.5.15：枚举前强制 SCSI 重扫描兜底——盘可能晚就绪，每次枚举前 rescan 一次，
+    # 就绪的盘下次枚举即出现（与无限重试配合）。
+    for sh in /sys/class/scsi_host/host*/scan; do
+        [ -w "$sh" ] && echo "- - -" > "$sh" 2>/dev/null || true
+    done
     ml="$(dw_enum_disks)"
     if [ "$?" -ne 0 ]; then
         echo "ERROR: disk scan timed out or failed"

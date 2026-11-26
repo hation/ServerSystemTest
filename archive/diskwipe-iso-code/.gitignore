@@ -9,3 +9,7 @@ kylin-src/
 kylin-src-*.tar.gz
 # 排查临时脚本（不入库，如 tmp-official-cfg.sh / tmp-official-iso.sh）
 tmp-*.sh
+# DiskGenius 解压目录（可由 DG6201829_x64.zip 解压再生，不入库）
+dg-unzip/
+# DiskGenius 官方 zip（42MB 归档材料，不入库；本地保留）
+DG6201829_x64.zip

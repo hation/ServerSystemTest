@@ -109,3 +109,9 @@
 - **已入库内容**：`diskwipe-iso/` 全部代码与测试（src/、build-lib.sh、build.sh、kylin-kernel-export.sh、VERSION、tests/、README.md、.gitignore）、`docs/superpowers/plans+specs` 方案文档、`.superpowers/sdd/2026-11-22-diskwipe-iso-*`（gfxpayload-fix / scan-hang 两个 SDD 工作区全部记录：briefs/reports/reviews/progress.md）。
 - **不入库（本地保留）**：官方 `Kylin-*.iso`（4.6GB）、`kylin-src-*.tar.gz`（425M）与解压目录 `kylin-src/`（996M）、构建产物 `output/`——均已 gitignore；如需重新构建，从本地恢复材料后 `bash diskwipe-iso/build.sh` 即可。
 - **SDD 记录**：本方案的完整排查历程（v1.3.0 起所有真机问题、v1.5.x 系列 30 个任务的 briefs/reports/reviews、最终整支复查）见 `.superpowers/sdd/2026-11-22-diskwipe-iso-gfxpayload-fix/` 与 `.superpowers/sdd/2026-11-22-diskwipe-iso-scan-hang/`，是恢复方案时最完整的一手资料。
+
+## 7. 代码目录搬迁（2026-11-26，归档整理）
+
+- **代码现位于 `archive/diskwipe-iso-code/`**：原仓库根 `diskwipe-iso/` 已整体移入本目录（git mv，历史与 rename 保留），**仓库根已无 diskwipe-iso 目录**。目的：隔离旧方案代码，使新工具（FirPE + DiskGenius 方案）在仓库根的开发不被旧代码干扰。
+- **归档完整**：本目录含全部代码（src/、tests/、build-lib.sh、build.sh、kylin-kernel-export.sh、VERSION、README.md、.gitignore、ARCHIVE.md）+ 全部构建材料与大文件（dg-unzip/、DG6201829_x64.zip、kylin-src/、kylin-src-20261122.tar.gz、output/、tmp-official-cfg.sh、tmp-official-iso.sh）；不入库部分仅文件系统归档（gitignore 保持）。
+- 本文件（ARCHIVE.md）随代码目录一起移动至此；设计文档与 SDD 记录仍在 `archive/diskwipe-iso/` 与 `.superpowers/sdd/2026-11-22-diskwipe-iso-*`。

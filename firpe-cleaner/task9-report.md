@@ -1,7 +1,7 @@
 # Task 9 报告 — FirPE 无法启动修复
 
 - **状态**：DONE
-- **Commit**：`63410072a0f2a9ba4cc1c281bb9ddd7cb637de3e`
+- **Commit**：`a1a7791327f4426de9f10d620446d85d657a7262`
 - **日期**：2026-11-26
 
 ## 根因（来自 brief）

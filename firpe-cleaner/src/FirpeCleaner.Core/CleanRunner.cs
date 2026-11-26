@@ -17,7 +17,7 @@ public sealed class CleanResult
     /// <summary>diskpart 原始输出（含脚本回显），供 GUI 展示/日志落盘。</summary>
     public string Output { get; init; } = "";
 
-    /// <summary>判定成功的盘数（"DiskPart successfully" 命中行数）。</summary>
+    /// <summary>判定成功的盘数（命中成功关键字的行数，英文/中文均可）。</summary>
     public int CleanedCount { get; init; }
 }
 
@@ -29,8 +29,16 @@ public sealed class CleanResult
 [SupportedOSPlatform("windows")]
 public sealed class CleanRunner
 {
-    /// <summary>成功关键字（diskpart 英文固定文本，与系统语言无关）。</summary>
-    internal const string SuccessMarker = "DiskPart successfully";
+    /// <summary>
+    /// 成功关键字（英文固定文本 + 中文变体，命中任一行即计成功盘）。
+    /// 中文用 "已成功" 精确匹配：覆盖 diskpart 中文版 clean 成功输出（"DiskPart 已成功清除磁盘。"），
+    /// 且失败文本（"没有选定磁盘"/"拒绝访问"/"已遇到错误" 等）不含 "已成功"，不会误命中。
+    /// </summary>
+    private static readonly string[] SuccessMarkers =
+    {
+        "DiskPart successfully", // diskpart 英文固定文本，与系统语言无关
+        "已成功",                 // 中文：diskpart 中文版 clean 成功输出（FirPE 中文 PE 场景）
+    };
 
     /// <summary>失败关键字（英文/中文变体，命中任一行即判定失败；宽松匹配以覆盖 diskpart 真实输出形态）。</summary>
     private static readonly string[] FailureMarkers =
@@ -106,7 +114,7 @@ public sealed class CleanRunner
         return sb.ToString();
     }
 
-    /// <summary>解析 diskpart 输出：命中 SuccessMarker 计成功盘；命中任一失败关键字计失败。</summary>
+    /// <summary>解析 diskpart 输出：命中成功关键字计成功盘；命中任一失败关键字计失败。</summary>
     internal static CleanResult ParseOutput(string output)
     {
         if (string.IsNullOrEmpty(output)) return new CleanResult();
@@ -117,7 +125,7 @@ public sealed class CleanRunner
         {
             var line = rawLine.TrimEnd('\r');
             if (line.Length == 0) continue;
-            if (line.Contains(SuccessMarker, StringComparison.OrdinalIgnoreCase))
+            if (ContainsAnySuccessMarker(line))
             {
                 cleanedCount++;
             }
@@ -133,6 +141,15 @@ public sealed class CleanRunner
             Output = output,
             CleanedCount = cleanedCount,
         };
+    }
+
+    private static bool ContainsAnySuccessMarker(string line)
+    {
+        foreach (var marker in SuccessMarkers)
+        {
+            if (line.Contains(marker, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
     }
 
     private static bool ContainsAnyFailureMarker(string line)

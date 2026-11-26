@@ -80,6 +80,32 @@ public class CleanRunnerTests
     }
 
     [Fact]
+    public void ParseOutput_DetectsChineseSuccessAndFailure()
+    {
+        // 中文成功输出：diskpart 中文版 clean 成功文本 "DiskPart 已成功清除磁盘。"（FirPE 中文 PE 场景）
+        // → 命中中文成功关键字 "已成功"，判定成功，成功盘数 1
+        var ok = CleanRunner.ParseOutput("""
+            Microsoft DiskPart 版本 10.0.22621.1
+            select disk 0
+            DiskPart 已成功清除磁盘。
+            """);
+        Assert.True(ok.Success);
+        Assert.Equal(1, ok.CleanedCount);
+        Assert.Empty(ok.Failures);
+
+        // 中文失败输出："没有选定磁盘" 不含成功关键字，不应被误命中 → 判定失败，失败明细非空
+        var fail = CleanRunner.ParseOutput("""
+            Microsoft DiskPart 版本 10.0.22621.1
+            select disk 5
+            没有选定磁盘。
+            """);
+        Assert.False(fail.Success);
+        Assert.Equal(0, fail.CleanedCount);
+        Assert.NotEmpty(fail.Failures);
+        Assert.Contains("没有选定磁盘", string.Join(Environment.NewLine, fail.Failures));
+    }
+
+    [Fact]
     public void RunProcess_TimeoutKillsHungProcess()
     {
         // 挂起进程（ping 长时长运行）验证超时杀路径：异步读 + WaitForExit(timeout) 判定 + Kill 强制终止；

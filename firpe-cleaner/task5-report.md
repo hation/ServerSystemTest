@@ -1,7 +1,7 @@
 # Task 5 报告 — 发布 + FirPE 集成打包
 
 - 状态：DONE
-- Commit：`cd6649b`（`docs(firpe-cleaner): 发布脚本 + FirPE 集成 README`，一次 commit，message 用 brief 指定）
+- Commit：`df94706`（`docs(firpe-cleaner): 发布脚本 + FirPE 集成 README`，一次 commit，message 用 brief 指定）
 
 ## 1. publish.ps1（发布脚本）
 

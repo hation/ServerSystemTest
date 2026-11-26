@@ -63,4 +63,4 @@ FirpeCleaner -> ...\FirpeCleaner\bin\Debug\net8.0-windows\win-x64\FirpeCleaner.d
 ## Commit
 
 `chore(firpe-cleaner): 脚手架（复刻 gui-template 三层骨架，改名 FirpeCleaner）`
-commit hash：待 commit 后回填
+commit hash：`849b90ee9b44c7d5e2748c42ef5ec67a57d28a7f`

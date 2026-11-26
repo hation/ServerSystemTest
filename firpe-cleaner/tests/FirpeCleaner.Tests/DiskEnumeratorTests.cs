@@ -37,8 +37,9 @@ public class DiskEnumeratorTests
     }
 
     [Fact]
-    public void Filter_ExcludesBootDiskByIsBoot()
+    public void Filter_KeepsBootDiskByIsBoot()
     {
+        // FirPE（WinPE）场景：系统盘（启动盘）不再排除，像普通盘一样列出可勾选
         var disks = new List<DiskInfo>
         {
             new() { Number = 0, Bus = "SATA", Media = "Fixed hard disk media", SizeGB = 500, IsBoot = true },
@@ -47,9 +48,9 @@ public class DiskEnumeratorTests
 
         DiskEnumerator.Filter(disks);
 
-        // 系统盘（启动盘）排除，且优先级高于普通容量规则
-        Assert.True(disks[0].IsExcluded);
-        Assert.Contains("系统盘", disks[0].ExcludeReason);
+        // 系统盘（启动盘）保留为可清理，不再标 Excluded
+        Assert.False(disks[0].IsExcluded);
+        Assert.Equal("", disks[0].ExcludeReason);
         Assert.False(disks[1].IsExcluded);
     }
 

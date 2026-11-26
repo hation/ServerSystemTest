@@ -30,8 +30,11 @@ public sealed class DiskRow : INotifyPropertyChanged
     public bool IsExcluded => Info.IsExcluded;
     public bool CanClean => !Info.IsExcluded;
 
-    /// <summary>状态列文本（纯 ASCII；Core 排除原因为中文，此处映射为英文，PE 无中文字体）。</summary>
-    public string Status => Info.IsExcluded ? TranslateExcludeReason(Info.ExcludeReason) : "Cleanable";
+    /// <summary>状态列文本（纯 ASCII；Core 排除原因为中文，此处映射为英文，PE 无中文字体）。
+    /// 系统盘（IsBoot）不再排除，状态列标注 system/boot 供展示。</summary>
+    public string Status => Info.IsExcluded
+        ? TranslateExcludeReason(Info.ExcludeReason)
+        : Info.IsBoot ? "Cleanable (system/boot)" : "Cleanable";
 
     private bool _isChecked;
     public bool IsChecked
@@ -50,7 +53,6 @@ public sealed class DiskRow : INotifyPropertyChanged
     {
         return reason switch
         {
-            "系统盘（启动盘）" => "Excluded: system/boot disk",
             "USB 移动盘" => "Excluded: USB removable",
             "可移动/CD/DVD 介质" => "Excluded: removable / CD / DVD",
             "容量未知" => "Excluded: size unknown",
@@ -108,10 +110,10 @@ public partial class MainWindow : HandyControl.Controls.Window
                     ? "No cleanable disk (all excluded)."
                     : $"{cleanable} disk(s) ready.";
             AppendLog(cleanable == 0
-                ? "No cleanable disk found. USB / CD / system / boot disks are excluded automatically."
+                ? "No cleanable disk found. USB / CD / removable disks are excluded automatically."
                 : $"Found {_disks.Count} disk(s), {cleanable} cleanable.");
             if (cleanable == 0)
-                Growl.Warning("No cleanable disk found. USB / CD / system / boot disks are excluded automatically.");
+                Growl.Warning("No cleanable disk found. USB / CD / removable disks are excluded automatically.");
         }
         catch (Exception ex)
         {

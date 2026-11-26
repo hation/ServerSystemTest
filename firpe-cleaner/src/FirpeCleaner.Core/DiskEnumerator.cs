@@ -10,7 +10,8 @@ namespace FirpeCleaner.Core;
 /// <summary>
 /// 磁盘枚举：WMI <c>Win32_DiskDrive</c> 主策略（含分区归并剩余容量），
 /// WMI 不可用时回退 diskpart <c>list disk</c>+<c>detail disk</c> 解析；
-/// 结果含排除标记（USB/CD/系统盘/&lt;1GB），只读枚举，不做任何清理动作。
+/// 结果含排除标记（USB/CD/&lt;1GB），只读枚举，不做任何清理动作。
+/// 注：FirPE（WinPE）场景下系统盘（启动盘）同样可清，不做系统盘排除。
 /// </summary>
 [SupportedOSPlatform("windows")]
 public static partial class DiskEnumerator
@@ -40,16 +41,11 @@ public static partial class DiskEnumerator
         return disks;
     }
 
-    /// <summary>按过滤规则标注排除：USB 总线、Removable/CD/DVD 介质、启动盘（系统盘）、容量&lt;1GB。</summary>
+    /// <summary>按过滤规则标注排除：USB 总线、Removable/CD/DVD 介质、容量&lt;1GB（FirPE 场景系统盘不再排除，可清）。</summary>
     public static void Filter(IReadOnlyList<DiskInfo> disks)
     {
         foreach (var disk in disks)
         {
-            if (disk.IsBoot)
-            {
-                MarkExcluded(disk, "系统盘（启动盘）");
-                continue;
-            }
             if (BusIsUsb(disk.Bus))
             {
                 MarkExcluded(disk, "USB 移动盘");
@@ -164,7 +160,7 @@ public static partial class DiskEnumerator
         }
 
         // 系统盘判定：BootPartition=True 的分区（通常为 C: 所在分区）→ 读其 DiskIndex → 物理盘号；
-        // 该盘在 Filter 中按系统盘排除（非 PE 桌面运行时系统盘不可清理）。
+        // 该盘仅记录 IsBoot 供 UI 状态列展示，不再按系统盘排除（FirPE 场景系统盘可清）。
         // ⚠ 修复：BootPartition 属性属 Win32_DiskPartition（Win32_LogicalDisk 无此属性），旧实现读
         // LogicalDisk 的该属性必然抛 WBEM_E_NOT_FOUND → WMI 主路径 100% 回退 diskpart；现改为遍历分区表判定。
         var systemDiskIndex = FindBootDiskIndex(

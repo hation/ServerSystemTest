@@ -30,7 +30,7 @@ public class DiskInfo
     /// <summary>介质类型（MediaType：Fixed Hard Disk / Removable / CD/DVD…）。</summary>
     public string Media { get; init; } = "";
 
-    /// <summary>是否被排除（USB/CD/系统盘/&lt;1GB；排除盘仍列出但 GUI 不勾选）。</summary>
+    /// <summary>是否被排除（USB/CD/&lt;1GB；排除盘仍列出但 GUI 不勾选）。系统盘不再排除（FirPE 场景可清）。</summary>
     public bool IsExcluded { get; set; }
 
     /// <summary>排除原因（未排除时为空串）。</summary>
@@ -39,6 +39,6 @@ public class DiskInfo
     /// <summary>是否为机械硬盘（Media=HDD 或 Bus=SAS，用于后续 GUI 类型标注）。</summary>
     public bool IsHdd { get; init; }
 
-    /// <summary>是否为启动盘/系统盘（diskpart 回退取 detail disk 的 "Boot Disk" 标记；WMI 主路径取 BootPartition=True 的逻辑盘所在盘）。</summary>
-    internal bool IsBoot { get; set; }
+    /// <summary>是否为启动盘/系统盘（diskpart 回退取 detail disk 的 "Boot Disk" 标记；WMI 主路径取 BootPartition=True 的逻辑盘所在盘）。仅用于 UI 状态列展示，不再参与排除。</summary>
+    public bool IsBoot { get; set; }
 }

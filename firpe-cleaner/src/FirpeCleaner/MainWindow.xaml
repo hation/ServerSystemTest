@@ -9,11 +9,11 @@
            Closing="Window_Closing">
   <Grid Background="{DynamicResource BackgroundBrush}">
     <Grid.RowDefinitions>
-      <!-- 顶部盘列表区（*）→ 中部操作区（Auto）→ 底部状态栏（Auto）→ 日志区（2*） -->
+      <!-- 顶部盘列表区（*，占主体）→ 中部操作区（Auto）→ 底部状态栏（Auto）→ 日志区（Auto，收窄为少量行） -->
       <RowDefinition Height="*"/>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
-      <RowDefinition Height="2*"/>
+      <RowDefinition Height="Auto"/>
     </Grid.RowDefinitions>
 
     <!-- ========== 盘列表区 ========== -->
@@ -85,7 +85,7 @@
           <StackPanel Orientation="Horizontal">
             <TextBlock Text="No cleanable disk found." FontWeight="Bold"
                        Foreground="{DynamicResource PrimaryTextBrush}" VerticalAlignment="Center"/>
-            <TextBlock Text="  USB / CD / system / boot disks are excluded automatically."
+            <TextBlock Text="  USB / CD / removable disks are excluded automatically."
                        Margin="{StaticResource Spacing.S}" TextWrapping="Wrap"
                        Foreground="{DynamicResource SecondaryTextBrush}" VerticalAlignment="Center"/>
           </StackPanel>
@@ -146,7 +146,7 @@
         <TextBox Grid.Row="1" x:Name="LogBox" IsReadOnly="True" AcceptsReturn="True"
                  TextWrapping="NoWrap"
                  VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
-                 FontFamily="Consolas" Margin="{StaticResource Spacing.XS}"/>
+                 FontFamily="Consolas" Margin="{StaticResource Spacing.XS}" MaxHeight="110"/>
       </Grid>
     </Border>
 

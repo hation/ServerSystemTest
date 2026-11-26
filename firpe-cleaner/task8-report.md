@@ -40,7 +40,7 @@
 ## Commit
 
 - message：`feat(firpe-cleaner): 日志同时输出到日志文件（%AppData%\FirpeCleaner\cleanup.log 带时间戳，便于排查）`
-- hash：`<待 docs 回填>`
+- hash：`d46f16ea759598e67af6e65376cf218d309bd90c`
 
 ## Concerns
 

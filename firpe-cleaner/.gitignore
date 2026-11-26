@@ -1,0 +1,5 @@
+# .NET 构建产物（bin/obj 不入库）
+bin/
+obj/
+# 发布产物（Task 5 生成）
+dist/

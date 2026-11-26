@@ -1,0 +1,22 @@
+﻿<Application x:Class="FirpeCleaner.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             ShutdownMode="OnLastWindowClose">
+  <Application.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.MergedDictionaries>
+        <!-- 皮肤容器（index 0）：运行时换肤 = 清空其内部重新 Add(ResourceHelper.GetSkin(skin))。
+             顺序不可变：皮肤容器 → HC Theme.xaml → 项目 DesignSystem.xaml（后合并的优先查找）。 -->
+        <ResourceDictionary>
+          <ResourceDictionary.MergedDictionaries>
+            <ResourceDictionary Source="pack://application:,,,/HandyControl;component/Themes/SkinDefault.xaml"/>
+          </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+        <!-- HC 主题（index 1） -->
+        <ResourceDictionary Source="pack://application:,,,/HandyControl;component/Themes/Theme.xaml"/>
+        <!-- 项目设计 token（间距/字号/圆角/全局隐式样式/按钮文字色） -->
+        <ResourceDictionary Source="Themes/DesignSystem.xaml"/>
+      </ResourceDictionary.MergedDictionaries>
+    </ResourceDictionary>
+  </Application.Resources>
+</Application>

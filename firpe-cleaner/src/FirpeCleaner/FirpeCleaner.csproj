@@ -1,0 +1,32 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>FirpeCleaner</AssemblyName>
+    <RootNamespace>FirpeCleaner</RootNamespace>
+    <!-- 自定义入口（Program.cs 先设 DPI 感知 + 软件渲染）；manifest 仅 Release 生效：
+         Debug 免提权便于自动化验证，Release 提权(requireAdministrator) + PerMonitorV2 -->
+    <StartupObject>FirpeCleaner.Program</StartupObject>
+    <ApplicationManifest Condition="'$(Configuration)'=='Release'">app.manifest</ApplicationManifest>
+    <!-- 发布：自包含单文件（离线零依赖，约 68MB） -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="HandyControl" Version="3.5.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FirpeCleaner.Core\FirpeCleaner.Core.csproj" />
+  </ItemGroup>
+
+</Project>

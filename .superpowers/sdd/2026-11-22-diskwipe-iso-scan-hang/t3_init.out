@@ -1,0 +1,49 @@
+﻿==== T3 initramfs 启动脚本测试 ====
+  PASS [I1 正常启动编排] 正常路径应退出 0
+  PASS [I1 正常启动编排] 输出应包含挂载 /proc
+  PASS [I1 正常启动编排] 输出应包含挂载 /sys
+  PASS [I1 正常启动编排] 输出应包含挂载 /dev
+  PASS [I1 正常启动编排] 应挂载 /proc
+  PASS [I1 正常启动编排] 应挂载 /sys
+  PASS [I1 正常启动编排] 应挂载 /dev
+  PASS [I1 正常启动编排] 应执行 mdev -s 扫描设备
+  PASS [I1 正常启动编排] 设备扫描应执行 4 次（首扫 1 + 日志介质重试 3 轮）
+  PASS [I1 正常启动编排] 应加载模块 ahci
+  PASS [I1 正常启动编排] 应加载模块 libahci
+  PASS [I1 正常启动编排] 应加载模块 libata
+  PASS [I1 正常启动编排] 应加载模块 nvme
+  PASS [I1 正常启动编排] 应加载模块 nvme-core
+  PASS [I1 正常启动编排] 应加载模块 mpt3sas
+  PASS [I1 正常启动编排] 应加载模块 megaraid_sas
+  PASS [I1 正常启动编排] 应加载模块 virtio_blk
+  PASS [I1 正常启动编排] 应加载模块 virtio_pci
+  PASS [I1 正常启动编排] 应加载模块 xhci_pci
+  PASS [I1 正常启动编排] 应加载模块 sd_mod
+  PASS [I1 正常启动编排] 应加载模块 scsi_mod
+  PASS [I1 正常启动编排] 应加载模块 usb_storage
+  PASS [I1 正常启动编排] 应加载模块 uas
+  PASS [I1 正常启动编排] 应加载模块 nls_iso8859-1
+  PASS [I1 正常启动编排] 应加载模块 exfat
+  PASS [I1 正常启动编排] 应加载模块 ntfs3
+  PASS [I1 正常启动编排] 挂载先于模块加载
+  PASS [I1 正常启动编排] mdev -s 在全部模块加载之后
+  PASS [I1 正常启动编排] 最后应 exec menu.sh（假 menu.sh 打标记）
+  PASS [I1 正常启动编排] 正常路径不应出现失败提示
+  PASS [I2 模块加载失败] 失败后进入救援 shell，shell 退出后进程正常结束
+  PASS [I2 模块加载失败] 应打印模块加载失败错误
+  PASS [I2 模块加载失败] 应提示停留在救援 shell
+  PASS [I2 模块加载失败] 应进入救援 shell（假 sh 打标记）
+  PASS [I2 模块加载失败] 失败时不得 exec menu.sh
+  PASS [I2 模块加载失败] 应尝试加载失败模块（记录在 cmds.txt）
+  PASS [I2 模块加载失败] 失败后不得继续加载后续模块
+  PASS [I2 模块加载失败] 模块加载失败后不得执行 mdev
+  PASS [I3 挂载失败] 挂载失败后进入救援 shell，shell 退出后进程正常结束
+  PASS [I3 挂载失败] 应打印挂载失败错误
+  PASS [I3 挂载失败] 应进入救援 shell（假 sh 打标记）
+  PASS [I3 挂载失败] 失败时不得 exec menu.sh
+  PASS [I3 挂载失败] 挂载失败后不得加载模块
+  PASS [I3 挂载失败] 挂载失败后不得执行 mdev
+
+==== 测试汇总 ====
+通过 44 项，失败 0 项
+==== 结果: ALL PASS ====

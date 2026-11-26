@@ -1,7 +1,11 @@
 # diskwipe-iso 构建产物（iso 体积大且可由 build.sh 再生，不入库）
 output/
+# 官方 Kylin Server ISO（4.6GB，仅作内核材料来源，绝不入库；本地保留）
+*.iso
 # Kylin 内核材料解压目录（996M，可由 kylin-src-<日期>.tar.gz 解压再生，不入库）
 kylin-src/
 # Kylin 内核材料 tar.gz（425M，超 GitHub 100MB 限制不入库；本地保留，构建需手动放入
 # diskwipe-iso/ 后 build.sh 自动检测）
 kylin-src-*.tar.gz
+# 排查临时脚本（不入库，如 tmp-official-cfg.sh / tmp-official-iso.sh）
+tmp-*.sh

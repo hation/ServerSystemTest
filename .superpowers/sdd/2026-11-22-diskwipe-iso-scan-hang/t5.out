@@ -1,0 +1,42 @@
+﻿==== T5 真机修复验收（ASCII/白名单/partprobe）测试 ====
+  PASS [N1 屏幕输出纯 ASCII] 典型流程应正常退出 0
+  PASS [N1 屏幕输出纯 ASCII] menu 典型流程全部输出行为纯 ASCII（无 CJK）
+  PASS [N1 屏幕输出纯 ASCII] wipe.sh 输出全部为纯 ASCII（无 CJK）
+  PASS [N2 类型标注 SYS/DATA/UNK] 输入 0 应正常退出 0
+  PASS [N2 类型标注 SYS/DATA/UNK] 系统盘（EFI System）应标 SYS
+  PASS [N2 类型标注 SYS/DATA/UNK] 数据盘（无分区）应标 DATA
+  PASS [N2 类型标注 SYS/DATA/UNK] 未知盘（blkid 无类型）应标 UNK
+  PASS [N3 每盘结果 OK/FAIL + 英文 reason] 存在失败盘应退出 1
+  PASS [N3 每盘结果 OK/FAIL + 英文 reason] 成功盘应输出 OK 结果行
+  PASS [N3 每盘结果 OK/FAIL + 英文 reason] 失败盘应输出 FAIL + 英文 reason（wipefs -a failed）
+  PASS [N4 wipefs -a 成功后立即 partprobe（验证失败亦调用）] wipefs -n 失败应退出 1
+  PASS [N4 wipefs -a 成功后立即 partprobe（验证失败亦调用）] 应执行 wipefs -a
+  PASS [N4 wipefs -a 成功后立即 partprobe（验证失败亦调用）] wipefs -a 成功后应立即 partprobe（即使验证失败）
+  PASS [N4 wipefs -a 成功后立即 partprobe（验证失败亦调用）] 验证失败仍输出 FAIL
+  PASS [N4b partprobe 失败仅 WARN、结论不变] partprobe 失败不影响清除结论
+  PASS [N4b partprobe 失败仅 WARN、结论不变] 仍应调用 partprobe
+  PASS [N4b partprobe 失败仅 WARN、结论不变] 应输出 WARN 提示
+  PASS [N4b partprobe 失败仅 WARN、结论不变] 该盘结论仍为 OK
+  PASS [N5 PARTPROBE_BIN 接缝与生产默认] 清除应退出 0
+  PASS [N5 PARTPROBE_BIN 接缝与生产默认] PARTPROBE_BIN=partprobe 时应调用并记录
+  PASS [N5 PARTPROBE_BIN 接缝与生产默认] 未显式设置时应默认 partprobe
+  PASS [N5 PARTPROBE_BIN 接缝与生产默认] 默认 partprobe 清除应退出 0
+  PASS [N5 PARTPROBE_BIN 接缝与生产默认] 默认 partprobe 应经 PATH 解析并记录调用
+  PASS [N6 白名单扩展] sdaa 应通过白名单（扩展）
+  PASS [N6 白名单扩展] sdab 应通过白名单（扩展）
+  PASS [N6 白名单扩展] nvme0n10 应通过白名单（扩展）
+  PASS [N6 白名单扩展] mmcblk10 应通过白名单（扩展）
+  PASS [N6 白名单扩展] sr0 应被白名单拒绝
+  PASS [N6 白名单扩展] loop0 应被白名单拒绝
+  PASS [N6 白名单扩展] sdb1 应被白名单拒绝
+  PASS [N6 白名单扩展] sdaa（两位字母）应枚举
+  PASS [N6 白名单扩展] sdab 应枚举
+  PASS [N6 白名单扩展] nvme0n10（多位数字）应枚举
+  PASS [N6 白名单扩展] mmcblk10（多位数字）应枚举
+  PASS [N6 白名单扩展] TRAN=usb 仍排除
+  PASS [N6 白名单扩展] sr0 仍排除
+  PASS [N6 白名单扩展] loop0 仍排除
+
+==== 测试汇总 ====
+通过 37 项，失败 0 项
+==== 结果: ALL PASS ====

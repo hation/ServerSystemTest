@@ -1,0 +1,71 @@
+﻿==== T6 列盘卡住修复（零 exec/超时兜底/降级/进度）测试 ====
+  PASS [H1 列盘零逐盘 exec（枚举+批量探测各 1 次）] 输入 0 应正常退出 0
+  PASS [H1 列盘零逐盘 exec（枚举+批量探测各 1 次）] 列表应显示 sda
+  PASS [H1 列盘零逐盘 exec（枚举+批量探测各 1 次）] 枚举 + 批量探测各 1 次 lsblk（其后列盘零新增命令）
+  PASS [H1 列盘零逐盘 exec（枚举+批量探测各 1 次）] 批量 blkid 仅 1 次
+  PASS [H1 列盘零逐盘 exec（枚举+批量探测各 1 次）] 列盘期间不得出现逐盘 lsblk/blkid（无设备参数调用）
+  PASS [H2 批量类型探测 dw_scan_system_disks] 批量探测应退出 0
+  PASS [H2 批量类型探测 dw_scan_system_disks] ESP（vfat + PARTTYPENAME=EFI System）→ SYS(1)
+  PASS [H2 批量类型探测 dw_scan_system_disks] ntfs → SYS(1)
+  PASS [H2 批量类型探测 dw_scan_system_disks] ext4 无 0x80 标志 → DATA(0)
+  PASS [H2 批量类型探测 dw_scan_system_disks] blkid 探测不到 → UNK(2)
+  PASS [H2 批量类型探测 dw_scan_system_disks] 无分区盘 → DATA(0)
+  PASS [H2 批量类型探测 dw_scan_system_disks] 批量 lsblk 仅 1 次
+  PASS [H2 批量类型探测 dw_scan_system_disks] 批量 blkid 仅 1 次
+  PASS [H2 批量类型探测 dw_scan_system_disks] 批量 lsblk 应带 PARTTYPENAME/PARTFLAGS 列
+  PASS [H2 批量类型探测 dw_scan_system_disks] 批量 blkid 应带 -c /dev/null -o full（含设备名输出形态）
+  PASS [H3 批量探测超时全部盘标 UNK] 批量探测超时菜单仍应正常退出 0（不挂死）
+  PASS [H3 批量探测超时全部盘标 UNK] 枚举后应打印进度提示
+  PASS [H3 批量探测超时全部盘标 UNK] sda 应标 UNK（批量探测超时）
+  PASS [H3 批量探测超时全部盘标 UNK] sdb 应标 UNK
+  PASS [H3 批量探测超时全部盘标 UNK] 枚举未失败不得进入枚举降级路径
+  PASS [H3 批量探测超时全部盘标 UNK] 不得误判仅启动介质
+  PASS [H4 TIMEOUT_BIN 接缝与生产默认] 枚举应退出 0
+  PASS [H4 TIMEOUT_BIN 接缝与生产默认] 枚举 lsblk 应包 timeout 3
+  PASS [H4 TIMEOUT_BIN 接缝与生产默认] 枚举输出正常
+  PASS [H4 TIMEOUT_BIN 接缝与生产默认] 未显式设置时应默认 timeout
+  PASS [H4 TIMEOUT_BIN 接缝与生产默认] 默认 timeout 包装下枚举应退出 0
+  PASS [H4 TIMEOUT_BIN 接缝与生产默认] 默认 timeout 包装下枚举输出不变
+  PASS [H5 类型查表与 dw_is_system_disk 口径一致] 批量探测应退出 0
+  PASS [H5 类型查表与 dw_is_system_disk 口径一致] sda 查表码 1 与 dw_is_system_disk 口径一致
+  PASS [H5 类型查表与 dw_is_system_disk 口径一致] sdb 查表码 1 与 dw_is_system_disk 口径一致
+  PASS [H5 类型查表与 dw_is_system_disk 口径一致] sdc 查表码 1 与 dw_is_system_disk 口径一致
+  PASS [H5 类型查表与 dw_is_system_disk 口径一致] sdd 查表码 0 与 dw_is_system_disk 口径一致
+  PASS [H5 类型查表与 dw_is_system_disk 口径一致] sde 查表码 0 与 dw_is_system_disk 口径一致
+  PASS [H5 类型查表与 dw_is_system_disk 口径一致] sdf 查表码 2 与 dw_is_system_disk 口径一致
+  PASS [H5 类型查表与 dw_is_system_disk 口径一致] ESP 盘 → SYS(1)
+  PASS [H5 类型查表与 dw_is_system_disk 口径一致] ntfs 盘 → SYS(1)
+  PASS [H5 类型查表与 dw_is_system_disk 口径一致] MBR 0x80 活动盘 → SYS(1)
+  PASS [H5 类型查表与 dw_is_system_disk 口径一致] ext4 无标志 → DATA(0)
+  PASS [H5 类型查表与 dw_is_system_disk 口径一致] 无分区盘 → DATA(0)
+  PASS [H5 类型查表与 dw_is_system_disk 口径一致] 探测不到 → UNK(2)
+  PASS [H6 进度提示与枚举结果落日志] 日志流程应正常退出 0
+  PASS [H6 进度提示与枚举结果落日志] 枚举后屏幕应含进度提示
+  PASS [H6 进度提示与枚举结果落日志] 日志应含枚举盘清单行（数量+设备）
+  PASS [H6 进度提示与枚举结果落日志] 日志应含盘清单（设备/容量/型号）
+  PASS [H7 枚举超时降级与重试] 枚举超时且重试仍失败应退出 1
+  PASS [H7 枚举超时降级与重试] 应打印枚举超时错误
+  PASS [H7 枚举超时降级与重试] 应打印可安全重启提示
+  PASS [H7 枚举超时降级与重试] 不得误判仅启动介质
+  PASS [H7 枚举超时降级与重试] 枚举应自动重试一次（共 2 次）
+  PASS [H8 清除流程不带 timeout 前缀] 清除流程应正常退出 0
+  PASS [H8 清除流程不带 timeout 前缀] umount 调用无 timeout 前缀（整行精确匹配）
+  PASS [H8 清除流程不带 timeout 前缀] wipefs -a 无 timeout 前缀
+  PASS [H8 清除流程不带 timeout 前缀] partprobe 无 timeout 前缀
+  PASS [H8 清除流程不带 timeout 前缀] wipefs -n 无 timeout 前缀
+  PASS [H8 清除流程不带 timeout 前缀] umount 不得包 timeout
+  PASS [H8 清除流程不带 timeout 前缀] wipefs 不得包 timeout
+  PASS [H8 清除流程不带 timeout 前缀] partprobe 不得包 timeout
+  PASS [H9 dw_disk_mountpoints 包 timeout] 挂载点探测应退出 0
+  PASS [H9 dw_disk_mountpoints 包 timeout] 应输出挂载点
+  PASS [H9 dw_disk_mountpoints 包 timeout] dw_disk_mountpoints 的 lsblk 应包 timeout 3
+  PASS [H9b init 日志介质探测包 timeout] 日志介质探测应正常返回
+  PASS [H9b init 日志介质探测包 timeout] 应挂载到数据区 sdc2
+  PASS [H9b init 日志介质探测包 timeout] 介质枚举 lsblk 应包 timeout 3
+  PASS [H9b init 日志介质探测包 timeout] 介质 blkid TYPE 应包 timeout 3
+  PASS [H9b init 日志介质探测包 timeout] 介质 blkid LABEL 应包 timeout 3
+  PASS [H9b init 日志介质探测包 timeout] mount 调用无 timeout 前缀（整行精确匹配）
+
+==== 测试汇总 ====
+通过 66 项，失败 0 项
+==== 结果: ALL PASS ====

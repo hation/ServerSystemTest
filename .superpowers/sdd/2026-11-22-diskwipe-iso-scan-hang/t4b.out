@@ -1,0 +1,72 @@
+﻿==== T4 清理日志持久化测试 ====
+  PASS [L1 U 盘可写分区挂载（跳过 VTOYEFI）] dw_mount_log_media 应正常返回
+  PASS [L1 U 盘可写分区挂载（跳过 VTOYEFI）] 应置 DW_LOG_MEDIA=usb
+  PASS [L1 U 盘可写分区挂载（跳过 VTOYEFI）] 应挂载数据区 sdc2 到 /diskwipe-log
+  PASS [L1 U 盘可写分区挂载（跳过 VTOYEFI）] VTOYEFI 分区不得挂载
+  PASS [L1 U 盘可写分区挂载（跳过 VTOYEFI）] 非 U 盘不得挂载
+  PASS [L1 U 盘可写分区挂载（跳过 VTOYEFI）] 日志挂载不得触发任何清除
+  PASS [L2 无 U 盘降级 none] dw_mount_log_media 应正常返回
+  PASS [L2 无 U 盘降级 none] 无 U 盘应置 DW_LOG_MEDIA=none
+  PASS [L2 无 U 盘降级 none] 不得挂载任何设备
+  PASS [L2 无 U 盘降级 none] 无介质清理应正常退出 0
+  PASS [L2 无 U 盘降级 none] 应打印未找到可写日志介质提示
+  PASS [L2 无 U 盘降级 none] 清理结果仍显示屏幕
+  PASS [L2 无 U 盘降级 none] 清理应照常执行
+  PASS [L2 无 U 盘降级 none] 无介质不得卸载日志挂载
+  PASS [L3 会话级单日志文件（两轮清理追加）] 两轮清理 + 0 退出应正常退出 0
+  PASS [L3 会话级单日志文件（两轮清理追加）] 一次启动会话仅生成一个日志文件
+  PASS [L3 会话级单日志文件（两轮清理追加）] 文件头应含版本（dw_version）
+  PASS [L3 会话级单日志文件（两轮清理追加）] 文件头应含会话开始时间
+  PASS [L3 会话级单日志文件（两轮清理追加）] 文件头应含介质状态
+  PASS [L3 会话级单日志文件（两轮清理追加）] 两轮盘清单均落日志
+  PASS [L3 会话级单日志文件（两轮清理追加）] 盘清单应含设备/容量/型号（sda）
+  PASS [L3 会话级单日志文件（两轮清理追加）] 盘清单应含设备/容量/型号（sdb）
+  PASS [L3 会话级单日志文件（两轮清理追加）] 两轮每盘结果均落日志（4 行）
+  PASS [L3 会话级单日志文件（两轮清理追加）] 文件尾应含会话结束
+  PASS [L3 会话级单日志文件（两轮清理追加）] 0 退出应卸载日志介质
+  PASS [L4 挂载失败降级 none] dw_mount_log_media 应正常返回
+  PASS [L4 挂载失败降级 none] 挂载失败应降级 DW_LOG_MEDIA=none
+  PASS [L4 挂载失败降级 none] 应尝试挂载可写分区
+  PASS [L4 挂载失败降级 none] 挂载失败不得执行卸载
+  PASS [L4 挂载失败降级 none] 降级后清理应正常退出 0
+  PASS [L4 挂载失败降级 none] 降级后应提示未找到可写日志介质
+  PASS [L4 挂载失败降级 none] 清理结果仍显示屏幕
+  PASS [L4 挂载失败降级 none] 清理应照常执行
+  PASS [L5 0 退出路径] 0 退出应退出 0
+  PASS [L5 0 退出路径] 应打印退出提示
+  PASS [L5 0 退出路径] 应打印日志保存路径
+  PASS [L5 0 退出路径] 0 退出应卸载日志介质
+  PASS [L5 0 退出路径] 文件头应含版本
+  PASS [L5 0 退出路径] 文件头应含会话开始
+  PASS [L5 0 退出路径] 文件尾应含会话结束
+  PASS [L6 dw_version 版本读取与回退] dw_version 应退出 0
+  PASS [L6 dw_version 版本读取与回退] 缺版本文件应回退 unknown
+  PASS [L6 dw_version 版本读取与回退] dw_version 应退出 0
+  PASS [L6 dw_version 版本读取与回退] 存在版本文件应读出版本号
+  PASS [L7 日志写失败不阻断清理] 日志写失败清理应正常退出 0
+  PASS [L7 日志写失败不阻断清理] 清理结果仍显示屏幕
+  PASS [L7 日志写失败不阻断清理] 两盘结果均显示
+  PASS [L7 日志写失败不阻断清理] 清理仍执行
+  PASS [L7 日志写失败不阻断清理] 清理仍执行
+  PASS [L7 日志写失败不阻断清理] 退出仍尽力卸载
+  PASS [L8 写测试超时降级 none] 写测试超时 dw_mount_log_media 应正常返回（不挂起）
+  PASS [L8 写测试超时降级 none] 写测试超时应降级 DW_LOG_MEDIA=none
+  PASS [L8 写测试超时降级 none] 应尝试挂载可写分区
+  PASS [L8 写测试超时降级 none] 不得触发任何清除
+  PASS [L9 dw_log 写超时降级] dw_log 写超时应正常返回（不挂起）
+  PASS [L9 dw_log 写超时降级] 降级后第二行仍显示屏幕（降级分支 echo）
+  PASS [L9 dw_log 写超时降级] 写超时后应置 LOG_DEGRADED=1
+  PASS [L9 dw_log 写超时降级] 应打印一次性 WARN 提示
+  PASS [L9 dw_log 写超时降级] 降级后日志文件不写入
+  PASS [L10 日志介质写超时清理照常] 日志写超时清理应正常退出 0
+  PASS [L10 日志介质写超时清理照常] 应提示日志介质写失败
+  PASS [L10 日志介质写超时清理照常] 清理结果仍显示屏幕
+  PASS [L10 日志介质写超时清理照常] 两盘结果均显示
+  PASS [L10 日志介质写超时清理照常] 0 退出正常
+  PASS [L10 日志介质写超时清理照常] 清理仍执行
+  PASS [L10 日志介质写超时清理照常] 清理仍执行
+  PASS [L10 日志介质写超时清理照常] 退出仍尽力卸载
+
+==== 测试汇总 ====
+通过 67 项，失败 0 项
+==== 结果: ALL PASS ====

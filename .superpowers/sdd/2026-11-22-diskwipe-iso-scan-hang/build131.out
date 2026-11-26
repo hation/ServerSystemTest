@@ -1,0 +1,82 @@
+﻿✓ 检测到 WSL Ubuntu，开始构建（首次需下载 apt 包，耗时数分钟；重跑幂等）...
+==> [1/7] 安装构建依赖（apt 幂等，已装自动跳过；首次需下载，耗时数分钟）
+Hit:1 https://mirrors.aliyun.com/postgresql/repos/apt noble-pgdg InRelease
+Hit:2 https://mirrors.tuna.tsinghua.edu.cn/ubuntu noble InRelease
+Get:3 https://mirrors.tuna.tsinghua.edu.cn/ubuntu noble-updates InRelease [126 kB]
+Hit:4 https://mirrors.tuna.tsinghua.edu.cn/ubuntu noble-backports InRelease
+Hit:5 https://mirrors.tuna.tsinghua.edu.cn/ubuntu noble-security InRelease
+Get:6 https://mirrors.tuna.tsinghua.edu.cn/ubuntu noble-updates/main amd64 Packages [1475 kB]
+Get:7 https://mirrors.tuna.tsinghua.edu.cn/ubuntu noble-updates/universe amd64 Packages [1716 kB]
+Fetched 3317 kB in 12s (274 kB/s)
+Reading package lists...
+Reading package lists...
+Building dependency tree...
+Reading state information...
+busybox-static is already the newest version (1:1.36.1-6ubuntu3.1).
+xorriso is already the newest version (1:1.5.6-1.1ubuntu3).
+mtools is already the newest version (4.0.43-1build1).
+grub-pc-bin is already the newest version (2.12-1ubuntu7.3).
+grub-efi-amd64-bin is already the newest version (2.12-1ubuntu7.3).
+linux-image-generic is already the newest version (6.8.0-151.151).
+zstd is already the newest version (1.5.5+dfsg2-2build1.1).
+parted is already the newest version (3.6-4build1).
+0 upgraded, 0 newly installed, 0 to remove and 101 not upgraded.
+     依赖就绪：busybox=/usr/bin/busybox isoinfo=/usr/bin/isoinfo
+==> 使用内核：6.8.0-151-generic
+==> [2/7] 组装 initramfs rootfs（内核 6.8.0-151-generic）
+     busybox applet 链接数：272
+     wipefs/lsblk/blkid/partprobe 动态依赖完整（chroot 实测可运行）
+     virtio_blk 为内核内建（=y），无需模块文件
+bash.exe : 267 files decompressed : 30804515 bytes total 
+所在位置 行:15 字符: 2298
++ ... M = 'dumb'; & "C:\Program Files\Git\bin\bash.exe" diskwipe-iso/build. ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (267 files decom...15 bytes total :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+     已把 267 个 .ko.zst 模块解压为 .ko（busybox 无 zstd 解压能力）
+     模块目录已拷入并生成 modules.dep：31M
+     src 四脚本已拷入并 chmod +x（/init 执行位满足内核要求）
+     VERSION → /diskwipe.version（1.3.1）
+==> [3/7] cpio 打包 initramfs → gzip 生成 initrd.img
+     initrd.img：12M
+==> [4/7] 写 boot/grub/grub.cfg + 放置 vmlinuz/initrd.img
+     grub.cfg：linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8 + initrd /boot/initrd.img
+==> [5/7] grub-mkrescue 生成 BIOS+UEFI 双引导 iso → /mnt/c/Users/ganxin01/Documents/trae-work/ServerSystemTest/diskwipe-iso/output/diskwipe-v1.3.1.iso
+xorriso 1.5.6 : RockRidge filesystem manipulator, libburnia project.
+
+Drive current: -outdev 'stdio:/mnt/c/Users/ganxin01/Documents/trae-work/ServerSystemTest/diskwipe-iso/output/diskwipe-v
+1.3.1.iso'
+Media current: stdio file, overwriteable
+Media status : is blank
+Media summary: 0 sessions, 0 data blocks, 0 data,  243g free
+Added to ISO image: directory '/'='/tmp/grub.kqzuEX'
+xorriso : UPDATE :     588 files added in 1 seconds
+Added to ISO image: directory '/'='/tmp/diskwipe-build.35ME1A/rootfs'
+xorriso : UPDATE :    1235 files added in 1 seconds
+xorriso : NOTE : Copying to System Area: 512 bytes from file '/usr/lib/grub/i386-pc/boot_hybrid.img'
+xorriso : UPDATE :  2.56% done
+xorriso : UPDATE :  17.79% done
+xorriso : UPDATE :  41.28% done
+xorriso : UPDATE :  53.49% done, estimate finish Sun Nov 22 15:30:38 2026
+ISO image produced: 39307 sectors
+Written to medium : 39307 sectors at LBA 0
+Writing to 'stdio:/mnt/c/Users/ganxin01/Documents/trae-work/ServerSystemTest/diskwipe-iso/output/diskwipe-v1.3.1.iso' c
+ompleted successfully.
+
+     iso：77M
+==> [6/7] isoinfo 校验 iso
+     卷信息：Volume id: DISKWIPE
+     校验通过：boot/grub/grub.cfg、boot/vmlinuz、boot/initrd.img 均在 iso 中（-l 目录树 + -x 抽取实检）
+     校验通过：grub.cfg 含 console=tty0 与 console=ttyS0,115200n8
+     校验通过：initrd 内 /init 具执行位
+     校验通过：initrd 内 /diskwipe.version = 1.3.1
+     校验通过：src 四脚本 dash -n 语法 0 错误
+     校验通过：initrd 内模块全部为未压缩 .ko（共 267 个，无 .ko.zst 残留）
+
+======================================================
+  ✓ 构建成功：/mnt/c/Users/ganxin01/Documents/trae-work/ServerSystemTest/diskwipe-iso/output/diskwipe-v1.3.1.iso（大小 77M）
+  BIOS+UEFI 双引导 grub-mkrescue iso；isoinfo 校验全部通过
+  使用：将 iso 写入 U 盘（Ventoy/Rufus 等）后从 U 盘启动即可
+======================================================
+✓ 构建完成。ISO：/c/Users/ganxin01/Documents/trae-work/ServerSystemTest/diskwipe-iso/output/diskwipe-v1.3.1.iso

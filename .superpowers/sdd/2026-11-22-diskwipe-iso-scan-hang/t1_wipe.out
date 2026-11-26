@@ -1,0 +1,94 @@
+﻿==== T1 核心逻辑（枚举/标注/清除）测试 ====
+  PASS [W1 枚举过滤与类型标注] 枚举应退出 0
+  PASS [W1 枚举过滤与类型标注] sda 在列且挂载点逗号拼接
+  PASS [W1 枚举过滤与类型标注] sdb 在列
+  PASS [W1 枚举过滤与类型标注] sdd 在列（空型号显示 unknown）
+  PASS [W1 枚举过滤与类型标注] nvme 盘在列且分区挂载点归并到父盘
+  PASS [W1 枚举过滤与类型标注] usb 盘不得出现
+  PASS [W1 枚举过滤与类型标注] 光驱不得出现
+  PASS [W1 枚举过滤与类型标注] 分区 sdd1 不得出现
+  PASS [W1 枚举过滤与类型标注] 分区 nvme0n1p1 不得出现
+  PASS [W1 枚举过滤与类型标注] sda 类型判定应退出 0
+  PASS [W1 枚举过滤与类型标注] sda（GPT vfat + PARTTYPENAME=EFI System）应为系统盘
+  PASS [W1 枚举过滤与类型标注] sdb（无分区）应为数据盘
+  PASS [W1 枚举过滤与类型标注] sde（MBR ext4 + PARTFLAGS=0x80）应为系统盘
+  PASS [W1 枚举过滤与类型标注] sdf（ntfs）应为系统盘
+  PASS [W1 枚举过滤与类型标注] sdg（ext4 无 0x80 标志）应为数据盘
+  PASS [W2 白名单外设备拒绝] 合法盘仍列出
+  PASS [W2 白名单外设备拒绝] loop0 不得出现
+  PASS [W2 白名单外设备拒绝] 分区 sdb1 不得出现
+  PASS [W2 白名单外设备拒绝] 白名单外设备应拒绝并退出 1
+  PASS [W2 白名单外设备拒绝] 应打印 loop0 拒绝原因
+  PASS [W2 白名单外设备拒绝] 应打印 sdb1 拒绝原因
+  PASS [W2 白名单外设备拒绝] 拒绝后不得执行任何清除命令
+  PASS [W3 型号含空格或为空] 枚举应退出 0
+  PASS [W3 型号含空格或为空] 含空格型号原文保留
+  PASS [W3 型号含空格或为空] 空型号显示 unknown
+  PASS [W4 带挂载点清除成功] 清除应退出 0
+  PASS [W4 带挂载点清除成功] 应先卸载挂载点
+  PASS [W4 带挂载点清除成功] 应整盘 wipefs -a
+  PASS [W4 带挂载点清除成功] wipefs -a 成功后应 partprobe 刷新分区视图
+  PASS [W4 带挂载点清除成功] 应执行 wipefs -n 验证
+  PASS [W4 带挂载点清除成功] umount 先于 wipefs -a 执行
+  PASS [W4 带挂载点清除成功] 应输出 OK 结果行
+  PASS [W5 无挂载盘直接清除] 无挂载盘应退出 0
+  PASS [W5 无挂载盘直接清除] 无挂载不得 umount
+  PASS [W5 无挂载盘直接清除] 应直接 wipefs -a
+  PASS [W5 无挂载盘直接清除] 无挂载盘清除后亦应 partprobe
+  PASS [W5 无挂载盘直接清除] 应输出 OK 结果行
+  PASS [W6 umount 失败] umount 失败应退出非 0
+  PASS [W6 umount 失败] 应尝试卸载
+  PASS [W6 umount 失败] umount 失败不得 wipefs
+  PASS [W6 umount 失败] umount 失败不得 partprobe
+  PASS [W6 umount 失败] 应输出失败原因
+  PASS [W6 umount 失败] 不得误报成功
+  PASS [W7 wipefs -a 失败] wipefs -a 失败应退出非 0
+  PASS [W7 wipefs -a 失败] 应先卸载
+  PASS [W7 wipefs -a 失败] 应尝试 wipefs -a
+  PASS [W7 wipefs -a 失败] wipefs -a 失败不得执行验证
+  PASS [W7 wipefs -a 失败] wipefs -a 失败不得 partprobe
+  PASS [W7 wipefs -a 失败] 应输出失败原因
+  PASS [W7 wipefs -a 失败] 不得误报成功
+  PASS [W8 验证残留] 有残留应退出非 0
+  PASS [W8 验证残留] 应先卸载
+  PASS [W8 验证残留] 应整盘 wipefs -a
+  PASS [W8 验证残留] 有残留时仍应在 wipefs -a 成功后 partprobe
+  PASS [W8 验证残留] 应执行验证
+  PASS [W8 验证残留] 应输出残留失败原因
+  PASS [W8 验证残留] 不得误报成功
+  PASS [W9 逐盘独立] 存在失败盘应退出 1
+  PASS [W9 逐盘独立] sda 应失败
+  PASS [W9 逐盘独立] sdb 应成功
+  PASS [W9 逐盘独立] sdb 仍被清除
+  PASS [W9 逐盘独立] 成功盘 sdb 应 partprobe
+  PASS [W9 逐盘独立] 应汇总失败盘清单
+  PASS [W10 类型判定失败仍可清除] 类型判定应退出 0
+  PASS [W10 类型判定失败仍可清除] blkid 无输出应判为未知
+  PASS [W10 类型判定失败仍可清除] 类型未知不影响可清除
+  PASS [W10 类型判定失败仍可清除] 仍应整盘清除
+  PASS [W10 类型判定失败仍可清除] 仍应 partprobe
+  PASS [W10 类型判定失败仍可清除] 应清除成功
+  PASS [W11 wipefs -n 验证失败] wipefs -n 失败应退出非 0
+  PASS [W11 wipefs -n 验证失败] 应先卸载
+  PASS [W11 wipefs -n 验证失败] 应整盘 wipefs -a
+  PASS [W11 wipefs -n 验证失败] 验证失败时亦应在 wipefs -a 成功后 partprobe
+  PASS [W11 wipefs -n 验证失败] 应执行验证
+  PASS [W11 wipefs -n 验证失败] 应输出验证失败原因
+  PASS [W11 wipefs -n 验证失败] 命令失败不应误报为残留
+  PASS [W11 wipefs -n 验证失败] 不得误报成功
+  PASS [W12 挂载点含空格] 含空格挂载点清除应退出 0
+  PASS [W12 挂载点含空格] 应整行卸载含空格挂载点（不拆词）
+  PASS [W12 挂载点含空格] 应整盘 wipefs -a
+  PASS [W12 挂载点含空格] 应 partprobe
+  PASS [W12 挂载点含空格] 应清除成功
+  PASS [W13 无参数用法提示] 无参数应退出 1
+  PASS [W13 无参数用法提示] 应打印用法提示
+  PASS [W14 整盘挂载点含空格] 整盘含空格挂载点清除应退出 0
+  PASS [W14 整盘挂载点含空格] 应整行卸载整盘含空格挂载点（末 token 不截断）
+  PASS [W14 整盘挂载点含空格] 应整盘 wipefs -a
+  PASS [W14 整盘挂载点含空格] 应 partprobe
+  PASS [W14 整盘挂载点含空格] 应清除成功
+
+==== 测试汇总 ====
+通过 89 项，失败 0 项
+==== 结果: ALL PASS ====

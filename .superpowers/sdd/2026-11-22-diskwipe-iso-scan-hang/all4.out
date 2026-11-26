@@ -1,0 +1,330 @@
+﻿
+========== 运行 tests/t1_wipe.sh ==========
+==== T1 核心逻辑（枚举/标注/清除）测试 ====
+  PASS [W1 枚举过滤与类型标注] 枚举应退出 0
+  PASS [W1 枚举过滤与类型标注] sda 在列且挂载点逗号拼接
+  PASS [W1 枚举过滤与类型标注] sdb 在列
+  PASS [W1 枚举过滤与类型标注] sdd 在列（空型号显示 unknown）
+  PASS [W1 枚举过滤与类型标注] nvme 盘在列且分区挂载点归并到父盘
+  PASS [W1 枚举过滤与类型标注] usb 盘不得出现
+  PASS [W1 枚举过滤与类型标注] 光驱不得出现
+  PASS [W1 枚举过滤与类型标注] 分区 sdd1 不得出现
+  PASS [W1 枚举过滤与类型标注] 分区 nvme0n1p1 不得出现
+  PASS [W1 枚举过滤与类型标注] sda 类型判定应退出 0
+  PASS [W1 枚举过滤与类型标注] sda（GPT vfat + PARTTYPENAME=EFI System）应为系统盘
+  PASS [W1 枚举过滤与类型标注] sdb（无分区）应为数据盘
+  PASS [W1 枚举过滤与类型标注] sde（MBR ext4 + PARTFLAGS=0x80）应为系统盘
+  PASS [W1 枚举过滤与类型标注] sdf（ntfs）应为系统盘
+  PASS [W1 枚举过滤与类型标注] sdg（ext4 无 0x80 标志）应为数据盘
+  PASS [W2 白名单外设备拒绝] 合法盘仍列出
+  PASS [W2 白名单外设备拒绝] loop0 不得出现
+  PASS [W2 白名单外设备拒绝] 分区 sdb1 不得出现
+  PASS [W2 白名单外设备拒绝] 白名单外设备应拒绝并退出 1
+  PASS [W2 白名单外设备拒绝] 应打印 loop0 拒绝原因
+  PASS [W2 白名单外设备拒绝] 应打印 sdb1 拒绝原因
+  PASS [W2 白名单外设备拒绝] 拒绝后不得执行任何清除命令
+  PASS [W3 型号含空格或为空] 枚举应退出 0
+  PASS [W3 型号含空格或为空] 含空格型号原文保留
+  PASS [W3 型号含空格或为空] 空型号显示 unknown
+  PASS [W4 带挂载点清除成功] 清除应退出 0
+  PASS [W4 带挂载点清除成功] 应先卸载挂载点
+  PASS [W4 带挂载点清除成功] 应整盘 wipefs -a
+  PASS [W4 带挂载点清除成功] wipefs -a 成功后应 partprobe 刷新分区视图
+  PASS [W4 带挂载点清除成功] 应执行 wipefs -n 验证
+  PASS [W4 带挂载点清除成功] umount 先于 wipefs -a 执行
+  PASS [W4 带挂载点清除成功] 应输出 OK 结果行
+  PASS [W5 无挂载盘直接清除] 无挂载盘应退出 0
+  PASS [W5 无挂载盘直接清除] 无挂载不得 umount
+  PASS [W5 无挂载盘直接清除] 应直接 wipefs -a
+  PASS [W5 无挂载盘直接清除] 无挂载盘清除后亦应 partprobe
+  PASS [W5 无挂载盘直接清除] 应输出 OK 结果行
+  PASS [W6 umount 失败] umount 失败应退出非 0
+  PASS [W6 umount 失败] 应尝试卸载
+  PASS [W6 umount 失败] umount 失败不得 wipefs
+  PASS [W6 umount 失败] umount 失败不得 partprobe
+  PASS [W6 umount 失败] 应输出失败原因
+  PASS [W6 umount 失败] 不得误报成功
+  PASS [W7 wipefs -a 失败] wipefs -a 失败应退出非 0
+  PASS [W7 wipefs -a 失败] 应先卸载
+  PASS [W7 wipefs -a 失败] 应尝试 wipefs -a
+  PASS [W7 wipefs -a 失败] wipefs -a 失败不得执行验证
+  PASS [W7 wipefs -a 失败] wipefs -a 失败不得 partprobe
+  PASS [W7 wipefs -a 失败] 应输出失败原因
+  PASS [W7 wipefs -a 失败] 不得误报成功
+  PASS [W8 验证残留] 有残留应退出非 0
+  PASS [W8 验证残留] 应先卸载
+  PASS [W8 验证残留] 应整盘 wipefs -a
+  PASS [W8 验证残留] 有残留时仍应在 wipefs -a 成功后 partprobe
+  PASS [W8 验证残留] 应执行验证
+  PASS [W8 验证残留] 应输出残留失败原因
+  PASS [W8 验证残留] 不得误报成功
+  PASS [W9 逐盘独立] 存在失败盘应退出 1
+  PASS [W9 逐盘独立] sda 应失败
+  PASS [W9 逐盘独立] sdb 应成功
+  PASS [W9 逐盘独立] sdb 仍被清除
+  PASS [W9 逐盘独立] 成功盘 sdb 应 partprobe
+  PASS [W9 逐盘独立] 应汇总失败盘清单
+  PASS [W10 类型判定失败仍可清除] 类型判定应退出 0
+  PASS [W10 类型判定失败仍可清除] blkid 无输出应判为未知
+  PASS [W10 类型判定失败仍可清除] 类型未知不影响可清除
+  PASS [W10 类型判定失败仍可清除] 仍应整盘清除
+  PASS [W10 类型判定失败仍可清除] 仍应 partprobe
+  PASS [W10 类型判定失败仍可清除] 应清除成功
+  PASS [W11 wipefs -n 验证失败] wipefs -n 失败应退出非 0
+  PASS [W11 wipefs -n 验证失败] 应先卸载
+  PASS [W11 wipefs -n 验证失败] 应整盘 wipefs -a
+  PASS [W11 wipefs -n 验证失败] 验证失败时亦应在 wipefs -a 成功后 partprobe
+  PASS [W11 wipefs -n 验证失败] 应执行验证
+  PASS [W11 wipefs -n 验证失败] 应输出验证失败原因
+  PASS [W11 wipefs -n 验证失败] 命令失败不应误报为残留
+  PASS [W11 wipefs -n 验证失败] 不得误报成功
+  PASS [W12 挂载点含空格] 含空格挂载点清除应退出 0
+  PASS [W12 挂载点含空格] 应整行卸载含空格挂载点（不拆词）
+  PASS [W12 挂载点含空格] 应整盘 wipefs -a
+  PASS [W12 挂载点含空格] 应 partprobe
+  PASS [W12 挂载点含空格] 应清除成功
+  PASS [W13 无参数用法提示] 无参数应退出 1
+  PASS [W13 无参数用法提示] 应打印用法提示
+  PASS [W14 整盘挂载点含空格] 整盘含空格挂载点清除应退出 0
+  PASS [W14 整盘挂载点含空格] 应整行卸载整盘含空格挂载点（末 token 不截断）
+  PASS [W14 整盘挂载点含空格] 应整盘 wipefs -a
+  PASS [W14 整盘挂载点含空格] 应 partprobe
+  PASS [W14 整盘挂载点含空格] 应清除成功
+
+==== 测试汇总 ====
+通过 89 项，失败 0 项
+==== 结果: ALL PASS ====
+t1_wipe ALL PASS
+
+========== 运行 tests/t2_menu.sh ==========
+==== T2 交互菜单测试 ====
+  PASS [M1 列盘与类型标注] 输入 0 应正常退出 0
+  PASS [M1 列盘与类型标注] sda 应标注 SYS（系统盘）
+  PASS [M1 列盘与类型标注] sdb 应标注 DATA（数据盘）
+  PASS [M1 列盘与类型标注] sda 行格式（编号/设备/容量/型号/类型）正确
+  PASS [M1 列盘与类型标注] usb 盘 sdc 不得出现在列表中
+  PASS [M1 列盘与类型标注] 不得出现光驱
+  PASS [M2 回车默认全选并 YES 执行] 结束后应退出 0
+  PASS [M2 回车默认全选并 YES 执行] 默认全选应输出 2 盘确认清单
+  PASS [M2 回车默认全选并 YES 执行] 应先卸载 sda1 挂载点
+  PASS [M2 回车默认全选并 YES 执行] 应调用 wipe.sh 清除 sda
+  PASS [M2 回车默认全选并 YES 执行] 应调用 wipe.sh 清除 sdb
+  PASS [M2 回车默认全选并 YES 执行] sda 清除后应 partprobe
+  PASS [M2 回车默认全选并 YES 执行] 应验证 sda
+  PASS [M2 回车默认全选并 YES 执行] sda 应显示清除成功
+  PASS [M2 回车默认全选并 YES 执行] sdb 应显示清除成功
+  PASS [M2 回车默认全选并 YES 执行] 0 退出应打印可断电/重启提示
+  PASS [M3 排除编号后只清其余盘] 应正常退出 0
+  PASS [M3 排除编号后只清其余盘] 排除后确认清单应为 1 盘
+  PASS [M3 排除编号后只清其余盘] 应清除 sdb
+  PASS [M3 排除编号后只清其余盘] sdb 清除后应 partprobe
+  PASS [M3 排除编号后只清其余盘] 不得清除被排除的 sda
+  PASS [M3 排除编号后只清其余盘] 被排除盘的挂载点不得卸载
+  PASS [M3 排除编号后只清其余盘] sdb 应显示清除成功
+  PASS [M4 非 YES 输入不执行清除] 非 YES 应回到菜单并 0 退出
+  PASS [M4 非 YES 输入不执行清除] 非 YES 应提示已取消
+  PASS [M4 非 YES 输入不执行清除] 非 YES 应回到菜单再次列出
+  PASS [M4 非 YES 输入不执行清除] 非 YES 不得执行任何清除命令
+  PASS [M4 非 YES 输入不执行清除] 非 YES 应回到菜单并 0 退出
+  PASS [M4 非 YES 输入不执行清除] 非 YES 应提示已取消
+  PASS [M4 非 YES 输入不执行清除] 非 YES 应回到菜单再次列出
+  PASS [M4 非 YES 输入不执行清除] 非 YES 不得执行任何清除命令
+  PASS [M4 非 YES 输入不执行清除] 非 YES 应回到菜单并 0 退出
+  PASS [M4 非 YES 输入不执行清除] 非 YES 应提示已取消
+  PASS [M4 非 YES 输入不执行清除] 非 YES 应回到菜单再次列出
+  PASS [M4 非 YES 输入不执行清除] 非 YES 不得执行任何清除命令
+  PASS [M5 排除列表忽略非法项] 应正常退出 0
+  PASS [M5 排除列表忽略非法项] 忽略 x、排除 1 和 2 后应只清 1 盘
+  PASS [M5 排除列表忽略非法项] 应清除 sdd
+  PASS [M5 排除列表忽略非法项] sda 不得被清除
+  PASS [M5 排除列表忽略非法项] sdb 不得被清除
+  PASS [M5 排除列表忽略非法项] 应正常退出 0
+  PASS [M5 排除列表忽略非法项] 全排应提示重新选择
+  PASS [M5 排除列表忽略非法项] 全排不得执行清除
+  PASS [M6 仅启动介质] 应退出 0
+  PASS [M6 仅启动介质] 应提示仅发现启动介质
+  PASS [M6 仅启动介质] 不得执行任何清除命令
+  PASS [M7 清除后循环刷新] 应正常退出 0
+  PASS [M7 清除后循环刷新] 首轮应清除 sda
+  PASS [M7 清除后循环刷新] 首轮应清除 sdb
+  PASS [M7 清除后循环刷新] 清除后应回到菜单再次列出（两轮菜单）
+  PASS [M7 清除后循环刷新] 仅首轮 sda 标 SYS
+  PASS [M7 清除后循环刷新] 首轮 sdb + 次轮 sda/sdb 均标 DATA（盘已清状态刷新）
+  PASS [M7 清除后循环刷新] 0 退出应打印可断电/重启提示
+  PASS [M8 输入 0 退出] 应退出 0
+  PASS [M8 输入 0 退出] 应打印可断电/重启提示
+  PASS [M8 输入 0 退出] 0 退出不得执行清除
+  PASS [M9 TRAN 空型号含空格显示正确] 应正常退出 0
+  PASS [M9 TRAN 空型号含空格显示正确] TRAN 为空时型号应完整显示（HGST 7K6000 不截断）
+  PASS [M9 TRAN 空型号含空格显示正确] 不得把型号末词 7K6000 误作 TRAN 显示
+  PASS [M9 TRAN 空型号含空格显示正确] 不得出现 TRAN 占位误判
+  PASS [M9 TRAN 空型号含空格显示正确] 仅列盘不得执行清除
+
+==== 测试汇总 ====
+通过 61 项，失败 0 项
+==== 结果: ALL PASS ====
+t2_menu ALL PASS
+
+========== 运行 tests/t3_init.sh ==========
+==== T3 initramfs 启动脚本测试 ====
+  PASS [I1 正常启动编排] 正常路径应退出 0
+  PASS [I1 正常启动编排] 输出应包含挂载 /proc
+  PASS [I1 正常启动编排] 输出应包含挂载 /sys
+  PASS [I1 正常启动编排] 输出应包含挂载 /dev
+  PASS [I1 正常启动编排] 应挂载 /proc
+  PASS [I1 正常启动编排] 应挂载 /sys
+  PASS [I1 正常启动编排] 应挂载 /dev
+  PASS [I1 正常启动编排] 应执行 mdev -s 扫描设备
+  PASS [I1 正常启动编排] 设备扫描应执行 4 次（首扫 1 + 日志介质重试 3 轮）
+  PASS [I1 正常启动编排] 应加载模块 ahci
+  PASS [I1 正常启动编排] 应加载模块 libahci
+  PASS [I1 正常启动编排] 应加载模块 libata
+  PASS [I1 正常启动编排] 应加载模块 nvme
+  PASS [I1 正常启动编排] 应加载模块 nvme-core
+  PASS [I1 正常启动编排] 应加载模块 mpt3sas
+  PASS [I1 正常启动编排] 应加载模块 megaraid_sas
+  PASS [I1 正常启动编排] 应加载模块 virtio_blk
+  PASS [I1 正常启动编排] 应加载模块 virtio_pci
+  PASS [I1 正常启动编排] 应加载模块 xhci_pci
+  PASS [I1 正常启动编排] 应加载模块 sd_mod
+  PASS [I1 正常启动编排] 应加载模块 scsi_mod
+  PASS [I1 正常启动编排] 应加载模块 usb_storage
+  PASS [I1 正常启动编排] 应加载模块 uas
+  PASS [I1 正常启动编排] 应加载模块 nls_iso8859-1
+  PASS [I1 正常启动编排] 应加载模块 exfat
+  PASS [I1 正常启动编排] 应加载模块 ntfs3
+  PASS [I1 正常启动编排] 挂载先于模块加载
+  PASS [I1 正常启动编排] mdev -s 在全部模块加载之后
+  PASS [I1 正常启动编排] 最后应 exec menu.sh（假 menu.sh 打标记）
+  PASS [I1 正常启动编排] 正常路径不应出现失败提示
+  PASS [I2 模块加载失败] 失败后进入救援 shell，shell 退出后进程正常结束
+  PASS [I2 模块加载失败] 应打印模块加载失败错误
+  PASS [I2 模块加载失败] 应提示停留在救援 shell
+  PASS [I2 模块加载失败] 应进入救援 shell（假 sh 打标记）
+  PASS [I2 模块加载失败] 失败时不得 exec menu.sh
+  PASS [I2 模块加载失败] 应尝试加载失败模块（记录在 cmds.txt）
+  PASS [I2 模块加载失败] 失败后不得继续加载后续模块
+  PASS [I2 模块加载失败] 模块加载失败后不得执行 mdev
+  PASS [I3 挂载失败] 挂载失败后进入救援 shell，shell 退出后进程正常结束
+  PASS [I3 挂载失败] 应打印挂载失败错误
+  PASS [I3 挂载失败] 应进入救援 shell（假 sh 打标记）
+  PASS [I3 挂载失败] 失败时不得 exec menu.sh
+  PASS [I3 挂载失败] 挂载失败后不得加载模块
+  PASS [I3 挂载失败] 挂载失败后不得执行 mdev
+
+==== 测试汇总 ====
+通过 44 项，失败 0 项
+==== 结果: ALL PASS ====
+t3_init ALL PASS
+
+========== 运行 tests/t4_log.sh ==========
+==== T4 清理日志持久化测试 ====
+  PASS [L1 U 盘可写分区挂载（跳过 VTOYEFI）] dw_mount_log_media 应正常返回
+  PASS [L1 U 盘可写分区挂载（跳过 VTOYEFI）] 应置 DW_LOG_MEDIA=usb
+  PASS [L1 U 盘可写分区挂载（跳过 VTOYEFI）] 应挂载数据区 sdc2 到 /diskwipe-log
+  PASS [L1 U 盘可写分区挂载（跳过 VTOYEFI）] VTOYEFI 分区不得挂载
+  PASS [L1 U 盘可写分区挂载（跳过 VTOYEFI）] 非 U 盘不得挂载
+  PASS [L1 U 盘可写分区挂载（跳过 VTOYEFI）] 日志挂载不得触发任何清除
+  PASS [L2 无 U 盘降级 none] dw_mount_log_media 应正常返回
+  PASS [L2 无 U 盘降级 none] 无 U 盘应置 DW_LOG_MEDIA=none
+  PASS [L2 无 U 盘降级 none] 不得挂载任何设备
+  PASS [L2 无 U 盘降级 none] 无介质清理应正常退出 0
+  PASS [L2 无 U 盘降级 none] 应打印未找到可写日志介质提示
+  PASS [L2 无 U 盘降级 none] 清理结果仍显示屏幕
+  PASS [L2 无 U 盘降级 none] 清理应照常执行
+  PASS [L2 无 U 盘降级 none] 无介质不得卸载日志挂载
+  PASS [L3 会话级单日志文件（两轮清理追加）] 两轮清理 + 0 退出应正常退出 0
+  PASS [L3 会话级单日志文件（两轮清理追加）] 一次启动会话仅生成一个日志文件
+  PASS [L3 会话级单日志文件（两轮清理追加）] 文件头应含版本（dw_version）
+  PASS [L3 会话级单日志文件（两轮清理追加）] 文件头应含会话开始时间
+  PASS [L3 会话级单日志文件（两轮清理追加）] 文件头应含介质状态
+  PASS [L3 会话级单日志文件（两轮清理追加）] 两轮盘清单均落日志
+  PASS [L3 会话级单日志文件（两轮清理追加）] 盘清单应含设备/容量/型号（sda）
+  PASS [L3 会话级单日志文件（两轮清理追加）] 盘清单应含设备/容量/型号（sdb）
+  PASS [L3 会话级单日志文件（两轮清理追加）] 两轮每盘结果均落日志（4 行）
+  PASS [L3 会话级单日志文件（两轮清理追加）] 文件尾应含会话结束
+  PASS [L3 会话级单日志文件（两轮清理追加）] 0 退出应卸载日志介质
+  PASS [L4 挂载失败降级 none] dw_mount_log_media 应正常返回
+  PASS [L4 挂载失败降级 none] 挂载失败应降级 DW_LOG_MEDIA=none
+  PASS [L4 挂载失败降级 none] 应尝试挂载可写分区
+  PASS [L4 挂载失败降级 none] 挂载失败不得执行卸载
+  PASS [L4 挂载失败降级 none] 降级后清理应正常退出 0
+  PASS [L4 挂载失败降级 none] 降级后应提示未找到可写日志介质
+  PASS [L4 挂载失败降级 none] 清理结果仍显示屏幕
+  PASS [L4 挂载失败降级 none] 清理应照常执行
+  PASS [L5 0 退出路径] 0 退出应退出 0
+  PASS [L5 0 退出路径] 应打印退出提示
+  PASS [L5 0 退出路径] 应打印日志保存路径
+  PASS [L5 0 退出路径] 0 退出应卸载日志介质
+  PASS [L5 0 退出路径] 文件头应含版本
+  PASS [L5 0 退出路径] 文件头应含会话开始
+  PASS [L5 0 退出路径] 文件尾应含会话结束
+  PASS [L6 dw_version 版本读取与回退] dw_version 应退出 0
+  PASS [L6 dw_version 版本读取与回退] 缺版本文件应回退 unknown
+  PASS [L6 dw_version 版本读取与回退] dw_version 应退出 0
+  PASS [L6 dw_version 版本读取与回退] 存在版本文件应读出版本号
+  PASS [L7 日志写失败不阻断清理] 日志写失败清理应正常退出 0
+  PASS [L7 日志写失败不阻断清理] 清理结果仍显示屏幕
+  PASS [L7 日志写失败不阻断清理] 两盘结果均显示
+  PASS [L7 日志写失败不阻断清理] 清理仍执行
+  PASS [L7 日志写失败不阻断清理] 清理仍执行
+  PASS [L7 日志写失败不阻断清理] 退出仍尽力卸载
+  PASS [L8 写测试超时降级 none] 写测试超时 dw_mount_log_media 应正常返回（不挂起）
+  PASS [L8 写测试超时降级 none] 写测试超时应降级 DW_LOG_MEDIA=none
+  PASS [L8 写测试超时降级 none] 应尝试挂载可写分区
+  PASS [L8 写测试超时降级 none] 不得触发任何清除
+  PASS [L9 dw_log 写超时降级] dw_log 写超时应正常返回（不挂起）
+  PASS [L9 dw_log 写超时降级] 降级后第二行仍显示屏幕（降级分支 echo）
+  PASS [L9 dw_log 写超时降级] 写超时后应置 LOG_DEGRADED=1
+  PASS [L9 dw_log 写超时降级] 应打印一次性 WARN 提示
+  PASS [L9 dw_log 写超时降级] 降级后日志文件不写入
+  PASS [L10 日志介质写超时清理照常] 日志写超时清理应正常退出 0
+  PASS [L10 日志介质写超时清理照常] 应提示日志介质写失败
+  PASS [L10 日志介质写超时清理照常] 清理结果仍显示屏幕
+  PASS [L10 日志介质写超时清理照常] 两盘结果均显示
+  PASS [L10 日志介质写超时清理照常] 0 退出正常
+  PASS [L10 日志介质写超时清理照常] 清理仍执行
+  PASS [L10 日志介质写超时清理照常] 清理仍执行
+  PASS [L10 日志介质写超时清理照常] 退出仍尽力卸载
+
+==== 测试汇总 ====
+通过 67 项，失败 0 项
+==== 结果: ALL PASS ====
+t4_log ALL PASS
+
+========== 运行 tests/t5_ascii.sh ==========
+==== T5 真机修复验收（ASCII/白名单/partprobe）测试 ====
+  PASS [N1 屏幕输出纯 ASCII] 典型流程应正常退出 0
+  PASS [N1 屏幕输出纯 ASCII] menu 典型流程全部输出行为纯 ASCII（无 CJK）
+  PASS [N1 屏幕输出纯 ASCII] wipe.sh 输出全部为纯 ASCII（无 CJK）
+  PASS [N2 类型标注 SYS/DATA/UNK] 输入 0 应正常退出 0
+  PASS [N2 类型标注 SYS/DATA/UNK] 系统盘（EFI System）应标 SYS
+  PASS [N2 类型标注 SYS/DATA/UNK] 数据盘（无分区）应标 DATA
+  PASS [N2 类型标注 SYS/DATA/UNK] 未知盘（blkid 无类型）应标 UNK
+  PASS [N3 每盘结果 OK/FAIL + 英文 reason] 存在失败盘应退出 1
+  PASS [N3 每盘结果 OK/FAIL + 英文 reason] 成功盘应输出 OK 结果行
+  PASS [N3 每盘结果 OK/FAIL + 英文 reason] 失败盘应输出 FAIL + 英文 reason（wipefs -a failed）
+  PASS [N4 wipefs -a 成功后立即 partprobe（验证失败亦调用）] wipefs -n 失败应退出 1
+  PASS [N4 wipefs -a 成功后立即 partprobe（验证失败亦调用）] 应执行 wipefs -a
+  PASS [N4 wipefs -a 成功后立即 partprobe（验证失败亦调用）] wipefs -a 成功后应立即 partprobe（即使验证失败）
+  PASS [N4 wipefs -a 成功后立即 partprobe（验证失败亦调用）] 验证失败仍输出 FAIL
+  PASS [N4b partprobe 失败仅 WARN、结论不变] partprobe 失败不影响清除结论
+  PASS [N4b partprobe 失败仅 WARN、结论不变] 仍应调用 partprobe
+  PASS [N4b partprobe 失败仅 WARN、结论不变] 应输出 WARN 提示
+  PASS [N4b partprobe 失败仅 WARN、结论不变] 该盘结论仍为 OK
+  PASS [N5 PARTPROBE_BIN 接缝与生产默认] 清除应退出 0
+  PASS [N5 PARTPROBE_BIN 接缝与生产默认] PARTPROBE_BIN=partprobe 时应调用并记录
+  PASS [N5 PARTPROBE_BIN 接缝与生产默认] 未显式设置时应默认 partprobe
+  PASS [N5 PARTPROBE_BIN 接缝与生产默认] 默认 partprobe 清除应退出 0
+  PASS [N5 PARTPROBE_BIN 接缝与生产默认] 默认 partprobe 应经 PATH 解析并记录调用
+  PASS [N6 白名单扩展] sdaa 应通过白名单（扩展）
+  PASS [N6 白名单扩展] sdab 应通过白名单（扩展）
+  PASS [N6 白名单扩展] nvme0n10 应通过白名单（扩展）
+  PASS [N6 白名单扩展] mmcblk10 应通过白名单（扩展）
+  PASS [N6 白名单扩展] sr0 应被白名单拒绝
+  PASS [N6 白名单扩展] loop0 应被白名单拒绝
+  PASS [N6 白名单扩展] sdb1 应被白名单拒绝
+  PASS [N6 白名单扩展] sdaa（两位字母）应枚举
+  PASS [N6 白名单扩展] sdab 应枚举
+  PASS [N6 白名单扩展] nvme0n10（多位数字）应枚举
+  PASS [N6 白名单扩展] mmcblk10（多位数字）应枚举

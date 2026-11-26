@@ -1,0 +1,1154 @@
+# Review package: f5a8ce2..4cfbd16
+
+## Commits
+4cfbd16 fix(diskwipe-iso): 列盘循环零外部命令（批量探测+查表）+ 只读探测 timeout 兜底 + 枚举超时降级 + 进度/日志增强
+
+## Files changed
+ diskwipe-iso/src/lib.sh       | 169 ++++++++++++++++++++--
+ diskwipe-iso/src/menu.sh      | 110 +++++++-------
+ diskwipe-iso/tests/lib.sh     |  51 ++++++-
+ diskwipe-iso/tests/run-all.sh |   2 +-
+ diskwipe-iso/tests/t2_menu.sh |  28 ++++
+ diskwipe-iso/tests/t3_init.sh |   4 +
+ diskwipe-iso/tests/t6_scan.sh | 327 ++++++++++++++++++++++++++++++++++++++++++
+ 7 files changed, 618 insertions(+), 73 deletions(-)
+
+## Diff
+diff --git a/diskwipe-iso/src/lib.sh b/diskwipe-iso/src/lib.sh
+index 39f56b6..4cebc88 100644
+--- a/diskwipe-iso/src/lib.sh
++++ b/diskwipe-iso/src/lib.sh
+@@ -1,41 +1,54 @@
+ #!/bin/sh
+ # diskwipe-iso 共享库：盘枚举 / 白名单校验 / 子树挂载点 / OS 迹象标注 / 单盘清除
+ #
+ # 硬约束：
+ #   - POSIX/ash 兼容（initramfs 运行时只有 busybox ash；禁止 [[ ]]、数组、${var:0:3} 等
+ #     bash 专属语法），LF 行尾，中文注释。
+ #   - 设备白名单：sd[a-z]/sd[a-z][a-z] / nvme[0-9]*n[0-9]* / vd[a-z] /
+ #     mmcblk[0-9]*；排除 TRAN=usb（启动 U 盘）与 sr* / loop* / ram*（光驱/循环/内存盘）。
+-#   - 接缝变量：LSBLK_BIN / BLKID_BIN / WIPEFS_BIN / UMOUNT_BIN / PARTPROBE_BIN
++#   - 接缝变量：LSBLK_BIN / BLKID_BIN / WIPEFS_BIN / UMOUNT_BIN / PARTPROBE_BIN / TIMEOUT_BIN
+ #     （默认系统命令，测试经 PATH 假件注入，绝不触碰真实块设备）。
++#     全部只读探测（枚举/批量类型/挂载点/日志介质）统一包 "$TIMEOUT_BIN" 3 兜底超时；
++#     清除操作（umount/wipefs/partprobe）不加 timeout（破坏性操作不能半途超时中断）。
+ #
+ # 接口（后续任务依赖的签名）：
+ #   dw_dev_ok <dev>            0=合法白名单设备 / 1=拒绝（支持带或不带 /dev/ 前缀）
+ #   dw_enum_disks              无参；stdout 每行「设备 容量 型号 TRAN 挂载点」，
+-#                             挂载点为该盘子树挂载点逗号拼接；仅 TYPE=disk + 白名单 + 非 usb
+-#   dw_disk_mountpoints <dev>  stdout 每行一个该盘子树挂载点（无挂载输出空）
+-#   dw_is_system_disk <dev>    echo 0=数据盘 / 1=系统盘 / 2=未知（OS 迹象判定；
+-#                             menu 映射显示 DATA/SYS/UNK）
++#                             挂载点为该盘子树挂载点逗号拼接；仅 TYPE=disk + 白名单 + 非 usb；
++#                             lsblk 超时/失败 → 返回 1 且无输出（menu 据此降级重试，
++#                             不误判"仅启动介质"）
++#   dw_scan_system_disks       无参；stdout 每行「设备|类型码」0=数据盘 1=系统盘 2=未知；
++#                             批量一次 lsblk（含 PARTTYPENAME/PARTFLAGS 列）+ 一次 blkid
++#                             （-c /dev/null -o full 带设备名输出，awk 归并到父盘）；
++#                             任一次超时/失败 → 返回 1 且无输出（调用方将全部盘标 UNK）
++#   dw_format_disk_lines [码表]  stdin 枚举行 → stdout 每行「设备|容量|型号|TRAN大写|类型码」；
++#                             码表为 dw_scan_system_disks 输出（设备|类型码 逐行），缺失/空 →
++#                             全部盘标 UNK；供 menu 列盘查表（循环内零外部命令）
++#   dw_disk_mountpoints <dev>  stdout 每行一个该盘子树挂载点（无挂载输出空）；超时/失败返回 1
++#   dw_is_system_disk <dev>    echo 0=数据盘 / 1=系统盘 / 2=未知（OS 迹象判定；保留供
++#                             dw_scan_system_disks 的查表口径对照，menu 不再逐盘调用）
+ #   dw_wipe_disk <dev>         0=OK（umount 全部→wipefs -a→partprobe→wipefs -n 验证）/
+ #                             非0=失败（输出 FAIL 行 + 英文 reason）
+ #   dw_version                 echo 版本号（读 /diskwipe.version，缺失回退 unknown）
+ #   dw_log <msg>               echo "$msg" | tee -a "${LOG_FILE:-/dev/null}"（屏幕+文件双写）
+ #   dw_mount_log_media         探测并挂载 U 盘可写分区到 /diskwipe-log（跳过 VTOYEFI）；
+ #                             导出 DW_LOG_MEDIA=usb|none（失败仅提示，不阻断）
+ 
+ # ---------- 接缝变量（默认系统命令，测试可覆盖） ----------
+ LSBLK_BIN="${LSBLK_BIN:-lsblk}"
+ BLKID_BIN="${BLKID_BIN:-blkid}"
+ WIPEFS_BIN="${WIPEFS_BIN:-wipefs}"
+ UMOUNT_BIN="${UMOUNT_BIN:-umount}"
+ PARTPROBE_BIN="${PARTPROBE_BIN:-partprobe}"
++# 只读探测超时兜底接缝（busybox 已含 timeout applet；测试经 PATH 假件注入/覆写）
++TIMEOUT_BIN="${TIMEOUT_BIN:-timeout}"
+ # 版本文件路径（构建期拷入 rootfs；测试可覆盖指向临时文件）
+ DW_VERSION_FILE="${DW_VERSION_FILE:-/diskwipe.version}"
+ # 日志介质写测试探测文件路径（默认挂在挂载点下；测试可覆盖指向临时目录）
+ DW_LOG_PROBE="${DW_LOG_PROBE:-/diskwipe-log/.dwlogtest}"
+ 
+ # 设备名白名单校验（代码层护栏，从源头杜绝误操作）
+ dw_dev_ok() {
+     ddev="$1"
+     case "$ddev" in
+     /dev/*) ddev="${ddev#/dev/}" ;;
+@@ -43,22 +56,26 @@ dw_dev_ok() {
+     case "$ddev" in
+     sd[a-z]|sd[a-z][a-z]|nvme[0-9]*n[0-9]*|vd[a-z]|mmcblk[0-9]*) return 0 ;;
+     *) return 1 ;;
+     esac
+ }
+ 
+ # 枚举全部可清盘。lsblk 列解析用 awk：
+ #   按 NAME/SIZE/TYPE 三列定位；MODEL 可含空格，从右往左解析——
+ #   末字段以 / 开头为挂载点，其前一 token 为 TRAN，TYPE 之后到 TRAN 之前为 MODEL 原文；
+ #   分区挂载点按父盘推导（nvme0n1p1/mmcblk0p1 去 p+数字、sda1 去尾部数字）归并（逗号拼接）。
++# lsblk 包 "$TIMEOUT_BIN" 3 兜底（单次挂起 3s 返回非 0 → 本函数返回 1 且无输出，
++# menu 据此打印错误并重试一次，不误判"仅启动介质"）。
+ dw_enum_disks() {
+-    "$LSBLK_BIN" -o NAME,SIZE,TYPE,MODEL,TRAN,MOUNTPOINT 2>/dev/null | awk '
++    dwraw="$("$TIMEOUT_BIN" 3 "$LSBLK_BIN" -o NAME,SIZE,TYPE,MODEL,TRAN,MOUNTPOINT 2>/dev/null)"
++    [ "$?" -eq 0 ] || return 1
++    printf '%s\n' "$dwraw" | awk '
+         NR==1 { next }
+         $3 != "disk" && $3 != "part" { next }
+         $3 == "disk" {
+             # 白名单 + 双保险排除 sr*/loop*/ram*
+             if ($1 ~ /^(sr|loop|ram)[0-9]/) next
+             if (!($1 ~ /^sd[a-z]$/ || $1 ~ /^sd[a-z][a-z]$/ || $1 ~ /^nvme[0-9][0-9]*n[0-9][0-9]*$/ || $1 ~ /^vd[a-z]$/ || $1 ~ /^mmcblk[0-9][0-9]*$/)) next
+             name=$1; size=$2
+             mps=""; t=NF
+             if ($NF ~ /^\//) { mps=$NF; t=NF-1 }
+             # TRAN 为空时挂载点前一字段实为型号末词——仅当该字段属于已知 TRAN 集合
+@@ -96,21 +113,23 @@ dw_enum_disks() {
+     '
+ }
+ 
+ # 输出该盘子树全部挂载点（盘自身 + 其分区），每行一个；无挂载输出空。
+ # 挂载点可能含空格：取「首个 / 开头字段起至行尾」，再按末字段是否为设备名（PKNAME）
+ # 形态决定去留——分区行 PKNAME 恒为末列去掉；整盘挂载行无 PKNAME 保留全文（不拆词）。
+ dw_disk_mountpoints() {
+     ddev="$1"
+     case "$ddev" in /dev/*) ddev="${ddev#/dev/}" ;; esac
+     [ -n "$ddev" ] || return 0
+-    "$LSBLK_BIN" -o NAME,TYPE,MOUNTPOINT,PKNAME "/dev/$ddev" 2>/dev/null | awk '
++    dwraw="$("$TIMEOUT_BIN" 3 "$LSBLK_BIN" -o NAME,TYPE,MOUNTPOINT,PKNAME "/dev/$ddev" 2>/dev/null)"
++    [ "$?" -eq 0 ] || return 1
++    printf '%s\n' "$dwraw" | awk '
+         NR==1 { next }
+         {
+             mpstart=0
+             for (i=3; i<=NF; i++) if ($i ~ /^\//) { mpstart=i; break }
+             if (mpstart == 0) next
+             dmp=$mpstart
+             for (j=mpstart+1; j<=NF; j++) dmp=dmp " " $j
+             # 去掉尾部 PKNAME（恒为末列、设备名形态；整盘挂载行无 PKNAME 则保留全文）
+             if ($NF ~ /^(sd[a-z][0-9]*|sd[a-z][a-z][0-9]*|nvme[0-9]+n[0-9]+p?[0-9]*|vd[a-z][0-9]*|mmcblk[0-9]+p?[0-9]*|dm-[0-9]+|md[0-9]+|loop[0-9]+|sr[0-9]+)$/) {
+                 sub(/ [^ ]+$/, "", dmp)
+@@ -155,20 +174,145 @@ dw_is_system_disk() {
+             dflags=$("$LSBLK_BIN" -no PARTFLAGS "/dev/$dpart" 2>/dev/null)
+             # MBR 活动分区标志 0x80（GPT 根分区无引导标志，按设计 §8 口径不判系统）
+             case "$dflags" in *0x80*) echo 1; return 0 ;; esac
+             ;;
+         esac
+     done
+     [ "$dunknown" -eq 1 ] && { echo 2; return 0; }
+     echo 0
+ }
+ 
++# 批量类型探测（替代 menu 逐盘 dw_is_system_disk，列盘循环零外部命令）：
++#   - 一次 lsblk 全盘表（NAME,TYPE,MOUNTPOINT,PKNAME,PARTTYPENAME,PARTFLAGS——树形前缀剥离、
++#     从右往左识别 PARTFLAGS(0x..)/PKNAME（设备名形态），其余非挂载点字段并入类型名）+ 一次
++#     blkid -c /dev/null -o full（带设备名输出「设备: TYPE="xxx"」，awk 归并到父盘）。
++#   - 探测口径与 dw_is_system_disk 一致：GPT/MBR ESP（类型名含 EFI，tolower 匹配）、
++#     MBR 活动 0x80、ntfs → 系统盘(1)；无 OS 迹象且全部已知 → 数据盘(0)；
++#     存在探测不到（blkid 无该分区条目）→ 未知(2)；无分区 → 数据盘(0)。
++#   - 两个外部调用均包 "$TIMEOUT_BIN" 3；任一次超时/失败 → 返回 1 且无输出，
++#     调用方（menu）将全部盘标 UNK（类型仅提示，不影响清除）。
++#   - 批量表无 TRAN 列，无法排除 usb 盘——但本函数输出仅按设备名被 menu 查表引用，
++#     usb 盘不在枚举结果中，其类型码自然不被使用。
++dw_scan_system_disks() {
++    dwsblk="$("$TIMEOUT_BIN" 3 "$LSBLK_BIN" -o NAME,TYPE,MOUNTPOINT,PKNAME,PARTTYPENAME,PARTFLAGS 2>/dev/null)"
++    [ "$?" -eq 0 ] || return 1
++    dwsfs="$("$TIMEOUT_BIN" 3 "$BLKID_BIN" -c /dev/null -o full 2>/dev/null)"
++    [ "$?" -eq 0 ] || return 1
++    printf '%s\n__DWS_END__\n%s\n' "$dwsfs" "$dwsblk" | awk '
++        $0 == "__DWS_END__" { dsec=1; next }
++        dsec != 1 {
++            # 第一段：blkid -o full 输出（每行 设备: TYPE="xxx" [其它属性]）
++            if (match($0, /^\/dev\/[^ :]+/)) {
++                dv=substr($0, RSTART+5, RLENGTH-5)
++                if (match($0, /TYPE="[^"]*"/)) fstype[dv]=substr($0, RSTART+6, RLENGTH-7)
++            }
++            next
++        }
++        {
++            # 第二段：lsblk 批量表（NAME TYPE MOUNTPOINT PKNAME PARTTYPENAME PARTFLAGS）
++            name=$1; sub(/^[^a-z0-9]+/, "", name)   # 剥树形前缀（├─/└─/│，按字节，locale 安全）
++            type=$2
++            if (type == "disk") {
++                if (name ~ /^(sr|loop|ram)[0-9]/) next
++                if (!(name ~ /^sd[a-z]$/ || name ~ /^sd[a-z][a-z]$/ || name ~ /^nvme[0-9][0-9]*n[0-9][0-9]*$/ || name ~ /^vd[a-z]$/ || name ~ /^mmcblk[0-9][0-9]*$/)) next
++                disklist[++nd]=name
++                next
++            }
++            if (type != "part") next
++            flags=""; pk=""; ptn=""
++            for (i=NF; i>=3; i--) {
++                if (flags == "" && $i ~ /^0x[0-9a-fA-F]+$/) { flags=$i; continue }
++                if (pk == "" && $i ~ /^(sd[a-z]+[0-9]*|sd[a-z][a-z]+[0-9]*|nvme[0-9]+n[0-9]+p[0-9]*|vd[a-z][0-9]*|mmcblk[0-9]+p[0-9]*)$/) { pk=$i; continue }
++                if ($i ~ /^\//) continue    # 挂载点不并入类型名（口径同 dw_is_system_disk 只查 PARTTYPENAME）
++                ptn=ptn " " $i
++            }
++            if (pk == "") {
++                pk=name
++                if (pk ~ /p[0-9]+$/) sub(/p[0-9]+$/, "", pk)
++                else while (pk ~ /[0-9]$/) pk=substr(pk,1,length(pk)-1)
++            }
++            parts[++np]=name
++            partparent[name]=pk
++            partflags[name]=flags
++            partefi[name]=(tolower(ptn) ~ /efi/) ? 1 : 0
++        }
++        END {
++            for (i=1; i<=nd; i++) {
++                d=disklist[i]
++                sys=0; unk=0
++                for (j=1; j<=np; j++) {
++                    p=parts[j]
++                    if (partparent[p] != d) continue
++                    ft=fstype[p]
++                    if (ft == "") { unk=1; continue }
++                    if (ft == "vfat") {
++                        if (partefi[p] || partflags[p] ~ /0x80/) sys=1
++                    } else if (ft == "ntfs") {
++                        sys=1
++                    } else if (ft == "ext4" || ft == "xfs" || ft == "btrfs") {
++                        if (partflags[p] ~ /0x80/) sys=1
++                    }
++                }
++                if (sys) print d "|1"
++                else if (unk) print d "|2"
++                else print d "|0"
++            }
++        }
++    '
++}
++
++# 列盘字段批量格式化：stdin 读全部枚举行，stdout 输出全部「设备|容量|型号|TRAN大写|类型码」行。
++# $1 = 类型码表（dw_scan_system_disks 输出，每行 设备|类型码）；缺失/空 → 全部盘标 UNK(2)。
++# 一次 awk 处理全部行（型号含空格、TRAN 可空的从右往左解析同旧 disk_display_fields），
++# menu 列盘循环只做 shell 字符串切分（${var%%|*}），循环内零外部命令。
++dw_format_disk_lines() {
++    dtabs="${1:-}"
++    dlookup=""
++    while IFS= read -r dtline; do
++        [ -n "$dtline" ] || continue
++        dlookup="${dlookup:+$dlookup }${dtline}"
++    done <<EOF
++$dtabs
++EOF
++    awk -v lookup="$dlookup" '
++        BEGIN { n=split(lookup, items, " "); for (i=1; i<=n; i++) { split(items[i], kv, "|"); code[kv[1]] = kv[2] } }
++        {
++            dev=$1; size=$2
++            mpstart=0
++            for (i=NF; i>=3; i--) if ($i ~ /^\//) { mpstart=i; break }
++            model=""; tran=""
++            if (mpstart == 0) {
++                if (NF == 3) {
++                    model=$3
++                } else if ($NF ~ /^(sata|sas|nvme|usb|spi|ata|scsi|virtio|pcie)$/) {
++                    tran=$NF
++                    for (i=3; i<NF; i++) model=model " " $i
++                } else {
++                    for (i=3; i<=NF; i++) model=model " " $i
++                }
++                model=substr(model,2)
++            } else {
++                pre=$(mpstart-1)
++                if (pre ~ /^(sata|sas|nvme|usb|spi|ata|scsi|virtio|pcie)$/) {
++                    tran=pre
++                    for (i=3; i<mpstart-1; i++) model=model " " $i
++                } else {
++                    for (i=3; i<mpstart; i++) model=model " " $i
++                }
++                model=substr(model,2)
++            }
++            tcode = (code[dev] != "") ? code[dev] : 2
++            print dev "|" size "|" model "|" toupper(tran) "|" tcode
++        }
++    '
++}
++
+ # 单盘清除：umount 全部子树挂载点 → wipefs -a 整盘 → partprobe 刷新内核分区视图
+ # （wipefs -a 成功后立即执行，无论后续验证结果；失败仅警告）→ wipefs -n 验证（输出空=
+ # 未初始化）。任一失败该盘标失败（不误报成功）；每盘打印一行结果：
+ #   OK /dev/<dev> reset to uninitialized
+ #   FAIL /dev/<dev>: <english reason>（umount failed: <mp> / wipefs -a failed /
+ #                                     wipefs -n failed / signatures remain / not whitelisted）
+ # 注意：POSIX 无 local，函数内部变量统一 dw_ 前缀，避免覆盖调用方同名变量。
+ dw_wipe_disk() {
+     ddev="$1"
+     case "$ddev" in /dev/*) ddev="${ddev#/dev/}" ;; esac
+@@ -230,47 +374,50 @@ dw_log() {
+ }
+ 
+ # 探测并挂载日志介质（U 盘可写分区）：
+ #   - 枚举 TRAN=usb 的 TYPE=part 分区（父盘即 U 盘；lsblk -o NAME,TYPE,TRAN,LABEL）
+ #   - 过滤可写文件系统（blkid TYPE ∈ vfat|exfat|ntfs）
+ #   - 跳过卷标 VTOYEFI（Ventoy 32MB 启动分区，优先数据区）
+ #   - 逐个 mount 到 /diskwipe-log + 1 字节写测试（探测文件写入并删除）验证可写
+ #   - 首个成功 → DW_LOG_MEDIA=usb；全败/无候选 → DW_LOG_MEDIA=none（均 export）
+ # 挂载失败静默降级（提示在 menu.sh）；写测试路径经 DW_LOG_PROBE 可覆盖。
+ # 只挂载一个可写分区（按上述优先级首个成功者），不挂多个；绝不参与清除（U 盘仍被
+-# dw_enum_disks 排除，见设计 §4.1）。
++# dw_enum_disks 排除，见设计 §4.1）。全部只读探测（lsblk/blkid）包 "$TIMEOUT_BIN" 3 兜底：
++# 超时/失败 → 返回 1（DW_LOG_MEDIA=none），绝不拖住 init 启动；mount 不加 timeout。
+ dw_mount_log_media() {
+     DW_LOG_MEDIA=none
+     export DW_LOG_MEDIA
+     # 1) 枚举 U 盘可写分区候选（分区名，逐行）。真实 lsblk 的 TRAN 只出现在整盘行、
+     #    分区行 TRAN 恒空（字段右移）——先收集 TRAN=usb 的整盘，再收其分区
+     #    （PKNAME 恒为末列；-l 列表模式免树形前缀）。卷标不依赖 lsblk（实测 guest 内
+     #    lsblk LABEL 探测不可靠），改由 blkid LABEL 逐分区读（见下）
+-    dwcands="$("$LSBLK_BIN" -o NAME,TYPE,TRAN,PKNAME -l 2>/dev/null | awk '
++    dwraw="$("$TIMEOUT_BIN" 3 "$LSBLK_BIN" -o NAME,TYPE,TRAN,PKNAME -l 2>/dev/null)"
++    [ "$?" -eq 0 ] || return 1
++    dwcands="$(printf '%s\n' "$dwraw" | awk '
+         NR==1 { next }
+         $2 == "disk" && $3 == "usb" { isusb[$1] = 1; next }
+         $2 == "part" && ($NF in isusb) { print $1 }
+     ')"
+     [ -n "$dwcands" ] || return 0
+     # 挂载点不存在则创建（失败不阻断：mount 会失败，由循环降级 none）
+     mkdir -p /diskwipe-log 2>/dev/null || :
+     # 2) 逐候选：可写文件系统过滤（blkid TYPE ∈ vfat|exfat|ntfs）→ 跳过卷标 VTOYEFI
+     #    （blkid LABEL）→ mount → 写测试；失败卸载换下一个（POSIX 无 local，
+     #    函数内部变量统一 dw_ 前缀）
+     while IFS= read -r dwpart; do
+         [ -n "$dwpart" ] || continue
+-        dwtype="$("$BLKID_BIN" -s TYPE -o value "/dev/$dwpart" 2>/dev/null)"
++        dwtype="$("$TIMEOUT_BIN" 3 "$BLKID_BIN" -s TYPE -o value "/dev/$dwpart" 2>/dev/null)"
+         case "$dwtype" in
+         vfat|exfat|ntfs) ;;
+         *) continue ;;
+         esac
+-        dwlab="$("$BLKID_BIN" -s LABEL -o value "/dev/$dwpart" 2>/dev/null)"
++        dwlab="$("$TIMEOUT_BIN" 3 "$BLKID_BIN" -s LABEL -o value "/dev/$dwpart" 2>/dev/null)"
+         [ "$dwlab" != "VTOYEFI" ] || continue
+         if ! mount "/dev/$dwpart" /diskwipe-log >/dev/null 2>&1; then
+             continue
+         fi
+         if printf 'x' > "$DW_LOG_PROBE" 2>/dev/null \
+            && rm -f "$DW_LOG_PROBE" 2>/dev/null; then
+             DW_LOG_MEDIA=usb
+             export DW_LOG_MEDIA
+             return 0
+         fi
+diff --git a/diskwipe-iso/src/menu.sh b/diskwipe-iso/src/menu.sh
+index 7e5f6aa..374dcf4 100644
+--- a/diskwipe-iso/src/menu.sh
++++ b/diskwipe-iso/src/menu.sh
+@@ -7,20 +7,23 @@
+ #   DW_LOG_MEDIA=none 时仅屏幕提示，不阻断清理。
+ #
+ # 硬约束：
+ #   - POSIX/ash 兼容（initramfs 运行时只有 busybox ash；禁止 [[ ]]、数组、${var:0:3}
+ #     等 bash 专属语法），LF 行尾，中文注释。
+ #   - 屏幕与日志的全部用户可见行必须纯 ASCII（无 CJK）——IPMI 虚拟 KVM（VGA→Linux
+ #     vt console）无中文字体，中文必然乱码；中文仅保留在代码注释。
+ #   - 读 stdin 写 stdout；大写 YES 严格匹配才执行；非法输入忽略（1,2,x → 忽略 x）；
+ #     排除列表为空 = 默认全选；无盘可清（仅 usb+光驱）→ 提示"仅发现启动介质"并退出；
+ #     0 退出（打印可断电/重启提示）；清除后回到菜单（列表刷新）。
++#   - 列盘循环零外部命令：枚举（dw_enum_disks）+ 批量类型探测（dw_scan_system_disks）+
++#     批量格式化（dw_format_disk_lines）各一次预计算，循环内纯 shell 字符串切分查表；
++#     枚举超时/失败 → 打印 ERROR 并重试一次（不误判"仅启动介质"）；清除操作无 timeout。
+ #   - 设备白名单/umount/wipefs/partprobe/验证全部由 lib.sh/wipe.sh 保证，本脚本不重复实现。
+ 
+ . "$(dirname "$0")/lib.sh"
+ 
+ WIPE_SH="$(dirname "$0")/wipe.sh"
+ 
+ # ---- 日志初始化（一次启动会话一份文件，会话内多轮清理追加；无介质仅屏幕不阻断）----
+ # init 已探测并导出 DW_LOG_MEDIA（usb/none）；直接运行 menu.sh 时默认 none。
+ # LOG_DIR 可经环境覆盖（生产固定 /diskwipe-log，测试指向临时目录）。
+ DW_LOG_MEDIA="${DW_LOG_MEDIA:-none}"
+@@ -43,106 +46,99 @@ fi
+ # 会话收尾（0 退出路径）：写文件尾（会话结束时间）；有日志介质则打印日志路径并尽力
+ # 卸载 /diskwipe-log（卸载失败仅提示，不阻断退出）
+ dw_log_finish() {
+     dw_log "== session end [$(date '+%Y-%m-%d %H:%M:%S')] =="
+     if [ "$DW_LOG_MEDIA" = "usb" ]; then
+         echo "Cleanup log saved: $LOG_FILE"
+         "$UMOUNT_BIN" /diskwipe-log >/dev/null 2>&1 || echo "WARN: failed to unmount log media (you may unmount it manually later)"
+     fi
+ }
+ 
+-# 从 dw_enum_disks 输出行提取展示字段，输出 "设备|容量|型号|TRAN大写"（| 分隔）。
+-# 行格式：设备 容量 型号[可含空格] TRAN[可空] 挂载点[可含空格]。
+-# 解析：从右往左定位挂载点起始（首个以 / 开头的字段），其前一个字段仅当属于已知
+-#       TRAN 集合（sata/sas/nvme/usb/spi/ata/scsi/virtio/pcie）才视为 TRAN；
+-#       否则（TRAN 为空）该字段是型号末词，并入型号。
+-disk_display_fields() {
+-    dline="$1"
+-    printf '%s\n' "$dline" | awk '
+-        {
+-            dev=$1; size=$2
+-            mpstart=0
+-            for (i=NF; i>=3; i--) if ($i ~ /^\//) { mpstart=i; break }
+-            model=""; tran=""
+-            if (mpstart == 0) {
+-                if (NF == 3) {
+-                    model=$3
+-                } else if ($NF ~ /^(sata|sas|nvme|usb|spi|ata|scsi|virtio|pcie)$/) {
+-                    tran=$NF
+-                    for (i=3; i<NF; i++) model=model " " $i
+-                } else {
+-                    for (i=3; i<=NF; i++) model=model " " $i
+-                }
+-                model=substr(model,2)
+-            } else {
+-                pre=$(mpstart-1)
+-                if (pre ~ /^(sata|sas|nvme|usb|spi|ata|scsi|virtio|pcie)$/) {
+-                    tran=pre
+-                    for (i=3; i<mpstart-1; i++) model=model " " $i
+-                } else {
+-                    for (i=3; i<mpstart; i++) model=model " " $i
+-                }
+-                model=substr(model,2)
+-            }
+-            print dev "|" size "|" model "|" tran "|" toupper(tran)
+-        }
+-    '
+-}
+-
+-# 类型标注（dw_is_system_disk 返回：0=数据盘 1=系统盘 2=未知；显示 DATA/SYS/UNK，
+-# 仅提示不影响可勾选）
++# 类型标注（类型码：0=数据盘 1=系统盘 2=未知；显示 DATA/SYS/UNK，仅提示不影响可勾选）。
++# 类型码来自批量探测 dw_scan_system_disks（经 dw_format_disk_lines 预计算进列盘行），
++# 本函数为纯 shell case（列盘循环内零外部命令）。
+ disk_type_label() {
+     case "$1" in
+     0) echo "DATA" ;;
+     1) echo "SYS" ;;
+     *) echo "UNK" ;;
+     esac
+ }
+ 
+ while :; do
+-    # 枚举全部可清盘；启动 U 盘/光驱已在 lib.sh 排除，仍为空 = 仅启动介质
++    # 枚举全部可清盘（lib.sh 内 lsblk 包 "$TIMEOUT_BIN" 3 兜底；超时/失败 → 返回 1 且输出空）。
++    # 枚举失败（超时等）→ 打印错误并自动重试一次；仍失败 → 打印错误 + 可安全重启提示，
++    # 绝不误判"仅启动介质"退出；枚举成功但为空（仅 usb+光驱）才走"仅启动介质"路径。
+     ml="$(dw_enum_disks)"
++    if [ "$?" -ne 0 ]; then
++        echo "ERROR: disk scan timed out or failed"
++        ml="$(dw_enum_disks)"
++        if [ "$?" -ne 0 ]; then
++            echo "ERROR: disk scan failed. You may power off or reboot safely."
++            dw_log_finish
++            exit 1
++        fi
++    fi
+     if [ -z "$ml" ]; then
+         echo
+         dw_log "Only boot media found (no wipable disks; boot USB/optical drive auto-excluded)"
+         dw_log "You may power off or reboot safely."
+         dw_log_finish
+         exit 0
+     fi
+ 
+     echo "=============================================="
+     dw_log "  DiskWipe Tool $(dw_version) - Reset disks to uninitialized"
+     echo "=============================================="
++    # 批量类型探测 + 列盘字段预计算（一次 lsblk + 一次 blkid，均包 timeout；批量超时 →
++    # 全部盘标 UNK，类型仅提示不影响清除）。先打印进度提示，批量探测耗时用户可见而非假死。
++    echo "Scanning disks... (please wait)"
++    mcodes="$(dw_scan_system_disks)"
++    mtab="$(printf '%s\n' "$ml" | dw_format_disk_lines "$mcodes")"
++    # 枚举结果落日志（数量 + 设备清单；一次 dw_log，不进列盘循环）
++    msum=""
++    mi=0
++    while IFS= read -r mline; do
++        [ -n "$mline" ] || continue
++        mi=$((mi + 1))
++        mdev="${mline%%|*}"
++        msum="${msum:+$msum }$mdev"
++    done <<EOF
++$mtab
++EOF
++    dw_log "Disks found: $mi ($msum)"
+     echo "  #     Device  Size  Model/Status  Type"
+     echo "  ---------------------------------------------------"
+-    # 列盘（编号从 1 起；类型经 dw_is_system_disk 标注）
++    # 列盘（编号从 1 起；类型码来自预计算查表行「设备|容量|型号|TRAN大写|类型码」，
++    # 循环内仅 shell 字符串切分 + disk_type_label 纯 shell case —— 零外部命令）
+     mi=0
+     while IFS= read -r mline; do
+         [ -n "$mline" ] || continue
+         mi=$((mi + 1))
+-        mfields="$(disk_display_fields "$mline")"
+-        mdev="${mfields%%|*}"
+-        mrest="${mfields#*|}"
++        mdev="${mline%%|*}"
++        mrest="${mline#*|}"
+         msize="${mrest%%|*}"
+         mrest="${mrest#*|}"
+         mmodel="${mrest%%|*}"
+         mrest="${mrest#*|}"
+-        mtran_up="${mrest#*|}"
++        mtran_up="${mrest%%|*}"
++        mrest="${mrest#*|}"
++        mtcode="${mrest%%|*}"
+         if [ -n "$mtran_up" ]; then
+             mshow="$mmodel ($mtran_up)"
+         else
+             mshow="$mmodel"
+         fi
+-        mtype="$(disk_type_label "$(dw_is_system_disk "$mdev")")"
++        mtype="$(disk_type_label "$mtcode")"
+         printf '  %d    /dev/%s  %s   %s  %s\n' "$mi" "$mdev" "$msize" "$mshow" "$mtype"
+     done <<EOF
+-$ml
++$mtab
+ EOF
+     echo "  ---------------------------------------------------"
+     echo "  Default: all selected. Enter exclusions (e.g. 1,2; empty = all)"
+     echo "  0 = exit (power off or reboot after done)"
+     printf '> '
+     IFS= read -r mex || { echo; dw_log "Input ended, exiting (you may power off or reboot)."; dw_log_finish; exit 0; }
+ 
+     # 0 = 退出（打印可断电/重启提示，写文件尾并卸载日志介质）
+     case "$mex" in
+     0)
+@@ -167,68 +163,68 @@ EOF
+         *" $mtok "*) ;;
+         *) mexcl="$mexcl $mtok" ;;
+         esac
+     done
+     IFS="$mifs_old"
+     # 排除记录（落日志；无排除则默认全选，不记录）
+     if [ -n "$mexcl" ]; then
+         dw_log "Excluded: $mexcl"
+     fi
+ 
+-    # 构造选中盘列表（排除列表为空 = 默认全选）
++    # 构造选中盘列表（排除列表为空 = 默认全选）。
++    # 枚举行首个字段即设备名（无空格），${mline%% *} 纯 shell 提取——零外部命令
+     msel=""
+     mcnt=0
+     mi=0
+     while IFS= read -r mline; do
+         [ -n "$mline" ] || continue
+         mi=$((mi + 1))
+         case " $mexcl " in
+         *" $mi "*) continue ;;
+         esac
+-        mfields="$(disk_display_fields "$mline")"
+-        mdev="${mfields%%|*}"
++        mdev="${mline%% *}"
+         msel="${msel:+$msel }$mdev"
+         mcnt=$((mcnt + 1))
+     done <<EOF
+ $ml
+ EOF
+     if [ -z "$msel" ]; then
+         dw_log "No disks selected, please choose again."
+         continue
+     fi
+ 
+-    # 二次确认清单（逐盘列出将清除的盘；同时落日志作为本轮的盘清单）
++    # 二次确认清单（逐盘列出将清除的盘；同时落日志作为本轮的盘清单）。
++    # 直接遍历预计算查表行（$mtab）纯 shell 切分——零外部命令
+     echo
+     dw_log "Will wipe the following $mcnt disks (irreversible!). Type YES to confirm:"
+     mi=0
+     while IFS= read -r mline; do
+         [ -n "$mline" ] || continue
+         mi=$((mi + 1))
+         case " $mexcl " in
+         *" $mi "*) continue ;;
+         esac
+-        mfields="$(disk_display_fields "$mline")"
+-        mdev="${mfields%%|*}"
+-        mrest="${mfields#*|}"
++        mdev="${mline%%|*}"
++        mrest="${mline#*|}"
+         msize="${mrest%%|*}"
+         mrest="${mrest#*|}"
+         mmodel="${mrest%%|*}"
+         mrest="${mrest#*|}"
+-        mtran_up="${mrest#*|}"
++        mtran_up="${mrest%%|*}"
+         if [ -n "$mtran_up" ]; then
+             mshow="$mmodel ($mtran_up)"
+         else
+             mshow="$mmodel"
+         fi
+         dw_log "  /dev/$mdev  $msize  $mshow"
+     done <<EOF
+-$ml
++$mtab
+ EOF
+     printf '> '
+     IFS= read -r myn || { echo; dw_log "Cancelled (YES not entered)."; continue; }
+     if [ "$myn" = "YES" ]; then
+         echo
+         dw_log "Wiping: umount -> wipefs -a -> partprobe -> wipefs -n verify..."
+         # 每盘结果（OK/FAIL）经 stdout 由 tee 同时落到屏幕与日志文件
+         "$WIPE_SH" $msel 2>&1 | tee -a "${LOG_FILE:-/dev/null}"
+         echo
+         continue
+diff --git a/diskwipe-iso/tests/lib.sh b/diskwipe-iso/tests/lib.sh
+index 29794a7..93f4334 100644
+--- a/diskwipe-iso/tests/lib.sh
++++ b/diskwipe-iso/tests/lib.sh
+@@ -89,20 +89,45 @@ case "$1" in
+             }
+             pk=""
+             if (name != d) {
+                 pk=name
+                 if (pk ~ /p[0-9]+$/) sub(/p[0-9]+$/, "", pk)
+                 else while (pk ~ /[0-9]$/) pk=substr(pk,1,length(pk)-1)
+             }
+             if (name==d || pk==d) printf "%s %s %s %s\n", name, type, mps, pk
+         }'"'"' "$ROOT/lsblk.table"
+         ;;
++    NAME,TYPE,MOUNTPOINT,PKNAME,PARTTYPENAME,PARTFLAGS)
++        [ -f "$ROOT/lsblk.table" ] || exit 0
++        # 批量类型探测表（dw_scan_system_disks）：表头 + 每行 NAME TYPE MOUNTPOINT PKNAME
++        #   PARTTYPENAME PARTFLAGS（PARTTYPENAME 取 lsblk.ptname、PARTFLAGS 取 lsblk.flags；
++        #   挂载点/父盘推导同 NAME,TYPE,MOUNTPOINT,PKNAME 形态；树形前缀不输出）
++        awk -v ptf="$ROOT/lsblk.ptname" -v flf="$ROOT/lsblk.flags" '"'"'
++            BEGIN {
++                print "NAME TYPE MOUNTPOINT PKNAME PARTTYPENAME PARTFLAGS"
++                if (ptf != "") while ((getline l < ptf) > 0) { split(l, a, " "); pt[a[1]] = substr(l, index(l, " ") + 1) }
++                if (flf != "") while ((getline l < flf) > 0) { split(l, a, " "); fl[a[1]] = a[2] }
++            }
++            NR==1 { next }
++            {
++                name=$1; type=$3
++                mps=""
++                for (i=4; i<=NF; i++) { if ($i ~ /^\//) { mps=$i; for (j=i+1; j<=NF; j++) mps=mps " " $j; break } }
++                pk=""
++                if (type != "disk") {
++                    pk=name
++                    if (pk ~ /p[0-9]+$/) sub(/p[0-9]+$/, "", pk)
++                    else while (pk ~ /[0-9]$/) pk=substr(pk,1,length(pk)-1)
++                }
++                printf "%s %s %s %s %s %s\n", name, type, mps, pk, pt[name], fl[name]
++            }'"'"' "$ROOT/lsblk.table"
++        ;;
+     NAME,TYPE,TRAN,PKNAME)
+         [ -f "$ROOT/lsblk.table" ] || exit 0
+         # 输出「名字 类型 TRAN PKNAME」（与真实 lsblk -o NAME,TYPE,TRAN,PKNAME -l 一致：
+         # TRAN 只出现在整盘行；分区行 TRAN 恒空、PKNAME 由名字推导——nvme0n1p1 去
+         # p+数字、sda1 去尾部数字）
+         awk '"'"'FNR==1 { next }
+             {
+                 name=$1; type=$3
+                 tran=""; t=NF
+                 if ($NF ~ /^\//) t=NF-1
+@@ -127,33 +152,44 @@ case "$1" in
+         ;;
+     PARTTYPENAME)
+         dev="${3#/dev/}"
+         [ -f "$ROOT/lsblk.ptname" ] || exit 0
+         awk -v d="$dev" '"'"'$1==d { $1=""; sub(/^ /, ""); print }'"'"' "$ROOT/lsblk.ptname"
+         ;;
+     esac
+     ;;
+ esac
+ exit 0'
+-    # 假 blkid：blkid -s TYPE|-s LABEL -o value <dev>；TYPE 按 $ROOT/blk.type（"设备 类型"）、
+-    # LABEL 按 $ROOT/lsblk.labels（"设备 卷标"）返回；无条目 → 无输出 rc 2（模拟无法探测）
++    # 假 blkid：单设备形态 blkid -s TYPE|-s LABEL -o value <dev>（TYPE 按 $ROOT/blk.type、
++    # LABEL 按 $ROOT/lsblk.labels 返回；无条目 → 无输出 rc 2 模拟无法探测）；
++    # 批量形态 blkid -c /dev/null -o full（无设备参数）→ 输出 设备: TYPE="类型" 逐行
++    # （util-linux 带设备名形态，供批量归并；无条目 → 空输出 rc 0）
+     fake_bin blkid '#!/bin/sh
+ [ -n "$ROOT" ] || exit 2
+-dev=""; sel=""
++dev=""; sel=""; fullmode=0
+ for a in "$@"; do
+     case "$a" in
+-    /dev/*) dev="${a#/dev/}" ;;
+     -s) : ;;
++    -o) : ;;
++    -c) : ;;
++    /dev/null) : ;;
++    full) fullmode=1 ;;
+     TYPE) sel=type ;;
+     LABEL) sel=label ;;
++    /dev/*) dev="${a#/dev/}" ;;
+     esac
+ done
++if [ "$fullmode" = "1" ]; then
++    [ -f "$ROOT/blk.type" ] || exit 0
++    awk '"'"'{ print "/dev/" $1 ": TYPE=\"" $2 "\"" }'"'"' "$ROOT/blk.type"
++    exit 0
++fi
+ [ -n "$dev" ] || exit 2
+ if [ "$sel" = "label" ]; then
+     [ -f "$ROOT/lsblk.labels" ] || exit 2
+     awk -v d="$dev" '"'"'$1==d { print $2; found=1; exit } END { exit (found?0:2) }'"'"' "$ROOT/lsblk.labels"
+ else
+     [ -f "$ROOT/blk.type" ] || exit 2
+     awk -v d="$dev" '"'"'$1==d { print $2; found=1; exit } END { exit (found?0:2) }'"'"' "$ROOT/blk.type"
+ fi'
+     # 假 wipefs：-a 记录调用到 cmds.txt（$ROOT/wipefs.afail 列出的设备返回 1）；
+     #           -n 也记录调用，并按 $ROOT/wipefs.sigs 输出（无文件/空 = 无残留）
+@@ -215,20 +251,27 @@ exit 0'
+     fake_bin mount '#!/bin/sh
+ [ -n "$ROOT" ] || exit 0
+ printf "mount %s\n" "$*" >> "$ROOT/cmds.txt"
+ [ -f "$ROOT/mount.fail" ] || exit 0
+ mp=""
+ for a in "$@"; do mp="$a"; done
+ while IFS= read -r f; do
+     [ "$f" = "$mp" ] && exit 1
+ done < "$ROOT/mount.fail"
+ exit 0'
++    # 假 timeout：模拟超时包装——去掉秒数参数后转执行剩余命令（测试内命令立即返回、
++    # 不真等 3s）；不记录 cmds.txt（避免影响既有 check_no_cmds/check_cmds 断言）。
++    # 需断言 timeout 调用形态/次数的用例（T6 H1/H2/H4/H8/H9）自行覆写为记录版本。
++    fake_bin timeout '#!/bin/sh
++[ -n "$ROOT" ] || exit 0
++shift
++"$@"'
+ }
+ 
+ # 追加 blk.type 条目：add_blk_type <分区> <类型>（ESP→vfat、Windows→ntfs、Linux→ext4）
+ add_blk_type() {
+     printf '%s %s\n' "$1" "$2" >> "$ROOT/blk.type"
+ }
+ 
+ # 追加分区卷标条目：add_label <分区> <卷标>（可含空格；写入 lsblk.labels）
+ add_label() {
+     printf '%s %s\n' "$1" "$2" >> "$ROOT/lsblk.labels"
+diff --git a/diskwipe-iso/tests/run-all.sh b/diskwipe-iso/tests/run-all.sh
+index eb90448..319cc37 100644
+--- a/diskwipe-iso/tests/run-all.sh
++++ b/diskwipe-iso/tests/run-all.sh
+@@ -1,18 +1,18 @@
+ #!/bin/bash
+ # diskwipe-iso 总测试入口：依次运行 t1~tN，任一失败整体非 0
+ # 运行：bash diskwipe-iso/tests/run-all.sh（本机 Git Bash）
+ set -u
+ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ RC=0
+ 
+-for t in t1_wipe t2_menu t3_init t4_log t5_ascii; do
++for t in t1_wipe t2_menu t3_init t4_log t5_ascii t6_scan; do
+     echo
+     echo "========== 运行 tests/${t}.sh =========="
+     if bash "$TEST_DIR/$t.sh"; then
+         echo "${t} ALL PASS"
+     else
+         echo "${t} FAILED"
+         RC=1
+     fi
+ done
+ 
+diff --git a/diskwipe-iso/tests/t2_menu.sh b/diskwipe-iso/tests/t2_menu.sh
+index 16adcc1..3e1ea9a 100644
+--- a/diskwipe-iso/tests/t2_menu.sh
++++ b/diskwipe-iso/tests/t2_menu.sh
+@@ -217,20 +217,48 @@ case "$1" in
+             pk=""
+             if (name != d) {
+                 pk=name
+                 if (pk ~ /p[0-9]+$/) sub(/p[0-9]+$/, "", pk)
+                 else while (pk ~ /[0-9]$/) pk=substr(pk,1,length(pk)-1)
+             }
+             if (type=="part" && ((" " w " ") ~ (" " pk " "))) next
+             if (name==d || pk==d) printf "%s %s %s %s\n", name, type, mps, pk
+         }' "$ROOT/lsblk.table"
+         ;;
++    NAME,TYPE,MOUNTPOINT,PKNAME,PARTTYPENAME,PARTFLAGS)
++        [ -f "$ROOT/lsblk.table" ] || exit 0
++        # 批量类型探测表（同 install_fakes 形态，叠加已清盘分区过滤：盘已清后 sda1 消失 → sda 变数据盘）
++        awk -v w="$wiped" -v ptf="$ROOT/lsblk.ptname" -v flf="$ROOT/lsblk.flags" 'BEGIN {
++                print "NAME TYPE MOUNTPOINT PKNAME PARTTYPENAME PARTFLAGS"
++                if (ptf != "") while ((getline l < ptf) > 0) { split(l, a, " "); pt[a[1]] = substr(l, index(l, " ") + 1) }
++                if (flf != "") while ((getline l < flf) > 0) { split(l, a, " "); fl[a[1]] = a[2] }
++            }
++            NR==1{next}
++            $3=="part"{
++                pk=$1
++                if (pk ~ /p[0-9]+$/) sub(/p[0-9]+$/, "", pk)
++                else while (pk ~ /[0-9]$/) pk=substr(pk,1,length(pk)-1)
++                if ((" " w " ") ~ (" " pk " ")) next
++            }
++            {
++                name=$1; type=$3
++                mps=""
++                for (i=4; i<=NF; i++) { if ($i ~ /^\//) { mps=$i; for (j=i+1; j<=NF; j++) mps=mps " " $j; break } }
++                pk=""
++                if (type != "disk") {
++                    pk=name
++                    if (pk ~ /p[0-9]+$/) sub(/p[0-9]+$/, "", pk)
++                    else while (pk ~ /[0-9]$/) pk=substr(pk,1,length(pk)-1)
++                }
++                printf "%s %s %s %s %s %s\n", name, type, mps, pk, pt[name], fl[name]
++            }' "$ROOT/lsblk.table"
++        ;;
+     esac
+     ;;
+ -no)
+     case "$2" in
+     PARTFLAGS)
+         dev="${3#/dev/}"
+         [ -f "$ROOT/lsblk.flags" ] || exit 0
+         awk -v d="$dev" '$1==d { print $2 }' "$ROOT/lsblk.flags"
+         ;;
+     PARTTYPENAME)
+diff --git a/diskwipe-iso/tests/t3_init.sh b/diskwipe-iso/tests/t3_init.sh
+index 4fa9281..e697689 100644
+--- a/diskwipe-iso/tests/t3_init.sh
++++ b/diskwipe-iso/tests/t3_init.sh
+@@ -31,20 +31,24 @@ setup_stub() {
+     mkdir -p "$ROOT/stub"
+     cp "$INIT_SH" "$ROOT/stub/init"
+     # init 现在会 source 同目录 lib.sh（dw_mount_log_media 等），必须一并拷入 stub
+     cp "$LIB_SH" "$ROOT/stub/lib.sh"
+     # 空 lsblk/blkid 假件：init 的 dw_mount_log_media 需要 lsblk/blkid 枚举日志介质；
+     # stub 环境无 U 盘 → 返回空，走 DW_LOG_MEDIA=none 分支（防真实 lsblk 触碰本机设备）
+     fake_bin lsblk '#!/bin/sh
+ exit 0'
+     fake_bin blkid '#!/bin/sh
+ exit 2'
++    # 假 timeout：只读探测超时兜底接缝（透明转执行，不记录——保持 cmds.txt 断言不变）
++    fake_bin timeout '#!/bin/sh
++shift
++"$@"'
+     # 假 mount：记录调用到 cmds.txt；$ROOT/mount.fail 命中挂载点（末参数）时返回 1
+     fake_bin mount '#!/bin/sh
+ [ -n "$ROOT" ] || exit 0
+ printf "mount %s\n" "$*" >> "$ROOT/cmds.txt"
+ [ -f "$ROOT/mount.fail" ] || exit 0
+ mp=""
+ for a in "$@"; do mp="$a"; done
+ while IFS= read -r f; do
+     [ "$f" = "$mp" ] && exit 1
+ done < "$ROOT/mount.fail"
+diff --git a/diskwipe-iso/tests/t6_scan.sh b/diskwipe-iso/tests/t6_scan.sh
+new file mode 100644
+index 0000000..de53d35
+--- /dev/null
++++ b/diskwipe-iso/tests/t6_scan.sh
+@@ -0,0 +1,327 @@
++#!/bin/bash
++# T6：diskwipe-iso 真机"列盘卡住"修复验收（列盘零 exec + timeout 兜底 + 枚举降级 + 进度/日志）
++# 覆盖（设计 §5/§6 与任务简报 Step 1 的 H1-H9）：
++#   H1  menu 列盘典型流程 cmds.txt 无逐盘 lsblk/blkid/awk（枚举+批量探测各 1 次，其后列盘零新增命令）
++#   H2  dw_scan_system_disks：假件 lsblk（含 PARTTYPENAME/PARTFLAGS 列）+ 假件 blkid
++#       （-c /dev/null -o full 形态输出 设备: TYPE="..."）→ ESP 盘 SYS(1)、ntfs SYS(1)、
++#       无签名 DATA(0)、探测不到 UNK(2)；输出 设备|类型码
++#   H3  TIMEOUT_BIN=假件（仅批量探测返回 124）：批量探测返回空 → 全部盘标 UNK；
++#       菜单仍显示其余盘、不挂死
++#   H4  TIMEOUT_BIN 接缝：假件记录调用 timeout 3 <cmd>；生产默认 timeout
++#   H5  类型查表与 dw_is_system_disk 口径一致（SYS/DATA/UNK 映射不变）
++#   H6  枚举后屏幕含 Scanning disks...；日志含盘清单行
++#   H7  枚举假件超时（124）→ menu 打印 ERROR: disk scan timed out or failed 并重试一次；
++#       重试仍失败 → 打印错误+可安全重启提示；不出现 Only boot media found
++#   H8  清除流程 cmds.txt：wipefs/umount/partprobe 调用无 timeout 前缀
++#   H9  dw_disk_mountpoints 与 init 日志介质探测调用包 timeout 3（cmds.txt 断言）
++# 运行：bash diskwipe-iso/tests/run-all.sh（或单独 bash diskwipe-iso/tests/t6_scan.sh）
++# 安全约束（用户强要求，测试绝不触碰本机真实块设备）：全部经假件注入（LSBLK_BIN/BLKID_BIN/
++#   TIMEOUT_BIN 接缝 + PATH 假件），脚本操作的"设备"全部来自假件输出的名字。
++set -u
++. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
++trap 'rc=$?; cleanup_case; exit "$rc"' EXIT
++
++MENU_SH="$REPO_ROOT/diskwipe-iso/src/menu.sh"
++
++echo "==== T6 列盘卡住修复（零 exec/超时兜底/降级/进度）测试 ===="
++
++setup_case() { setup_tmp; install_fakes; }
++
++# 记录版假 timeout：记录 "timeout <args>" 到 cmds.txt 后转执行（断言接缝调用形态/次数用）
++install_recording_timeout() {
++    fake_bin timeout '#!/bin/sh
++[ -n "$ROOT" ] || exit 0
++printf "timeout %s\n" "$*" >> "$ROOT/cmds.txt"
++shift
++"$@"'
++}
++
++# 运行 menu.sh：stdin 用管道喂入（模拟交互）；额外环境（DW_LOG_MEDIA/LOG_DIR 等）经 "$@" 传入 env
++run_menu() {
++    local input="$1" outf="$2"
++    shift 2
++    printf '%s\n' "$input" | env \
++        PATH="$FAKE_BIN:$PATH" \
++        LSBLK_BIN=lsblk BLKID_BIN=blkid WIPEFS_BIN=wipefs UMOUNT_BIN=umount \
++        PARTPROBE_BIN=partprobe \
++        "$@" \
++        bash "$MENU_SH" > "$outf" 2>&1
++    LAST_RC=${PIPESTATUS[1]}
++    return 0
++}
++
++# 运行 dw_mount_log_media 并 echo DW_LOG_MEDIA（同 t4 run_mount；探测文件指向临时目录）
++run_mount() {
++    local outf="$1"
++    shift
++    PATH="$FAKE_BIN:$PATH" \
++    LSBLK_BIN=lsblk BLKID_BIN=blkid WIPEFS_BIN=wipefs UMOUNT_BIN=umount \
++    DW_LOG_PROBE="$ROOT/probe" \
++    bash -c ". \"$LIB_SH\"; dw_mount_log_media; echo \"DW_LOG_MEDIA=\$DW_LOG_MEDIA\"" > "$outf" 2>&1
++    LAST_RC=$?
++    return 0
++}
++
++# 断言：输出中某一行同时含 A 与 B
++check_line_both() {
++    local a="$1" b="$2" desc="$3"
++    if grep -F -- "$a" "$OUTF" | grep -Fq -- "$b"; then
++        _pass "$desc"
++    else
++        _fail "$desc（无同时含 "$a" 与 "$b" 的行）"
++    fi
++}
++
++# ---------- H1：列盘典型流程零逐盘 exec ----------
++CASE="H1 列盘零逐盘 exec（枚举+批量探测各 1 次）"
++setup_case
++cat > "$ROOT/lsblk.table" <<'EOF'
++NAME SIZE TYPE MODEL TRAN MOUNTPOINT
++sda 894G disk HGST 7K6000 sata
++sda1 512M part HGST 7K6000 sata /boot/efi
++sdb 894G disk Samsung PM983 nvme
++EOF
++add_blk_type sda1 vfat
++add_ptname sda1 "EFI System"
++install_recording_timeout
++run_menu '0' "$OUTF"
++check_rc 0 '输入 0 应正常退出 0'
++check_out '/dev/sda' '列表应显示 sda'
++check_cmd_count 'timeout 3 lsblk' 2 '枚举 + 批量探测各 1 次 lsblk（其后列盘零新增命令）'
++check_cmd_count 'timeout 3 blkid' 1 '批量 blkid 仅 1 次'
++check_not_cmds '/dev/sd' '列盘期间不得出现逐盘 lsblk/blkid（无设备参数调用）'
++cleanup_case
++
++# ---------- H2：批量类型探测 ----------
++CASE="H2 批量类型探测 dw_scan_system_disks"
++setup_case
++cat > "$ROOT/lsblk.table" <<'EOF'
++NAME SIZE TYPE MODEL TRAN MOUNTPOINT
++sda 500G disk DiskA sata
++sda1 512M part DiskA sata
++sdb 500G disk DiskB sata
++sdb1 100G part DiskB sata
++sdc 500G disk DiskC sata
++sdc1 500G part DiskC sata
++sdd 500G disk DiskD sata
++sdd1 500G part DiskD sata
++sde 500G disk DiskE sata
++EOF
++add_blk_type sda1 vfat
++add_blk_type sdb1 ntfs
++add_blk_type sdc1 ext4
++add_ptname sda1 "EFI System"
++install_recording_timeout
++run_dw "$OUTF" dw_scan_system_disks
++check_rc 0 '批量探测应退出 0'
++check_out 'sda|1' 'ESP（vfat + PARTTYPENAME=EFI System）→ SYS(1)'
++check_out 'sdb|1' 'ntfs → SYS(1)'
++check_out 'sdc|0' 'ext4 无 0x80 标志 → DATA(0)'
++check_out 'sdd|2' 'blkid 探测不到 → UNK(2)'
++check_out 'sde|0' '无分区盘 → DATA(0)'
++check_cmd_count 'timeout 3 lsblk' 1 '批量 lsblk 仅 1 次'
++check_cmd_count 'timeout 3 blkid' 1 '批量 blkid 仅 1 次'
++check_cmds 'timeout 3 lsblk -o NAME,TYPE,MOUNTPOINT,PKNAME,PARTTYPENAME,PARTFLAGS' '批量 lsblk 应带 PARTTYPENAME/PARTFLAGS 列'
++check_cmds 'timeout 3 blkid -c /dev/null -o full' '批量 blkid 应带 -c /dev/null -o full（含设备名输出形态）'
++cleanup_case
++
++# ---------- H3：批量探测超时 → 全部盘 UNK，菜单不挂死 ----------
++CASE="H3 批量探测超时全部盘标 UNK"
++setup_case
++cat > "$ROOT/lsblk.table" <<'EOF'
++NAME SIZE TYPE MODEL TRAN MOUNTPOINT
++sda 894G disk HGST 7K6000 sata
++sda1 512M part HGST 7K6000 sata /boot/efi
++sdb 894G disk Samsung PM983 nvme
++EOF
++add_blk_type sda1 vfat
++add_ptname sda1 "EFI System"
++# 假 timeout：仅批量探测（PARTTYPENAME 列 / -o full）返回 124，其余（枚举等）转执行
++fake_bin timeout '#!/bin/sh
++case "$*" in
++*PARTTYPENAME*) exit 124 ;;
++*-o\ full*) exit 124 ;;
++esac
++shift
++"$@"'
++run_menu '0' "$OUTF"
++check_rc 0 '批量探测超时菜单仍应正常退出 0（不挂死）'
++check_out 'Scanning disks... (please wait)' '枚举后应打印进度提示'
++check_line_both '/dev/sda' 'UNK' 'sda 应标 UNK（批量探测超时）'
++check_line_both '/dev/sdb' 'UNK' 'sdb 应标 UNK'
++check_not_out 'ERROR: disk scan' '枚举未失败不得进入枚举降级路径'
++check_not_out 'Only boot media found' '不得误判仅启动介质'
++cleanup_case
++
++# ---------- H4：TIMEOUT_BIN 接缝与生产默认 ----------
++CASE="H4 TIMEOUT_BIN 接缝与生产默认"
++setup_case
++cat > "$ROOT/lsblk.table" <<'EOF'
++NAME SIZE TYPE MODEL TRAN MOUNTPOINT
++sda 894G disk HGST 7K6000 sata
++EOF
++install_recording_timeout
++# (a) 接缝指向记录假件 → 记录 "timeout 3 <cmd>" 调用形态
++run_dw "$OUTF" dw_enum_disks
++check_rc 0 '枚举应退出 0'
++check_cmds 'timeout 3 lsblk -o NAME,SIZE,TYPE,MODEL,TRAN,MOUNTPOINT' '枚举 lsblk 应包 timeout 3'
++check_out 'sda 894G HGST 7K6000 sata' '枚举输出正常'
++# (b) 未显式设置时生产默认值 = timeout
++PATH="$FAKE_BIN:$PATH" \
++bash -c ". \"$LIB_SH\"; echo \"TIMEOUT_BIN=\$TIMEOUT_BIN\"" > "$OUTF" 2>&1
++check_out 'TIMEOUT_BIN=timeout' '未显式设置时应默认 timeout'
++# (c) 默认值经 PATH 解析到假件（透明转执行）→ 枚举照常（证明默认值可被假件拦截、不触真实命令）
++: > "$ROOT/cmds.txt"
++run_dw "$OUTF" dw_enum_disks
++check_rc 0 '默认 timeout 包装下枚举应退出 0'
++check_out 'sda 894G HGST 7K6000 sata' '默认 timeout 包装下枚举输出不变'
++cleanup_case
++
++# ---------- H5：类型查表与 dw_is_system_disk 口径一致 ----------
++CASE="H5 类型查表与 dw_is_system_disk 口径一致"
++setup_case
++cat > "$ROOT/lsblk.table" <<'EOF'
++NAME SIZE TYPE MODEL TRAN MOUNTPOINT
++sda 500G disk DiskA sata
++sda1 512M part DiskA sata
++sdb 500G disk DiskB sata
++sdb1 100G part DiskB sata
++sdc 500G disk DiskC sata
++sdc1 500G part DiskC sata
++sdd 500G disk DiskD sata
++sdd1 500G part DiskD sata
++sde 500G disk DiskE sata
++sdf 500G disk DiskF sata
++sdf1 500G part DiskF sata
++EOF
++add_blk_type sda1 vfat
++add_ptname sda1 "EFI System"
++add_blk_type sdb1 ntfs
++add_blk_type sdc1 ext4
++add_flag sdc1 0x80
++add_blk_type sdd1 ext4
++# sdf1 无 blk.type 条目 → blkid 探测不到 → UNK
++# 一次性批量探测 → 扫描输出存 scan.out；逐盘对比旧口径 dw_is_system_disk（SYS=1/DATA=0/UNK=2）
++run_dw "$OUTF" dw_scan_system_disks
++check_rc 0 '批量探测应退出 0'
++cp "$OUTF" "$ROOT/scan.out"
++for dev in sda sdb sdc sdd sde sdf; do
++    sc="$(awk -F'|' -v d="$dev" '$1==d { print $2; exit }' "$ROOT/scan.out")"
++    run_dw "$OUTF" dw_is_system_disk "$dev"
++    oc="$(cat "$OUTF")"
++    if [ -n "$sc" ] && [ "$sc" = "$oc" ]; then
++        _pass "$dev 查表码 $sc 与 dw_is_system_disk 口径一致"
++    else
++        _fail "$dev 查表码 ${sc:-空} 与旧口径 ${oc:-空} 不一致"
++    fi
++done
++# 口径映射断言（针对扫描输出本身）
++if grep -Fq -- 'sda|1' "$ROOT/scan.out"; then _pass 'ESP 盘 → SYS(1)'; else _fail 'ESP 盘 → SYS(1)（扫描输出未包含 sda|1）'; fi
++if grep -Fq -- 'sdb|1' "$ROOT/scan.out"; then _pass 'ntfs 盘 → SYS(1)'; else _fail 'ntfs 盘 → SYS(1)（扫描输出未包含 sdb|1）'; fi
++if grep -Fq -- 'sdc|1' "$ROOT/scan.out"; then _pass 'MBR 0x80 活动盘 → SYS(1)'; else _fail 'MBR 0x80 活动盘 → SYS(1)（扫描输出未包含 sdc|1）'; fi
++if grep -Fq -- 'sdd|0' "$ROOT/scan.out"; then _pass 'ext4 无标志 → DATA(0)'; else _fail 'ext4 无标志 → DATA(0)（扫描输出未包含 sdd|0）'; fi
++if grep -Fq -- 'sde|0' "$ROOT/scan.out"; then _pass '无分区盘 → DATA(0)'; else _fail '无分区盘 → DATA(0)（扫描输出未包含 sde|0）'; fi
++if grep -Fq -- 'sdf|2' "$ROOT/scan.out"; then _pass '探测不到 → UNK(2)'; else _fail '探测不到 → UNK(2)（扫描输出未包含 sdf|2）'; fi
++cleanup_case
++
++# ---------- H6：进度提示 + 枚举结果落日志 ----------
++CASE="H6 进度提示与枚举结果落日志"
++setup_case
++cat > "$ROOT/lsblk.table" <<'EOF'
++NAME SIZE TYPE MODEL TRAN MOUNTPOINT
++sda 894G disk HGST 7K6000 sata
++sda1 512M part HGST 7K6000 sata /boot/efi
++sdb 894G disk Samsung PM983 nvme
++EOF
++add_blk_type sda1 vfat
++add_ptname sda1 "EFI System"
++mkdir -p "$ROOT/logdir"
++run_menu $'\nYES\n0\n' "$OUTF" DW_LOG_MEDIA=usb LOG_DIR="$ROOT/logdir"
++check_rc 0 '日志流程应正常退出 0'
++check_out 'Scanning disks... (please wait)' '枚举后屏幕应含进度提示'
++logf=$(ls "$ROOT/logdir"/diskwipe-*.log 2>/dev/null | head -n 1)
++check_file "$logf" 'Disks found: 2 (sda sdb)' '日志应含枚举盘清单行（数量+设备）'
++check_file "$logf" '/dev/sda  894G' '日志应含盘清单（设备/容量/型号）'
++cleanup_case
++
++# ---------- H7：枚举超时降级（ERROR + 重试一次 + 安全重启提示） ----------
++CASE="H7 枚举超时降级与重试"
++setup_case
++cat > "$ROOT/lsblk.table" <<'EOF'
++NAME SIZE TYPE MODEL TRAN MOUNTPOINT
++sda 894G disk HGST 7K6000 sata
++EOF
++# 假 timeout：恒 124（记录调用后返回超时码，供断言重试次数）
++fake_bin timeout '#!/bin/sh
++[ -n "$ROOT" ] || exit 0
++printf "timeout %s\n" "$*" >> "$ROOT/cmds.txt"
++exit 124'
++run_menu '0' "$OUTF"
++check_rc 1 '枚举超时且重试仍失败应退出 1'
++check_out 'ERROR: disk scan timed out or failed' '应打印枚举超时错误'
++check_out 'You may power off or reboot safely' '应打印可安全重启提示'
++check_not_out 'Only boot media found' '不得误判仅启动介质'
++check_cmd_count 'timeout 3 lsblk' 2 '枚举应自动重试一次（共 2 次）'
++cleanup_case
++
++# ---------- H8：清除流程不带 timeout 前缀 ----------
++CASE="H8 清除流程不带 timeout 前缀"
++setup_case
++cat > "$ROOT/lsblk.table" <<'EOF'
++NAME SIZE TYPE MODEL TRAN MOUNTPOINT
++sda 894G disk HGST 7K6000 sata
++sda1 512M part HGST 7K6000 sata /boot/efi
++sdb 894G disk Samsung PM983 nvme
++EOF
++add_blk_type sda1 vfat
++add_ptname sda1 "EFI System"
++install_recording_timeout
++run_menu $'\nYES\n0\n' "$OUTF"
++check_rc 0 '清除流程应正常退出 0'
++check_cmds 'umount /boot/efi' 'umount 调用无 timeout 前缀（整行精确匹配）'
++check_cmds 'wipefs -a /dev/sda' 'wipefs -a 无 timeout 前缀'
++check_cmds 'partprobe /dev/sda' 'partprobe 无 timeout 前缀'
++check_cmds 'wipefs -n /dev/sda' 'wipefs -n 无 timeout 前缀'
++check_not_cmds 'timeout 3 umount' 'umount 不得包 timeout'
++check_not_cmds 'timeout 3 wipefs' 'wipefs 不得包 timeout'
++check_not_cmds 'timeout 3 partprobe' 'partprobe 不得包 timeout'
++cleanup_case
++
++# ---------- H9：dw_disk_mountpoints 与日志介质探测包 timeout ----------
++CASE="H9 dw_disk_mountpoints 包 timeout"
++setup_case
++cat > "$ROOT/lsblk.table" <<'EOF'
++NAME SIZE TYPE MODEL TRAN MOUNTPOINT
++sda 894G disk HGST 7K6000 sata
++sda1 512M part HGST 7K6000 sata /mnt
++EOF
++install_recording_timeout
++run_dw "$OUTF" dw_disk_mountpoints sda
++check_rc 0 '挂载点探测应退出 0'
++check_out '/mnt' '应输出挂载点'
++check_cmds 'timeout 3 lsblk -o NAME,TYPE,MOUNTPOINT,PKNAME /dev/sda' 'dw_disk_mountpoints 的 lsblk 应包 timeout 3'
++cleanup_case
++
++CASE="H9b init 日志介质探测包 timeout"
++setup_case
++cat > "$ROOT/lsblk.table" <<'EOF'
++NAME SIZE TYPE MODEL TRAN MOUNTPOINT
++sda 894G disk HGST 7K6000 sata
++sdc 30G disk USB DISK 3.0 usb
++sdc1 32M part USB DISK 3.0 usb
++sdc2 8G part USB DISK 3.0 usb
++EOF
++add_label sdc1 VTOYEFI
++add_blk_type sdc1 vfat
++add_blk_type sdc2 exfat
++install_recording_timeout
++run_mount "$OUTF"
++check_rc 0 '日志介质探测应正常返回'
++check_out 'DW_LOG_MEDIA=usb' '应挂载到数据区 sdc2'
++check_cmds 'timeout 3 lsblk -o NAME,TYPE,TRAN,PKNAME -l' '介质枚举 lsblk 应包 timeout 3'
++check_cmds 'timeout 3 blkid -s TYPE -o value /dev/sdc1' '介质 blkid TYPE 应包 timeout 3'
++check_cmds 'timeout 3 blkid -s LABEL -o value /dev/sdc1' '介质 blkid LABEL 应包 timeout 3'
++check_cmds 'mount /dev/sdc2 /diskwipe-log' 'mount 调用无 timeout 前缀（整行精确匹配）'
++cleanup_case
++
++finish

@@ -1,0 +1,20 @@
+﻿✓ 检测到 WSL Ubuntu，开始构建（首次需下载 apt 包，耗时数分钟；重跑幂等）...
+==> [1/7] 安装构建依赖（apt 幂等，已装自动跳过；首次需下载，耗时数分钟）
+Hit:1 https://mirrors.aliyun.com/postgresql/repos/apt noble-pgdg InRelease
+Hit:2 https://mirrors.tuna.tsinghua.edu.cn/ubuntu noble InRelease
+Hit:3 https://mirrors.tuna.tsinghua.edu.cn/ubuntu noble-updates InRelease
+Hit:4 https://mirrors.tuna.tsinghua.edu.cn/ubuntu noble-backports InRelease
+Hit:5 https://mirrors.tuna.tsinghua.edu.cn/ubuntu noble-security InRelease
+Reading package lists...
+bash.exe : E: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 667 (unattended-upgr)
+所在位置 行:15 字符: 4606
++ ... .0-diag')); & "C:\Program Files\Git\bin\bash.exe" diskwipe-iso/build. ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (E: Could not ge...nattended-upgr):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+E: Unable to acquire the dpkg frontend lock (/var/lib/dpkg/lock-frontend), is another process using it?
+✗ apt-get install 失败：busybox-static xorriso mtools grub-pc-bin grub-efi-amd64-bin linux-image-generic zstd xz-utils par
+ted
+✗ 构建中止。临时目录在 WSL /tmp 内（会话结束即失效，仅当次会话可排查）：/tmp/diskwipe-build.4z50tj
+✗ 构建失败（退出码 1），见上方错误输出。

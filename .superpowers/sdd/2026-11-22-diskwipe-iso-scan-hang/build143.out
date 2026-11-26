@@ -1,0 +1,83 @@
+﻿✓ 检测到 WSL Ubuntu，开始构建（首次需下载 apt 包，耗时数分钟；重跑幂等）...
+==> [1/7] 安装构建依赖（apt 幂等，已装自动跳过；首次需下载，耗时数分钟）
+Hit:1 https://mirrors.aliyun.com/postgresql/repos/apt noble-pgdg InRelease
+Hit:2 https://mirrors.tuna.tsinghua.edu.cn/ubuntu noble InRelease
+Hit:3 https://mirrors.tuna.tsinghua.edu.cn/ubuntu noble-updates InRelease
+Hit:4 https://mirrors.tuna.tsinghua.edu.cn/ubuntu noble-backports InRelease
+Hit:5 https://mirrors.tuna.tsinghua.edu.cn/ubuntu noble-security InRelease
+Reading package lists...
+Reading package lists...
+Building dependency tree...
+Reading state information...
+busybox-static is already the newest version (1:1.36.1-6ubuntu3.1).
+xorriso is already the newest version (1:1.5.6-1.1ubuntu3).
+mtools is already the newest version (4.0.43-1build1).
+grub-pc-bin is already the newest version (2.12-1ubuntu7.3).
+grub-efi-amd64-bin is already the newest version (2.12-1ubuntu7.3).
+linux-image-generic is already the newest version (6.8.0-151.151).
+zstd is already the newest version (1.5.5+dfsg2-2build1.1).
+xz-utils is already the newest version (5.6.1+really5.4.5-1ubuntu0.4).
+parted is already the newest version (3.6-4build1).
+0 upgraded, 0 newly installed, 0 to remove and 99 not upgraded.
+     依赖就绪：busybox=/usr/bin/busybox isoinfo=/usr/bin/isoinfo
+==> 内核模式：kylin（kylin = 使用 kylin-src 提取的 Kylin 4.19 内核，解决 Ubuntu 内核 USB 不兼容启动卡死）
+==> 使用内核：4.19.90-89.11.v2401.ky10.x86_64
+==> [2/7] 组装 initramfs rootfs（内核 4.19.90-89.11.v2401.ky10.x86_64，模式 kylin）
+     busybox applet 链接数：272
+     wipefs/lsblk/blkid/partprobe 动态依赖完整（chroot 实测可运行）
+     Kylin 模块提取：白名单 + 依赖链共 17 个 .ko.xz
+     已把 17 个 .ko.xz 模块解压为 .ko（busybox 无 xz 解压能力）
+     modules.dep/modules.alias 等已拷入并 sed 改后缀（.ko.xz → .ko）
+     固件：amd-ucode CPU 微码已拷入 lib/firmware（84K）
+     Kylin 模块目录：4.3M
+     src 四脚本已拷入并 chmod +x（/init 执行位满足内核要求）
+     VERSION → /diskwipe.version（1.4.3）
+==> [3/7] cpio 打包 initramfs → gzip 生成 initrd.img
+     initrd.img：4.6M
+==> [4/7] 写 boot/grub/grub.cfg + 放置 vmlinuz/initrd.img（模式 kylin）
+     vmlinuz：kylin-src/boot/vmlinuz-4.19.90-89.11.v2401.ky10.x86_64（Kylin 4.19）
+     grub.cfg：linux /boot/vmlinuz console=tty0 console=ttyS0,115200n8 + initrd /boot/initrd.img
+==> [5/7] grub-mkrescue 生成 BIOS+UEFI 双引导 iso → /mnt/c/Users/ganxin01/Documents/trae-work/ServerSystemTest/diskwipe-iso/output/diskwipe-v1.4.3.iso
+bash.exe : xorriso 1.5.6 : RockRidge filesystem manipulator, libburnia project.
+所在位置 行:15 字符: 4601
++ ... ,'1.4.3')); & "C:\Program Files\Git\bin\bash.exe" diskwipe-iso/build. ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (xorriso 1.5.6 :...burnia project.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+
+Drive current: -outdev 'stdio:/mnt/c/Users/ganxin01/Documents/trae-work/ServerSystemTest/diskwipe-iso/output/diskwipe-v
+1.4.3.iso'
+Media current: stdio file, overwriteable
+Media status : is blank
+Media summary: 0 sessions, 0 data blocks, 0 data,  240g free
+Added to ISO image: directory '/'='/tmp/grub.WOXGrN'
+xorriso : UPDATE :     588 files added in 1 seconds
+Added to ISO image: directory '/'='/tmp/diskwipe-build.3p7Gu7/rootfs'
+xorriso : UPDATE :     955 files added in 1 seconds
+xorriso : NOTE : Copying to System Area: 512 bytes from file '/usr/lib/grub/i386-pc/boot_hybrid.img'
+xorriso : UPDATE :  4.32% done
+xorriso : UPDATE :  26.88% done, estimate finish Sun Nov 22 18:47:20 2026
+ISO image produced: 19999 sectors
+Written to medium : 19999 sectors at LBA 0
+Writing to 'stdio:/mnt/c/Users/ganxin01/Documents/trae-work/ServerSystemTest/diskwipe-iso/output/diskwipe-v1.4.3.iso' c
+ompleted successfully.
+
+     iso：40M
+==> [6/7] isoinfo 校验 iso（模式 kylin）
+     卷信息：Volume id: DISKWIPE
+     校验通过：boot/grub/grub.cfg、boot/vmlinuz、boot/initrd.img 均在 iso 中（-l 目录树 + -x 抽取实检）
+     校验通过：grub.cfg 含 console=tty0 与 console=ttyS0,115200n8
+     校验通过：initrd 内 /init 具执行位
+     校验通过：initrd 内 /diskwipe.version = 1.4.3
+     校验通过：src 四脚本 dash -n 语法 0 错误
+     校验通过：initrd 内模块全部为未压缩 .ko（共 17 个，无 .ko.zst/.ko.xz 残留）
+     校验通过：boot/vmlinuz 为 Kylin 4.19 内核（strings 检出 4.19.90 版本串）
+     校验通过：initrd 内关键模块 ahci/usb-storage/nvme 均为未压缩 .ko
+
+======================================================
+  ✓ 构建成功：/mnt/c/Users/ganxin01/Documents/trae-work/ServerSystemTest/diskwipe-iso/output/diskwipe-v1.4.3.iso（大小 40M）
+  BIOS+UEFI 双引导 grub-mkrescue iso；isoinfo 校验全部通过
+  使用：将 iso 写入 U 盘（Ventoy/Rufus 等）后从 U 盘启动即可
+======================================================
+✓ 构建完成。ISO：/c/Users/ganxin01/Documents/trae-work/ServerSystemTest/diskwipe-iso/output/diskwipe-v1.4.3.iso

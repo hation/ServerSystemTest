@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
@@ -70,9 +71,15 @@ public partial class MainWindow : HandyControl.Controls.Window
     private readonly ObservableCollection<DiskRow> _disks = new();
     private bool _running;
 
+    /// <summary>日志目录（%AppData%\FirpeCleaner\），与 App 全局异常日志（error.log）同目录惯例。</summary>
+    private static string LogDir =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FirpeCleaner");
+
     public MainWindow()
     {
         InitializeComponent();
+        // 日志目录：FirPE 环境 %AppData% 在 X: 盘可写；目录不可写时不阻断启动（AppendLog 会回退 exe 同目录）
+        try { Directory.CreateDirectory(LogDir); } catch { }
         // 注意：XAML 根元素上的 Loaded 属性事件在 hc:Window 下不可靠，与 disk-tests 一致用构造函数订阅
         Loaded += OnLoaded;
     }
@@ -199,9 +206,32 @@ public partial class MainWindow : HandyControl.Controls.Window
 
     private void AppendLog(string line)
     {
-        LogBox.AppendText(line + Environment.NewLine);
+        // UI 与日志文件统一带时间戳，方便排查时序
+        var timestamped = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {line}";
+        LogBox.AppendText(timestamped + Environment.NewLine);
         if (LogBox.Text.Length > 200_000) LogBox.Text = LogBox.Text.Substring(LogBox.Text.Length / 2);
         LogBox.ScrollToEnd();
+        AppendLogToFile(timestamped);
+    }
+
+    /// <summary>日志落盘（失败静默降级，不阻断 UI）：
+    /// 优先 %AppData%\FirpeCleaner\cleanup.log；目录不可写时回退 exe 同目录 FirpeCleaner.log。</summary>
+    private static void AppendLogToFile(string timestampedLine)
+    {
+        try
+        {
+            File.AppendAllText(Path.Combine(LogDir, "cleanup.log"), timestampedLine + Environment.NewLine);
+        }
+        catch
+        {
+            // %AppData% 不可写（如只读 U 盘环境）→ 回退 exe 同目录；再失败则静默忽略
+            try
+            {
+                File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "FirpeCleaner.log"),
+                    timestampedLine + Environment.NewLine);
+            }
+            catch { /* 写日志失败不再抛，避免阻断 UI */ }
+        }
     }
 
     private void ThemeBtn_Click(object sender, RoutedEventArgs e)

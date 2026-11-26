@@ -53,7 +53,7 @@ diskpart 回退路径：本机非提权环境运行 diskpart 报 740（需提升
 
 ## Commit
 
-`feat(firpe-cleaner): Core 磁盘枚举（WMI 主+diskpart 回退+过滤+剩余容量）` — hash 提交后回填（同 task1 模式）。
+`feat(firpe-cleaner): Core 磁盘枚举（WMI 主+diskpart 回退+过滤+剩余容量）` — `daa295c`
 
 ## Concerns
 

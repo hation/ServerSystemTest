@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.Versioning;
 using System.Text;
@@ -31,36 +32,66 @@ public sealed class CleanRunner
     /// <summary>成功关键字（diskpart 英文固定文本，与系统语言无关）。</summary>
     internal const string SuccessMarker = "DiskPart successfully";
 
-    /// <summary>失败关键字（英文/中文变体，命中任一行即判定失败）。</summary>
+    /// <summary>失败关键字（英文/中文变体，命中任一行即判定失败；宽松匹配以覆盖 diskpart 真实输出形态）。</summary>
     private static readonly string[] FailureMarkers =
     {
-        "There is no disk",            // 指定盘号不存在
-        "access denied",               // 权限不足（未提权/被保护）
+        "There is no disk",            // 盘号不存在（diskpart 输出 "There is no disk selected."）
+        "denied",                      // 权限不足（diskpart 英文输出 "Access is denied."，宽松匹配 "denied" 以命中）
         "The disk is in use",          // 磁盘被占用（有卷挂载/系统盘）
-        "has encountered an error",    // diskpart 通用错误前缀
+        "has encountered an error",    // diskpart 通用错误前缀（"DiskPart has encountered an error: ..."）
         "没有磁盘",                     // 中文：盘不存在
+        "没有选定磁盘",                  // 中文：盘号不存在（diskpart 中文输出形态）
         "拒绝访问",                     // 中文：权限不足
         "磁盘正在使用中",                // 中文：磁盘被占用
         "发生错误",                     // 中文：通用错误
+        "已遇到错误",                    // 中文：diskpart 通用错误前缀（"DiskPart 已遇到错误: ..."）
     };
 
     /// <summary>
-    /// 执行清理：生成脚本 → diskpart /s 运行 → 解析结果。临时脚本 finally 删除。
+    /// 执行清理：生成脚本 → diskpart /s 运行 → 解析结果。
+    /// 空盘列表直接返回失败（No disks selected，不生成脚本）；脚本写入失败/启动失败/执行超时均以失败结果返回
+    /// （错误信息进 Failures 供 GUI 展示）。临时脚本 finally 删除；写失败时 catch 中删除，不留残留。
     /// </summary>
     public CleanResult Run(IEnumerable<int> diskNumbers)
     {
-        var script = BuildScript(diskNumbers ?? Array.Empty<int>());
+        var disks = (diskNumbers ?? Array.Empty<int>()).ToList();
+        if (disks.Count == 0)
+        {
+            return new CleanResult { Failures = new[] { "No disks selected" } };
+        }
+
+        var script = BuildScript(disks);
         var scriptFile = Path.Combine(Path.GetTempPath(), "firpe-clean-" + Guid.NewGuid().ToString("N")[..8] + ".txt");
-        File.WriteAllText(scriptFile, script);
+        try
+        {
+            File.WriteAllText(scriptFile, script);
+        }
+        catch (Exception ex)
+        {
+            // 写失败：删除可能残留的半写临时脚本，返回失败结果
+            TryDelete(scriptFile);
+            return new CleanResult { Failures = new[] { $"写入临时脚本失败: {ex.Message}" } };
+        }
+
         try
         {
             var output = RunDiskpart(scriptFile);
             return ParseOutput(output);
         }
+        catch (InvalidOperationException ex)
+        {
+            // diskpart 缺失/启动失败/执行超时 → 明确错误信息进 Failures，以失败结果返回
+            return new CleanResult { Failures = new[] { ex.Message } };
+        }
         finally
         {
-            try { File.Delete(scriptFile); } catch { /* 临时脚本删除失败不影响清理结果 */ }
+            TryDelete(scriptFile);
         }
+    }
+
+    private static void TryDelete(string scriptFile)
+    {
+        try { File.Delete(scriptFile); } catch { /* 临时脚本删除失败不影响清理结果 */ }
     }
 
     /// <summary>生成 diskpart 脚本：每盘 <c>select disk N</c> + <c>clean</c>（仅 clean，无 clean all）。</summary>
@@ -113,26 +144,60 @@ public sealed class CleanRunner
         return false;
     }
 
-    /// <summary>调用 diskpart /s 执行脚本并捕获输出（stderr 并入输出供解析），超时杀进程。</summary>
+    /// <summary>调用 diskpart /s 执行脚本并捕获输出，30s 超时杀进程。</summary>
     private static string RunDiskpart(string scriptFile)
+    {
+        return RunProcess("diskpart", "/s \"" + scriptFile + "\"", 30_000);
+    }
+
+    /// <summary>
+    /// 运行外部进程并捕获 stdout/stderr（stderr 并入输出供解析）。
+    /// 异步读（BeginOutputReadLine/BeginErrorReadLine）避免同步顺序读 stdout→stderr 的管道缓冲死锁；
+    /// WaitForExit(timeout) 判定超时 → Kill() 强制终止，确保超时分支真正可达。
+    /// </summary>
+    internal static string RunProcess(string fileName, string arguments, int timeoutMs)
     {
         var psi = new ProcessStartInfo
         {
-            FileName = "diskpart",
-            Arguments = "/s \"" + scriptFile + "\"",
+            FileName = fileName,
+            Arguments = arguments,
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
-        using var p = Process.Start(psi) ?? throw new InvalidOperationException("diskpart 启动失败");
-        var output = p.StandardOutput.ReadToEnd();
-        var error = p.StandardError.ReadToEnd();
-        if (!p.WaitForExit(30_000))
+
+        Process p;
+        try
         {
-            p.Kill();
-            throw new InvalidOperationException("diskpart 执行超时");
+            p = Process.Start(psi) ?? throw new InvalidOperationException("进程启动失败: " + fileName);
         }
-        return string.IsNullOrEmpty(error) ? output : output + Environment.NewLine + error;
+        catch (Win32Exception ex)
+        {
+            // diskpart 缺失/不在 PATH 等启动失败 → 包装为明确错误信息（含原始原因）
+            throw new InvalidOperationException($"无法启动 {fileName}（可能未安装或不在 PATH）: {ex.Message}", ex);
+        }
+
+        using (p)
+        {
+            var stdout = new StringBuilder();
+            var stderr = new StringBuilder();
+            p.OutputDataReceived += (_, e) => { if (e.Data != null) stdout.AppendLine(e.Data); };
+            p.ErrorDataReceived += (_, e) => { if (e.Data != null) stderr.AppendLine(e.Data); };
+            p.BeginOutputReadLine();
+            p.BeginErrorReadLine();
+
+            if (!p.WaitForExit(timeoutMs))
+            {
+                try { p.Kill(); } catch { /* 超时瞬间进程恰好已退出，忽略 */ }
+                p.WaitForExit(); // 等待进程退出并排空异步读事件
+                throw new InvalidOperationException($"{fileName} 执行超时（已强制终止）");
+            }
+            // 无参 WaitForExit：确保异步输出事件全部处理完成（.NET 文档要求，否则输出可能不完整）
+            p.WaitForExit();
+
+            var errorText = stderr.ToString();
+            return string.IsNullOrEmpty(errorText) ? stdout.ToString() : stdout + Environment.NewLine + errorText;
+        }
     }
 }

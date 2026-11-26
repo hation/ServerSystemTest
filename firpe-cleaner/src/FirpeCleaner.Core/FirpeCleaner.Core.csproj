@@ -7,4 +7,9 @@
     <RootNamespace>FirpeCleaner.Core</RootNamespace>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- WMI 枚举（Win32_DiskDrive/Win32_DiskPartition/Win32_LogicalDisk）；仅 Windows 可用 -->
+    <PackageReference Include="System.Management" Version="8.0.0" />
+  </ItemGroup>
+
 </Project>

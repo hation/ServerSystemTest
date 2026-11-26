@@ -18,6 +18,9 @@ public class DiskInfo
     /// <summary>总容量（GB，Round(Size/1GB)，1GB=1024^3）。</summary>
     public long SizeGB { get; init; }
 
+    /// <summary>总容量是否未知（WMI Size 为 null 时置位；未知盘按"容量未知"排除而非误标 &lt;1GB）。</summary>
+    public bool SizeUnknown { get; init; }
+
     /// <summary>剩余容量（GB，Win32_DiskPartition+Win32_LogicalDisk 按盘归并）；null=拿不到（GUI 显示"—"）。</summary>
     public long? FreeGB { get; init; }
 
@@ -36,6 +39,6 @@ public class DiskInfo
     /// <summary>是否为机械硬盘（Media=HDD 或 Bus=SAS，用于后续 GUI 类型标注）。</summary>
     public bool IsHdd { get; init; }
 
-    /// <summary>是否为启动盘（diskpart 回退时 detail disk 的 "Boot Disk : Yes" 标记；WMI 主路径不设）。</summary>
+    /// <summary>是否为启动盘/系统盘（diskpart 回退取 detail disk 的 "Boot Disk" 标记；WMI 主路径取 BootPartition=True 的逻辑盘所在盘）。</summary>
     internal bool IsBoot { get; set; }
 }

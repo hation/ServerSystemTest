@@ -50,7 +50,7 @@ public static partial class DiskEnumerator
                 MarkExcluded(disk, "系统盘（启动盘）");
                 continue;
             }
-            if (string.Equals(disk.Bus, "USB", StringComparison.OrdinalIgnoreCase))
+            if (BusIsUsb(disk.Bus))
             {
                 MarkExcluded(disk, "USB 移动盘");
                 continue;
@@ -58,6 +58,12 @@ public static partial class DiskEnumerator
             if (MediaIsRemovableOrOptical(disk.Media))
             {
                 MarkExcluded(disk, "可移动/CD/DVD 介质");
+                continue;
+            }
+            if (disk.SizeUnknown)
+            {
+                // 容量拿不到（WMI Size 为 null）：标注未知而非误标"容量小于 1GB"
+                MarkExcluded(disk, "容量未知");
                 continue;
             }
             if (disk.SizeGB < 1)
@@ -74,43 +80,54 @@ public static partial class DiskEnumerator
         var disks = new List<DiskInfo>();
         if (string.IsNullOrWhiteSpace(output)) return disks;
 
-        // list disk 行：如 "Disk 0    Online   476 GB  372 GB       *"（中文环境为 "磁盘 0    联机    476 GB ..."）
-        foreach (Match m in DiskRowRegex().Matches(output))
-        {
-            var number = int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
-            var size = double.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture);
-            var unitBytes = UnitToBytes(m.Groups[3].Value);
-            disks.Add(new DiskInfo
-            {
-                Number = number,
-                Device = @"\\.\PhysicalDrive" + number,
-                SizeGB = RoundGiga((long)(size * unitBytes)),
-            });
-        }
+        var byNumber = new Dictionary<int, DiskInfo>();
+        var current = -1;      // detail 段当前盘号（由脚本命令回显 "select disk N" 定位）
+        var inDetail = false;  // 进入 detail 段后不再匹配盘行，杜绝跨段误匹配
 
-        // detail disk 段：脚本命令 "select disk N" 会原样回显，用于定位当前盘；再取 Type/启动磁盘。
-        // 纯 detail 输出（无 list 行）也按 select 回显创建条目，保证 Bus/IsBoot 可被提取（调用方按盘号合并）
-        var byNumber = disks.ToDictionary(d => d.Number, d => d);
-        var current = -1;
-        foreach (var line in output.Split('\n'))
+        foreach (var rawLine in output.Split('\n'))
         {
-            var m = SelectDiskRegex().Match(line);
-            if (m.Success)
+            var line = rawLine.TrimEnd('\r');
+            if (line.Length == 0) continue;
+
+            // 脚本命令回显（英文 "select disk N"，与系统语言无关）
+            var sel = SelectDiskRegex().Match(line);
+            if (sel.Success)
             {
-                current = int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
+                current = int.Parse(sel.Groups[1].Value, CultureInfo.InvariantCulture);
+                inDetail = true;
                 if (!byNumber.ContainsKey(current))
                 {
+                    // 纯 detail 输出（无 list 段）也按 select 回显创建条目，保证 Bus/IsBoot 可被提取（调用方按盘号合并）
                     var created = new DiskInfo { Number = current, Device = @"\\.\PhysicalDrive" + current };
                     disks.Add(created);
                     byNumber[current] = created;
                 }
                 continue;
             }
-            if (current < 0 || !byNumber.ContainsKey(current)) continue;
 
+            if (!inDetail)
+            {
+                // 仅 list disk 表段匹配盘行（正则已行内锚定，不会跨行误匹配到 detail 段卷表）
+                var row = DiskRowRegex().Match(line);
+                if (!row.Success) continue;
+                var number = int.Parse(row.Groups[1].Value, CultureInfo.InvariantCulture);
+                if (byNumber.ContainsKey(number)) continue; // 防御：同盘号重复行丢弃，避免后续字典构建崩溃
+                var size = double.Parse(row.Groups[2].Value, CultureInfo.InvariantCulture);
+                var unitBytes = UnitToBytes(row.Groups[3].Value);
+                disks.Add(new DiskInfo
+                {
+                    Number = number,
+                    Device = @"\\.\PhysicalDrive" + number,
+                    SizeGB = RoundGiga((long)(size * unitBytes)),
+                });
+                byNumber[number] = disks[^1];
+                continue;
+            }
+
+            // detail 段：取 Type/启动磁盘
+            if (current < 0 || !byNumber.ContainsKey(current)) continue;
             var t = TypeLineRegex().Match(line);
             if (t.Success) byNumber[current].Bus = t.Groups[1].Value.Trim();
-
             var b = BootLineRegex().Match(line);
             if (b.Success && (b.Groups[1].Value.Equals("Yes", StringComparison.OrdinalIgnoreCase) ||
                               b.Groups[1].Value == "是"))
@@ -137,12 +154,33 @@ public static partial class DiskEnumerator
             if (part.Length > 0 && logical.Length > 0) partToLogical[part] = logical;
         }
 
-        // 逻辑盘 DeviceID → FreeSpace（字节）
+        // 逻辑盘 DeviceID → FreeSpace（字节）；FreeSpace 为 null 时不录入，避免归并时按 0 计入
         var logicalFree = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
         foreach (var l in logicals)
         {
             var id = GetString(l, "DeviceID");
-            if (id.Length > 0) logicalFree[id] = GetLong(l, "FreeSpace") ?? 0L;
+            var free = GetLong(l, "FreeSpace");
+            if (id.Length > 0 && free is not null) logicalFree[id] = free.Value;
+        }
+
+        // 系统盘判定：BootPartition=True 的逻辑盘（通常 C:）→ 经 Win32_LogicalDiskToPartition 关联
+        // 反查所在分区 → DiskIndex → 物理盘号；该盘在 Filter 中按系统盘排除（非 PE 桌面运行时系统盘不可清理）
+        var systemDiskIndex = -1;
+        foreach (var l in logicals)
+        {
+            if (GetBool(l, "BootPartition") is not true) continue;
+            var logicalId = GetString(l, "DeviceID");
+            foreach (var p in partitions)
+            {
+                var partId = GetString(p, "DeviceID");
+                if (partToLogical.TryGetValue(partId, out var mapped) &&
+                    string.Equals(mapped, logicalId, StringComparison.OrdinalIgnoreCase))
+                {
+                    systemDiskIndex = GetInt(p, "DiskIndex") ?? -1;
+                    break;
+                }
+            }
+            if (systemDiskIndex >= 0) break;
         }
 
         // 按 DiskIndex 归并各盘已分配分区的剩余容量；无分区或无逻辑盘映射 → 该盘 FreeGB=null
@@ -180,12 +218,15 @@ public static partial class DiskEnumerator
                         Device = @"\\.\PhysicalDrive" + number,
                         Sn = GetString(mo, "SerialNumber"),
                         Model = GetString(mo, "Model"),
+                        // Size 为 null 时置 SizeUnknown，Filter 标注"容量未知"而非误标 <1GB
                         SizeGB = sizeBytes is null ? 0 : RoundGiga(sizeBytes.Value),
+                        SizeUnknown = sizeBytes is null,
                         FreeGB = mappedByDisk.Contains(number) ? RoundGiga(freeByDisk[number]) : null,
                         Bus = bus,
                         Media = media,
                         IsHdd = media.Contains("HDD", StringComparison.OrdinalIgnoreCase) ||
                                 bus.Equals("SAS", StringComparison.OrdinalIgnoreCase),
+                        IsBoot = number == systemDiskIndex,
                     });
                 }
             }
@@ -289,6 +330,10 @@ public static partial class DiskEnumerator
                media.Contains("DVD", StringComparison.OrdinalIgnoreCase);
     }
 
+    // USB 判定：不区分大小写包含匹配，覆盖 UAS（InterfaceType 为 "USB" 或含 USB 前缀）等变体
+    private static bool BusIsUsb(string bus) =>
+        !string.IsNullOrEmpty(bus) && bus.Contains("USB", StringComparison.OrdinalIgnoreCase);
+
     private static long RoundGiga(long bytes) =>
         (long)Math.Round(bytes / (double)OneGigaByte, MidpointRounding.AwayFromZero);
 
@@ -328,6 +373,13 @@ public static partial class DiskEnumerator
         try { return Convert.ToInt32(value); } catch { return null; }
     }
 
+    private static bool? GetBool(ManagementBaseObject mo, string key)
+    {
+        var value = mo[key];
+        if (value == null) return null;
+        try { return Convert.ToBoolean(value); } catch { return null; }
+    }
+
     /// <summary>从 WMI 引用字符串（如 Win32_DiskPartition.DeviceID="Disk #0, Partition #1"）提取 DeviceID。</summary>
     private static string ExtractDeviceId(string refStr)
     {
@@ -339,8 +391,9 @@ public static partial class DiskEnumerator
         return end < 0 ? refStr[start..] : refStr[start..end];
     }
 
-    // list disk 行：盘号 + 大小 + 单位（英文 Disk / 中文 磁盘 均可；状态列可能是多词如 "No Media"）
-    [GeneratedRegex(@"^\s*(?:Disk|磁盘)\s+(\d+)(?:\s+\S+)*?\s+([\d.]+)\s+(B|KB|MB|GB|TB)", RegexOptions.Multiline)]
+    // list disk 行：盘号+大小+单位（英文 Disk / 中文 磁盘；状态列可能是多词如 "No Media"）。
+    // 仅用 [ \t] 与 [^\r\n] 做行内锚定、且只在 list 表段内匹配（见 ParseDiskpartOutput），杜绝跨行误匹配到 detail 段卷表
+    [GeneratedRegex(@"^[ \t]*(?:Disk|磁盘)[ \t]+(\d+)[ \t]+[^\r\n]*?[ \t]+([\d.]+)[ \t]+(B|KB|MB|GB|TB)", RegexOptions.Multiline)]
     private static partial Regex DiskRowRegex();
 
     // 脚本命令回显（脚本内容为英文 "select disk N"，与系统语言无关）

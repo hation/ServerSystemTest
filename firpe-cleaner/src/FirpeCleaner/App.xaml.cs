@@ -43,7 +43,7 @@ public partial class App : Application
                 $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {e.Exception}{Environment.NewLine}");
         }
         catch { /* 日志写失败不再抛，避免二次异常 */ }
-        try { Growl.Error("发生未处理异常，已记录到日志。若界面不稳定请重启程序。"); }
+        try { Growl.Error("An unhandled error occurred and was logged. Restart the app if the UI becomes unstable."); }
         catch { /* 界面线程不可用时忽略 */ }
         e.Handled = true;   // 阻止 WPF 默认崩溃框；后续操作不稳用户可重启
     }

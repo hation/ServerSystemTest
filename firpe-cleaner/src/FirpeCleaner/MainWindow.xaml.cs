@@ -82,10 +82,12 @@ public partial class MainWindow : HandyControl.Controls.Window
         try { Directory.CreateDirectory(LogDir); } catch { }
         // 注意：XAML 根元素上的 Loaded 属性事件在 hc:Window 下不可靠，与 disk-tests 一致用构造函数订阅
         Loaded += OnLoaded;
+        Program.BootLog("W0 构造完成");
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        Program.BootLog("W1 Loaded");
         FitToScreen();   // 窗口显示后（句柄/监视器 DPI 已确定）按屏幕收窄，避免内容被裁
         ThemeBtn.Content = App.CurrentApp?.IsDarkTheme == true ? "Theme: Dark" : "Theme: Light";
         DiskGrid.ItemsSource = _disks;
@@ -97,6 +99,7 @@ public partial class MainWindow : HandyControl.Controls.Window
     /// <summary>后台枚举磁盘 → 绑定列表；无盘/全排除 → 空状态 + 清理按钮禁用。</summary>
     private async void LoadDisksAsync()
     {
+        Program.BootLog("W2 枚举开始");
         StatusText.Text = "Scanning disks...";
         AppendLog("Scanning disks...");
         try

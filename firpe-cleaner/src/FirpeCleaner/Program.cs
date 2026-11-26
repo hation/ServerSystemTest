@@ -1,4 +1,5 @@
 ﻿using System;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
@@ -25,11 +26,33 @@ public static class Program
     [STAThread]
     public static void Main()
     {
+        BootLog("M0 进入 Main");
         SetProcessDpiAwarenessContext(PerMonitorV2);
+        BootLog("M1 SetProcessDpiAwarenessContext 后");
         RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly;   // 避免硬件加速白屏
+        BootLog("M2 RenderOptions 后");
 
-        var app = new App();
+        BootLog("M3 new App() 前");
+        var app = new App();   // 若此处抛异常且 M3 已写出 → 死在 new App()（XAML 解析层）
         app.InitializeComponent();
+        BootLog("M4 app.InitializeComponent() 后");
+        BootLog("M5 app.Run() 前");
         app.Run();
+    }
+
+    /// <summary>
+    /// 启动打点日志：写 exe 同目录（AppContext.BaseDirectory）startup.log，
+    /// 追加 + 时间戳；写失败静默 try/catch，绝不影响启动。
+    /// FirPE 场景：若 M0 都未写出 → 进程死在 hostfxr/加载器层（缺 DLL/依赖），
+    /// 与 WPF 无关；若只有 M0-M2 → 死在 new App()/XAML 解析前。
+    /// </summary>
+    public static void BootLog(string msg)
+    {
+        try
+        {
+            File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "startup.log"),
+                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {msg}{Environment.NewLine}");
+        }
+        catch { /* 打点写失败静默，不阻断启动 */ }
     }
 }

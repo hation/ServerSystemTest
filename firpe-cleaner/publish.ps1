@@ -48,3 +48,11 @@ if (-not (Test-Path -LiteralPath $coreDll)) {
 $sizeMB = [math]::Round((Get-Item -LiteralPath $exe).Length / 1MB, 1)
 $dllCount = (Get-ChildItem -LiteralPath $OutDir -Filter '*.dll' -File | Measure-Object).Count
 Write-Host ("==> 发布完成: {0}（exe {1} MB，目录共 {2} 个 DLL）" -f $OutDir, $sizeMB, $dllCount)
+
+# 打包诊断版 zip：压缩 dist/FirpeCleaner/ → dist/FirpeCleaner-diag.zip（用户拷贝到 U 盘用，
+# 内含 FirpeCleaner/ 文件夹层级，解压即得完整目录版）
+$zip = Join-Path $Dist 'FirpeCleaner-diag.zip'
+if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+Compress-Archive -Path $OutDir -DestinationPath $zip -CompressionLevel Optimal
+$zipMB = [math]::Round((Get-Item -LiteralPath $zip).Length / 1MB, 1)
+Write-Host ("==> 已打包诊断版: {0}（{1} MB）" -f $zip, $zipMB)

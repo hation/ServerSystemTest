@@ -8,7 +8,7 @@ namespace FirpeCleaner;
 
 public partial class App : Application
 {
-    /// <summary>全局未捕获异常日志目录（%AppData%\FirpeCleaner\）。</summary>
+    /// <summary>主题偏好目录（%AppData%\FirpeCleaner\），仅存 theme.txt；异常日志已改走 exe 同目录。</summary>
     private static string LogDir =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FirpeCleaner");
 
@@ -21,31 +21,37 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        Program.BootLog("A0 进入 OnStartup");
         base.OnStartup(e);
+        Program.BootLog("A1 base.OnStartup 后");
 
         // 全局异常兜底：避免默认崩溃框 / 静默退出
         DispatcherUnhandledException += OnDispatcherUnhandledException;
 
         // 深色模式：启动时按记忆的偏好应用主题（在窗口创建前）
         ApplyTheme(LoadThemePreference());
+        Program.BootLog("A2 ApplyTheme 后");
 
-        var w = new MainWindow();
+        var w = new MainWindow();   // 若构造抛异常且 A2 已写出 → 死在 MainWindow 构造/XAML 解析
+        Program.BootLog("A3 new MainWindow() 前");
         w.Show();
+        Program.BootLog("A4 w.Show() 后");
     }
 
-    /// <summary>全局未捕获异常处理：写入日志文件 + Growl 提示，阻止默认崩溃框。</summary>
+    /// <summary>全局未捕获异常处理：error.log 写 exe 同目录（FirPE 里 U 盘目录可写；
+    /// %AppData% 的 X: 盘可能不可写/重启丢失）+ Growl 提示。诊断期不吞异常（e.Handled=false），
+    /// 让 WPF 默认崩溃处理继续，便于定位静默退出死点。</summary>
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
         try
         {
-            Directory.CreateDirectory(LogDir);
-            File.AppendAllText(Path.Combine(LogDir, "error.log"),
+            File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "error.log"),
                 $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {e.Exception}{Environment.NewLine}");
         }
         catch { /* 日志写失败不再抛，避免二次异常 */ }
         try { Growl.Error("An unhandled error occurred and was logged. Restart the app if the UI becomes unstable."); }
         catch { /* 界面线程不可用时忽略 */ }
-        e.Handled = true;   // 阻止 WPF 默认崩溃框；后续操作不稳用户可重启
+        e.Handled = false;   // 不吞异常：诊断期需要默认崩溃框/进程终止作为最后痕迹，定位死点
     }
 
     /// <summary>切换浅色/深色主题并即时生效，且持久化偏好。

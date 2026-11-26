@@ -163,25 +163,12 @@ public static partial class DiskEnumerator
             if (id.Length > 0 && free is not null) logicalFree[id] = free.Value;
         }
 
-        // 系统盘判定：BootPartition=True 的逻辑盘（通常 C:）→ 经 Win32_LogicalDiskToPartition 关联
-        // 反查所在分区 → DiskIndex → 物理盘号；该盘在 Filter 中按系统盘排除（非 PE 桌面运行时系统盘不可清理）
-        var systemDiskIndex = -1;
-        foreach (var l in logicals)
-        {
-            if (GetBool(l, "BootPartition") is not true) continue;
-            var logicalId = GetString(l, "DeviceID");
-            foreach (var p in partitions)
-            {
-                var partId = GetString(p, "DeviceID");
-                if (partToLogical.TryGetValue(partId, out var mapped) &&
-                    string.Equals(mapped, logicalId, StringComparison.OrdinalIgnoreCase))
-                {
-                    systemDiskIndex = GetInt(p, "DiskIndex") ?? -1;
-                    break;
-                }
-            }
-            if (systemDiskIndex >= 0) break;
-        }
+        // 系统盘判定：BootPartition=True 的分区（通常为 C: 所在分区）→ 读其 DiskIndex → 物理盘号；
+        // 该盘在 Filter 中按系统盘排除（非 PE 桌面运行时系统盘不可清理）。
+        // ⚠ 修复：BootPartition 属性属 Win32_DiskPartition（Win32_LogicalDisk 无此属性），旧实现读
+        // LogicalDisk 的该属性必然抛 WBEM_E_NOT_FOUND → WMI 主路径 100% 回退 diskpart；现改为遍历分区表判定。
+        var systemDiskIndex = FindBootDiskIndex(
+            partitions.Select(p => (GetInt(p, "DiskIndex") ?? -1, GetBool(p, "BootPartition"))));
 
         // 按 DiskIndex 归并各盘已分配分区的剩余容量；无分区或无逻辑盘映射 → 该盘 FreeGB=null
         var freeByDisk = new Dictionary<int, long>();
@@ -232,6 +219,21 @@ public static partial class DiskEnumerator
             }
         }
         return result;
+    }
+
+    /// <summary>
+    /// 系统盘判定：返回首个 BootPartition=True 分区所属 DiskIndex（对应 Win32_DiskDrive.Index），
+    /// 无启动分区返回 -1。语义与 diskpart 回退路径的 "Boot Disk: Yes" 标记一致。
+    /// 注：BootPartition 属性属 Win32_DiskPartition；BootPartition 为 null（属性无值）按非启动分区跳过。
+    /// </summary>
+    public static int FindBootDiskIndex(IEnumerable<(int DiskIndex, bool? BootPartition)> partitions)
+    {
+        foreach (var p in partitions)
+        {
+            if (p.BootPartition is not true) continue;
+            return p.DiskIndex;
+        }
+        return -1;
     }
 
     private static List<ManagementObject> QueryAll(string wql)

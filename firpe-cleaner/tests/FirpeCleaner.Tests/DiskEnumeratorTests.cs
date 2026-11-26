@@ -224,4 +224,47 @@ public class DiskEnumeratorTests
         Assert.Equal("SAS", disks[2].Bus);
         Assert.False(disks[2].IsBoot);
     }
+
+    // ---------------- WMI 系统盘判定（Win32_DiskPartition.BootPartition） ----------------
+
+    [Fact]
+    public void FindBootDiskIndex_ReturnsDiskIndexOfBootPartition()
+    {
+        // 构造假分区数据：仅盘 1 的分区 BootPartition=True → 系统盘盘号应为 1（EnumerateByWmi 据此置 IsBoot）
+        var partitions = new (int DiskIndex, bool? BootPartition)[]
+        {
+            (0, false),
+            (1, true),
+            (2, null), // BootPartition 无值（属性未提供）按非启动分区跳过
+        };
+
+        Assert.Equal(1, DiskEnumerator.FindBootDiskIndex(partitions));
+    }
+
+    [Fact]
+    public void FindBootDiskIndex_NoBootPartition_ReturnsMinusOne()
+    {
+        // 无任何 BootPartition=True 分区（如纯 PE 环境）→ 返回 -1，不标记任何盘为系统盘
+        var partitions = new (int DiskIndex, bool? BootPartition)[]
+        {
+            (0, false),
+            (2, null),
+            (3, false),
+        };
+
+        Assert.Equal(-1, DiskEnumerator.FindBootDiskIndex(partitions));
+    }
+
+    [Fact]
+    public void FindBootDiskIndex_MultipleBootPartitions_TakesFirst()
+    {
+        // 多启动分区（双系统/双启动盘）取首个 BootPartition=True，与 diskpart 首个 "Boot Disk: Yes" 语义一致
+        var partitions = new (int DiskIndex, bool? BootPartition)[]
+        {
+            (0, true),
+            (1, true),
+        };
+
+        Assert.Equal(0, DiskEnumerator.FindBootDiskIndex(partitions));
+    }
 }

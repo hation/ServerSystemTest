@@ -9,15 +9,14 @@
     <AssemblyName>FirpeCleaner</AssemblyName>
     <RootNamespace>FirpeCleaner</RootNamespace>
     <!-- 自定义入口（Program.cs 先设 DPI 感知 + 软件渲染）；manifest 仅 Release 生效：
-         Debug 免提权便于自动化验证，Release 提权(requireAdministrator) + PerMonitorV2 -->
+         asInvoker（WinPE 以 SYSTEM 运行本就有最高权限，无需 UAC 提权路径）+ PerMonitorV2 -->
     <StartupObject>FirpeCleaner.Program</StartupObject>
     <ApplicationManifest Condition="'$(Configuration)'=='Release'">app.manifest</ApplicationManifest>
-    <!-- 发布：自包含单文件（离线零依赖，约 68MB） -->
-    <PublishSingleFile>true</PublishSingleFile>
+    <!-- 发布：self-contained 目录版（exe + 全部 DLL 平铺，native 库直接加载零解压；
+         单文件压缩/自解压会在 WinPE 的 X: 临时盘解压失败致静默退出，故禁用） -->
+    <PublishSingleFile>false</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <DebugType>none</DebugType>
   </PropertyGroup>
 

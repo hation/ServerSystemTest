@@ -4,7 +4,7 @@ WPF 图形化清盘工具：列出服务器硬盘（自动排除 U 盘 / CD / �
 二次强确认后经 `diskpart clean` 把选中盘清为**未初始化**（不含分区/文件系统，可直接重装）。
 
 - 运行环境：WinPE / FirPE（桌面双击，管理员权限，diskpart 为 PE 原生组件）
-- 构建：C# / .NET 8 / WPF（HandyControl），self-contained 单文件 exe，**零 .NET 依赖**
+- 构建：C# / .NET 8 / WPF（HandyControl），self-contained 目录版（exe + DLL 平铺），**零 .NET 依赖**
 - 界面文本全部为 ASCII 英文（PE 无中文字体风险）
 
 ## 发布
@@ -14,17 +14,18 @@ WPF 图形化清盘工具：列出服务器硬盘（自动排除 U 盘 / CD / �
 powershell -NoProfile -ExecutionPolicy Bypass -File publish.ps1
 ```
 
-产物：`firpe-cleaner/dist/FirpeCleaner.exe`（win-x64 自包含单文件，约 68 MB，离线可运行）。
-脚本参数：`-r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true`；
-`IncludeNativeLibrariesForSelfExtract` 已在 csproj 内置（WinPE 下 WPF/原生库自解压可运行）。
+产物：`firpe-cleaner/dist/FirpeCleaner/`（win-x64 自包含**目录版**：exe + 全部 DLL 平铺，
+native 库直接加载零解压，离线可运行）。
+脚本参数：`-r win-x64 --self-contained true -p:PublishSingleFile=false`；
+不使用单文件压缩/自解压（WinPE 下内嵌 native 库解压到 X: 临时盘会失败致静默退出）。
 
 ## FirPE 集成
 
-1. 把 `dist/FirpeCleaner.exe` 复制到 FirPE U 盘根目录的 `FirPE\Desktop\` 文件夹
+1. 把 `dist/FirpeCleaner/` **整个目录**（含 exe 与全部 DLL）复制到 FirPE U 盘根目录的 `FirPE\Desktop\`
 2. 服务器从该 U 盘启动进入 FirPE
-3. 桌面上双击 `FirpeCleaner.exe`（PE 内默认管理员权限，直接运行）
+3. 桌面上双击 `FirpeCleaner.exe`（PE 内以 SYSTEM 运行，直接启动，无需提权）
 
-> 只需一个 exe，无其他文件（单文件自包含）。
+> 需复制整个目录（exe 依赖同目录的 DLL/native 库），不要只复制单个 exe。
 
 ## 使用流程
 
@@ -54,14 +55,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File publish.ps1
 - **日志可能含中文**：diskpart 输出/失败明细可能随系统语言含中文，PE 无中文字体时显示为方块，
   **不影响功能**（判定基于关键字匹配，非显示文本）。
 - **仅 clean 非 clean all**：只清空分区表为未初始化，不做深度覆写（速度优先，符合清盘重装场景）。
-- **权限**：需管理员权限运行（Release 构建内置 `requireAdministrator`，PE 默认满足）。
+- **权限**：`asInvoker`（WinPE 以 SYSTEM 运行本就有最高权限，无需 UAC 提权路径）。
 - **GUI 文本不可 ASCII 兜底项**：CleanRunner 失败明细来自 diskpart 原文，随系统语言变化，属预期。
 
 ## 源码结构
 
 ```
 firpe-cleaner/
-├── publish.ps1                  # 发布脚本（self-contained 单文件）
+├── publish.ps1                  # 发布脚本（self-contained 目录版：exe + DLL 平铺）
 ├── src/FirpeCleaner/            # WPF exe（GUI：列盘/全选/确认/清理/结果提示）
 ├── src/FirpeCleaner.Core/       # 类库（WMI 枚举 + diskpart 回退 + 清理执行，无 WPF 依赖）
 └── tests/FirpeCleaner.Tests/    # xunit 单测（只测 Core）

@@ -48,4 +48,4 @@
 ## Commit
 
 - message：`feat(firpe-cleaner): 系统盘可清除（FirPE 场景去除系统盘排除）+ UI 布局（列表放大+滚动+日志缩小）`
-- hash：`3baae141272bf05a82ebaac95e6ad4b5f79ba6cc`
+- hash：`6839fb46fcf5d4a4bea096237ea7094d56402624`

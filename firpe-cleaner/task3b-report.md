@@ -49,4 +49,4 @@ C:\Program Files\dotnet\dotnet.exe test FirpeCleaner.sln -c Debug --no-build
 
 ## Commit
 
-`<commit-hash-待回填>`：`fix(firpe-cleaner): CleanRunner 修复 review 问题（失败关键字宽松匹配/异步读+超时杀/脚本写失败/空列表）`
+`956f79e`：`fix(firpe-cleaner): CleanRunner 修复 review 问题（失败关键字宽松匹配/异步读+超时杀/脚本写失败/空列表）`

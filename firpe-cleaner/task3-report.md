@@ -2,7 +2,7 @@
 
 日期：2026-11-26
 状态：**DONE**
-Commit：`d408ca4`
+Commit：`607ccfd`
 （仅改动 `firpe-cleaner/` 的 Core 与 Tests，未 push）
 
 ## 一、实现说明

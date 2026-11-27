@@ -1,0 +1,26 @@
+msg=0x1208 mode=0 count=0 ret=0 textcolor_after=0x003264C8 bkcolor_0x120C=0x00000000
+msg=0x120A mode=1 count=0 ret=0 buf="¢ˆÈv" count_after=1
+msg=0x120A mode=0 CRASHED exit=-1073741819
+msg=0x120B mode=1 count=0 ret=0 buf="¢ˆÈv" count_after=0
+msg=0x120B mode=0 CRASHED exit=-1073741819
+msg=0x120C mode=1 count=0 ret=0 buf="¢ˆÈv" count_after=0
+msg=0x120D mode=1 count=0 ret=0 buf="¢ˆÈv" count_after=0
+msg=0x120E mode=0 count=0 ret=0 textcolor_after=0x00000000 bkcolor_0x120C=0x00000000
+msg=0x120F mode=0 count=0 ret=0 textcolor_after=0x00000000 bkcolor_0x120C=0x00000000
+msg=0x1210 mode=0 count=0 ret=0 textcolor_after=0x00000000 bkcolor_0x120C=0x00000000
+msg=0x1211 mode=0 count=0 ret=1 textcolor_after=0x00000000 bkcolor_0x120C=0x00000000
+msg=0x1212 mode=0 count=0 ret=1 textcolor_after=0x00000000 bkcolor_0x120C=0x00000000
+msg=0x1213 mode=0 count=0 ret=3302600 textcolor_after=0x00000000 bkcolor_0x120C=0x00000000
+msg=0x1214 mode=0 count=0 ret=1 textcolor_after=0x00000000 bkcolor_0x120C=0x00000000
+msg=0x1215 mode=0 count=0 ret=6 textcolor_after=0x00000000 bkcolor_0x120C=0x00000000
+msg=0x1216 mode=0 count=0 ret=1000 textcolor_after=0x00000000 bkcolor_0x120C=0x00000000
+msg=0x1217 mode=0 count=0 ret=0 textcolor_after=0x00000000 bkcolor_0x120C=0x00000000
+msg=0x1218 mode=0 CRASHED exit=-1073741819
+msg=0x1219 mode=0 count=0 ret=0 textcolor_after=0x00000000 bkcolor_0x120C=0x00000000
+msg=0x121A mode=0 count=0 ret=0 textcolor_after=0x00000000 bkcolor_0x120C=0x00000000
+msg=0x121B mode=0 count=0 ret=0 textcolor_after=0x00000000 bkcolor_0x120C=0x00000000
+msg=0x121C mode=0 count=0 ret=0 textcolor_after=0x00000000 bkcolor_0x120C=0x00000000
+msg=0x121D mode=0 count=0 ret=0 textcolor_after=0x00000000 bkcolor_0x120C=0x00000000
+msg=0x121E mode=0 count=0 ret=0 textcolor_after=0x00000000 bkcolor_0x120C=0x00000000
+msg=0x121F mode=0 count=0 ret=0 textcolor_after=0x00000000 bkcolor_0x120C=0x00000000
+msg=0x1220 mode=0 count=0 ret=0 textcolor_after=0x00000000 bkcolor_0x120C=0x00000000

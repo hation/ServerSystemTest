@@ -1,0 +1,24 @@
+FirpeCleaner Native - DIAGNOSTIC BUILD (diag2)
+==============================================
+
+This is a DIAGNOSTIC build for the "0 cleanable disks found in FirPE"
+issue. Enumeration logic is UNCHANGED; only extra [D] diagnostic lines
+were added to the disk enumeration.
+
+How to test:
+1. Copy FirpeCleaner32.exe and FirpeCleaner64.exe into FirPE.
+   Run the one that works in your PE (a 64-bit PE usually cannot run
+   the 32-bit exe).
+2. Run the exe with the -list switch, or just launch the GUI once.
+3. After it exits, collect the startup.log file located in the SAME
+   directory as the exe.
+
+What to report back:
+- The FULL content of startup.log.
+- Focus on the [D] lines. They show whether:
+  * Disks are NOT enumerated at all (the "reg open" / "reg count" /
+    "reg item" lines, or the "fallback" / "fb item" probe lines), or
+  * Disks ARE enumerated but then ALL get excluded (the bus / rem /
+    media / sizeGB / geom values in the "[D] disk N:" lines).
+
+No disk data is modified. This build is safe to run in FirPE.

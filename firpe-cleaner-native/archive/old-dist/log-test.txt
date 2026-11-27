@@ -1,0 +1,11 @@
+raw=DiskPart 成功地清除了磁盘。 正在添加驱动程序包: ps3stor.inf 已成功添加驱动程序程序包。 发布名称: oem0.inf 虚拟磁盘服务错误: 驱动程序包总数: 1 已添加驱动程序包数: 1
+translated=DiskPart successfully cleaned??disk?? adding driver package: ps3stor.inf driver package added successfully?? published name: oem0.inf virtual disk service error: driver packages total: 1 driver packages added: 1
+translated_all_ascii=1
+has_successfully_cleaned=1
+has_adding_driver_pkg=1
+has_added_successfully=1
+has_published_name=1
+has_vds_error=1
+has_driver_pkgs_total=1
+has_driver_pkgs_added=1
+cleanup_log_keeps_gbk=0

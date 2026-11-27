@@ -1,0 +1,13 @@
+1) INSERT(0x120A, ANSI) ret=0 count=1
+1) GETA(0x1203) ret=1 buf=""
+1) GETW(0x120B) ret=1 bufW=""
+2) INSERT(0x120A, W) ret=1 count=2
+2) GETA(0x1203) col1 ret=1 buf=""
+2) GETW(0x120B) col1 ret=1 bufW=""
+3) final count=6
+3) GETA col0 = ""
+3) GETA col1 = ""
+3) GETA col2 = ""
+3) GETA col3 = ""
+3) GETA col4 = ""
+3) GETA col5 = ""

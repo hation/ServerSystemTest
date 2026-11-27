@@ -1,0 +1,5 @@
+A: 0x1061 ANSI insert ret=0
+A: GETITEMW(W) = " 6944 6B73 4100 203A 7830 3031 3136 4120
+B: 0x1062 W insert ret=0
+B: GETITEMW(W) = "" hex:
+C: 0x1063 W insert ret=0 count=0

@@ -1,0 +1,7 @@
+A: INSERTITEMA(0x1202) ret=0 count=0
+A: GETITEMA(0x1203) ret=0 buf=""
+A: GETITEMW(0x120B) ret=0 buf=""
+B: INSERTITEMW(0x120A) ret=0 count=1
+B: GETITEMA(0x1203) col1 ret=0 buf=""
+B: GETITEMW(0x120B) col1 ret=0 buf=""
+C: GETITEMA(TEXT|FMT) col0 ret=1 buf="" fmt=0

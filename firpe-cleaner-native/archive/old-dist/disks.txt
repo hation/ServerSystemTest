@@ -1,0 +1,2 @@
+0|YMTC YMSS2ED06B66MC|Unknown|476|230|Cleanable
+1|USB|Unknown|58|34|Excluded: removable media

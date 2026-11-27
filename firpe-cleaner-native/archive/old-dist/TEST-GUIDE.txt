@@ -1,0 +1,20 @@
+FirPE Native Probe - Test Guide
+================================
+
+目标：验证「原生 Win32 exe 在 FirPE 中可运行」这个方向（替代 .NET/WPF，原方案在 FirPE 无法启动）。
+
+测试步骤：
+1. 复制 probe32.exe 和 probe64.exe 到 U 盘（任意目录）。
+2. 进入 FirPE 后，双击 probe64.exe：
+   - 若弹出 "Native probe OK" 消息框 → 64 位原生程序可运行
+   - 若完全无反应 → 该 PE 无法运行 64 位程序
+3. 再双击 probe32.exe：
+   - 若弹出消息框 → 32 位原生程序可运行
+   - 若无反应 → 该 PE 无法运行 32 位程序
+4. 打开 CMD，输入命令并记录输出（确定 PE 位数）：
+      echo %PROCESSOR_ARCHITECTURE%
+   AMD64 = 64 位系统；x86 = 32 位系统
+5. 每个 exe 双击后会生成 probe.log（在 exe 同目录），内容含
+   "started" 和 "done"。把 probe.log 内容一并反馈。
+
+请反馈：probe64 是否弹窗 / probe32 是否弹窗 / PROCESSOR_ARCHITECTURE 结果。

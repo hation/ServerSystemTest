@@ -1,0 +1,14 @@
+insert col 0 ret=0
+insert col 1 ret=1
+insert col 2 ret=2
+insert col 3 ret=3
+insert col 4 ret=4
+insert col 5 ret=5
+header=0081082E count=6
+GETITEMA col 0 = ""
+GETITEMA col 1 = ""
+GETITEMA col 2 = ""
+GETITEMA col 3 = ""
+GETITEMA col 4 = ""
+GETITEMA col 5 = ""
+GETITEMW col 0 = ""

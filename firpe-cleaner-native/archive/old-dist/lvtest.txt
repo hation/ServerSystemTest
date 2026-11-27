@@ -1,0 +1,10 @@
+rows=1 cols=7
+IsAppThemed=1
+header col 0: "硬盘"
+header col 1: "型号"
+header col 2: "总线"
+header col 3: "总容量GB"
+header col 4: "剩余GB"
+header col 5: "状态"
+header col 6: "盘状态"
+row 0 checked=1: [0]"PhysicalDrive0" [1]"YMTC YMSS2ED06B66MC" [2]"Unknown" [3]"476" [4]"230" [5]"Cleanable" [6]"-"

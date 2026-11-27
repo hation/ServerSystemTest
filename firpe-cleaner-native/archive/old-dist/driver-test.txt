@@ -1,0 +1,9 @@
+FindPs3StorInf(NULL)=C:\Users\ganxin01\Documents\trae-work\ServerSystemTest\firpe-cleaner-native\dist\drivers\ps3stor.inf
+HasLinkdataDevice=0
+FindFirpeDriversDir=1 (D:\FirPE\Drivers)
+FindFirpeBcd=0 (none)
+--- drive type scan (dry-run) ---
+C: type=3 (FIXED)
+D: type=2 (REMOVABLE)
+E: type=5 (CDROM)
+G: type=2 (REMOVABLE)

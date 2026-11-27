@@ -1,0 +1,35 @@
+CleanedCount=1
+FailureCount=3
+Success=0
+Failure[0]=DiskPart 未能清除磁盘.
+Failure[1]=虚拟磁盘服务错误:
+Failure[2]=DiskPart has encountered an error.
+Vds_line_caught=1
+Already_online_not_caught=1
+RawOutput_after_parse_empty=1
+RawOutput_len=314
+RawOutput_keeps_gbk=1
+Chunks=1 MaxChunkLen=314
+Chunk_max_ok=1
+--- RawOutput full text ---
+Microsoft DiskPart version 10.0.19041.1
+
+Disk 0 is now the selected disk.
+
+DiskPart successfully cleaned the disk.
+
+已成功添加 driver package.
+
+Disk 1 is now the selected disk.
+
+DiskPart 未能清除磁盘.
+
+虚拟磁盘服务错误:
+没有可用的对象.
+
+Disk 2 is already online.
+
+该磁盘已联机.
+
+DiskPart has encountered an error.
+

@@ -1,0 +1,8 @@
+case1: 0x1061 ANSI insert ret=0
+case1: GETITEMA = ""
+case1: GETITEMW = ""
+case2: 0x1062 W insert ret=0
+case2: GETITEMA = ""
+case2: GETITEMW = ""
+case3: 0x1061 with W-text insert ret=0
+case3: GETITEMW = ""

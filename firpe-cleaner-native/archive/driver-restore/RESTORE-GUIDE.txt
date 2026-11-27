@@ -1,0 +1,15 @@
+FirPE Driver Restore
+====================
+
+The ps3stor driver (Linkdata 2230-18i) is restored here.
+
+Copy the "FirPE" folder to your USB drive root so it becomes:
+  D:\FirPE\Drivers\ps3stor.inf
+  D:\FirPE\Drivers\ps3stor.sys
+  D:\FirPE\Drivers\ps3stor.cat
+
+(Replace D: with your USB drive letter.)
+
+FirPE auto-scans U-disk FirPE\Drivers on boot and loads the driver.
+Then run FirpeCleaner64.exe from the USB drive (NOT the FirPE desktop -
+the desktop is a RAM disk X: and is wiped on reboot).

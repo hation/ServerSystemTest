@@ -1,0 +1,5 @@
+CleanedCount=1
+FailureCount=2
+Success=0
+Failure[0]=Access is denied.
+Failure[1]=DiskPart has encountered an error: Access is denied. See the System Event Log for more information.

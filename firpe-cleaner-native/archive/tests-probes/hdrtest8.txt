@@ -1,0 +1,12 @@
+insert col0 mask=0x0003 ret=0
+insert col1 mask=0x0006 ret=1
+insert col2 mask=0x000A ret=2
+insert col3 mask=0x0012 ret=3
+header count=4
+GETITEMA(mask=0x0002) col0 = ""
+GETITEMA(mask=0x0002) col1 = "?…¸3??"
+GETITEMA(mask=0x0002) col2 = ""
+GETITEMA(mask=0x0002) col3 = ""
+GETITEMW(mask=0x0002) col0 = ""
+GETITEMW(mask=0x0002) col1 = "GETITEMW(mask=0x0002) col2 = ""
+GETITEMW(mask=0x0002) col3 = ""
